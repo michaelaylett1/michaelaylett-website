@@ -1,17 +1,25 @@
-# Michael Aylett — Personal Website
+# Michael Aylett — Website
 
-A Next.js 14 (App Router) + Tailwind CSS site for Michael Aylett: co-living
-real estate investor and founder of EcomRanx.
+A six-page Next.js 14 (App Router) + Tailwind CSS site for Michael Aylett:
+professional real estate investor and founder of EcomRanx.
 
-## Sections
+## Pages
 
-- **Hero** — headline, positioning, and top-line portfolio stats
-- **About Me** — background, credibility, service history
-- **Current Portfolio** — 83-door portfolio snapshot + featured property case study
-- **Investment Strategy** — the PadSplit/co-living model, stabilization timeline, risk mitigation
-- **Capital Raising** — deal terms for capital partners
-- **Amazon Consulting (EcomRanx)** — Amazon growth consulting offer
-- **Contact** — investor application, LinkedIn, email, contact form
+- **`/` — Home** — introduces the three paths (sellers, capital partners,
+  EcomRanx) and a credibility strip.
+- **`/sellers`** — the primary page. Explains traditional purchases, seller
+  financing, and subject-to; why sellers consider creative financing; the
+  purchase process; FAQ; and a full seller intake form.
+- **`/capital-partners`** — investment philosophy, target markets,
+  acquisition strategy, underwriting standards, and how partnerships work.
+  Deliberately avoids specific return projections or public-offering
+  language.
+- **`/ecomranx`** — a visually distinct sub-brand page for the Amazon
+  consulting business, linking out to ecomranx.com.
+- **`/about`** — background and story, from Amazon account management to
+  real estate ownership.
+- **`/contact`** — a topic selector (Selling a Property / Capital
+  Partnership / Amazon Consulting) that swaps in the right form.
 
 ## Getting started
 
@@ -24,36 +32,44 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Before you launch
 
-1. **Email** — replace the placeholder email in `components/Contact.tsx`
-   (`const EMAIL = "michael@ecomranx.com"`) with your real inbox.
-2. **Investor form link** — `INVESTOR_FORM` in `components/Contact.tsx` points
-   to the Jotform mentioned in your deck; swap it for whichever form you want
-   live.
-3. **LinkedIn** — confirm the `LINKEDIN` URL in the same file.
-4. **Portfolio numbers** — `components/Hero.tsx` and `components/Portfolio.tsx`
-   hold the headline stats (doors, monthly revenue, COC return). Update as
-   your numbers change.
-5. **Photos** — the design currently ships photo-free and relies on
-   typography/data. If you want to add property or headshot photography,
-   drop images into `public/` and swap them into `Hero.tsx` / `Portfolio.tsx`.
+1. **Email** — replace the placeholder email (`michael@ecomranx.com`) in
+   `components/sellers/SellerForm.tsx` and `components/contact/ContactSelector.tsx`
+   with your real inbox. Forms currently submit via `mailto:` links since
+   there's no backend; swap in a form service (Formspree, a serverless
+   function, etc.) if you want submissions to land somewhere other than an
+   email client.
+2. **EcomRanx link** — confirm `https://www.ecomranx.com` is correct
+   everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
+   `components/home/PathCards.tsx`).
+3. **LinkedIn** — confirm the URL in `components/shared/Footer.tsx`.
+4. **Numbers** — the 81-room / market-count credibility stats live in
+   `components/home/Credibility.tsx`. Update as your portfolio changes.
+5. **EcomRanx case studies** — `components/ecomranx/CaseStudies.tsx` uses
+   anonymized, illustrative examples rather than named clients or specific
+   figures. Replace with real case studies (with permission) when you have
+   them.
 
 ## Stack
 
 - Next.js 14 (App Router, TypeScript)
-- Tailwind CSS (custom design tokens in `tailwind.config.ts`)
+- Tailwind CSS — real estate pages use the "ledger" palette (ink, paper,
+  brass) defined in `tailwind.config.ts`; the EcomRanx page uses a separate
+  graphite/signal-green palette so it reads as its own brand.
 - `lucide-react` for icons
-- Fonts via `next/font/google`: Fraunces (display), Inter (body), IBM Plex Mono (data/labels)
+- Fonts via `next/font/google`: Fraunces (display), Inter (body/EcomRanx),
+  IBM Plex Mono (data/labels)
 
-## Design notes
+## Content guardrails already in place
 
-The visual language is built around the idea of a deal ledger / underwriting
-sheet: alternating dark ink and warm paper sections, a brass accent used for
-key figures, and a mix of serif display type with a monospace face for
-numbers and labels. The stabilization timeline in the Strategy section is
-a direct visualization of the rehab → stabilizing → payouts phases described
-in your investor deck.
+- No use of the word "PadSplit" anywhere on the site.
+- No discussion of bedroom-conversion strategy.
+- No specific projected returns or public-offering language on the Capital
+  Partners page.
+- Seller-facing copy avoids overpromising ("not every property qualifies").
 
 ## Deploying
 
-The project deploys as-is to Vercel, Netlify, or any Node host that supports
-Next.js. No environment variables are required.
+The project deploys as-is to Vercel. No environment variables are required.
+To push to your existing GitHub repo: unzip this project over (or into) your
+repo, commit, and push — Vercel will pick up the new pages automatically on
+the next deploy.

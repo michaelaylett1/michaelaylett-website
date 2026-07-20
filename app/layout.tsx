@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Fraunces, Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import Header from "@/components/shared/Header";
+import Footer from "@/components/shared/Footer";
 
 const fraunces = Fraunces({
   subsets: ["latin"],
@@ -25,9 +27,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Michael Aylett — Co-Living Real Estate Investor & Founder, EcomRanx",
+  title: "Michael Aylett — Real Estate Acquisitions & Capital Partnerships",
   description:
-    "Michael Aylett builds cash-flowing co-living portfolios across Texas, Georgia, and Utah, partners with capital investors on new acquisitions, and founded EcomRanx, an Amazon growth consultancy.",
+    "Michael Aylett is a professional real estate investor purchasing property directly from owners through traditional and creative financing, partnering with capital investors on select acquisitions, and founder of EcomRanx, an Amazon consulting company.",
 };
 
 export default function RootLayout({
@@ -37,7 +39,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${fraunces.variable} ${inter.variable} ${plexMono.variable}`}>
-      <body className="font-body antialiased">{children}</body>
+      <body className="font-body antialiased">
+        <Header />
+        <main>{children}</main>
+        <Footer />
+      </body>
     </html>
   );
 }

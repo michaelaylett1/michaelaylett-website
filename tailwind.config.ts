@@ -20,6 +20,11 @@ const config: Config = {
         slate: "#8B9795",
         line: "rgba(237,231,218,0.12)",
         "line-dark": "rgba(18,24,28,0.10)",
+        // EcomRanx sub-brand accent (kept separate from the brass real-estate palette)
+        signal: "#4FD1B5",
+        "signal-light": "#7EE6CC",
+        graphite: "#0B0F10",
+        "graphite-2": "#151B1D",
       },
       fontFamily: {
         display: ["var(--font-fraunces)", "Georgia", "serif"],
