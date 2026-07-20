@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #12181c;
+  color: #ede7da;
+}
+
+::selection {
+  background-color: #c08a3e;
+  color: #12181c;
+}
+
+:focus-visible {
+  outline: 2px solid #d9a85c;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.bg-noise {
+  position: relative;
+}
+.bg-noise::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.hairline {
+  background-image: linear-gradient(to right, transparent, rgba(237, 231, 218, 0.25), transparent);
+  height: 1px;
+}
+
+.hairline-dark {
+  background-image: linear-gradient(to right, transparent, rgba(18, 24, 28, 0.2), transparent);
+  height: 1px;
+}
+
+.underline-brass {
+  background-image: linear-gradient(to right, #c08a3e, #c08a3e);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 2px;
+  transition: background-size 0.35s ease;
+}
+.underline-brass:hover {
+  background-size: 100% 2px;
+}
