@@ -8,8 +8,8 @@ import { Menu, X } from "lucide-react";
 const LINKS = [
   { href: "/", label: "Home" },
   { href: "/sellers", label: "Sellers" },
-  { href: "/capital-partners", label: "Capital Partners" },
   { href: "/rv-parks", label: "RV Parks" },
+  { href: "/capital-partners", label: "Capital Partners" },
   { href: "/ecomranx", label: "EcomRanx" },
   { href: "/about", label: "About" },
   { href: "/contact", label: "Contact" },

@@ -4,6 +4,8 @@ import WhoIAm from "@/components/capital/WhoIAm";
 import Philosophy from "@/components/capital/Philosophy";
 import FeaturedProperties from "@/components/capital/FeaturedProperties";
 import WorkWithPartners from "@/components/capital/WorkWithPartners";
+import Testimonials from "@/components/capital/Testimonials";
+import CapitalPartnerForm from "@/components/capital/CapitalPartnerForm";
 import ImageBanner from "@/components/shared/ImageBanner";
 import { propertyImages } from "@/lib/propertyImages";
 
@@ -27,6 +29,8 @@ export default function CapitalPartnersPage() {
       <Philosophy />
       <FeaturedProperties />
       <WorkWithPartners />
+      <Testimonials />
+      <CapitalPartnerForm />
     </>
   );
 }

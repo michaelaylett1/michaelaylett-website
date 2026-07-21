@@ -1,13 +1,19 @@
 import Link from "next/link";
 
+// Ordered to match the site-wide navigation order: Home, Sellers, RV Parks,
+// Capital Partners, EcomRanx, About, Contact (see components/shared/Header.tsx).
+// Split across two columns for layout, but each column preserves that
+// relative order, and read top to bottom (Site, then Connect) reproduces it
+// exactly, with LinkedIn appended at the end since it isn't a site page.
 const COLUMNS = [
   {
     title: "Site",
     links: [
       { href: "/", label: "Home" },
       { href: "/sellers", label: "Sellers" },
-      { href: "/capital-partners", label: "Capital Partners" },
       { href: "/rv-parks", label: "RV Parks" },
+      { href: "/capital-partners", label: "Capital Partners" },
+      { href: "/ecomranx", label: "EcomRanx" },
       { href: "/about", label: "About" },
     ],
   },
@@ -15,7 +21,6 @@ const COLUMNS = [
     title: "Connect",
     links: [
       { href: "/contact", label: "Contact" },
-      { href: "/ecomranx", label: "EcomRanx" },
       { href: "https://www.linkedin.com/in/themichaela/", label: "LinkedIn" },
     ],
   },

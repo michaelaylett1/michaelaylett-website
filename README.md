@@ -17,10 +17,12 @@ Aylett: professional real estate investor and founder of EcomRanx.
   intake form.
 - **`/capital-partners`**: investment philosophy, target markets,
   acquisition strategy, underwriting standards, a "Properties We Own and
-  Operate" photo section with an investment disclaimer, and how
-  partnerships work. Avoids specific return projections, public-offering
-  language, and any suggestion that Michael works with only a limited
-  number of partners.
+  Operate" photo section with an investment disclaimer, how partnerships
+  work, a "What Capital Partners Say" testimonials section, and a full
+  Capital Partner questionnaire at the bottom of the page (Proof of Funds
+  upload included). Avoids specific return projections, public-offering
+  language, performance guarantees, and any suggestion that Michael works
+  with only a limited number of partners.
 - **`/rv-parks`**: a page aimed at RV park owners, brokers, and operators.
   Includes a buy box ($150K+ NOI, 35+ pads, 10% target cap rate), what
   Michael looks for, flexible acquisition structures, and a detailed
@@ -30,13 +32,34 @@ Aylett: professional real estate investor and founder of EcomRanx.
 - **`/about`**: background and story, from Amazon account management to
   real estate ownership, with a professional headshot and a property
   photo.
-- **`/contact`**: a topic selector (Selling a Property, Capital
-  Partnership, or Amazon Consulting) that swaps in the right form. The
-  Capital Partnership option shows a full questionnaire, including a
-  required Proof of Funds upload. Selling a Property and Capital
-  Partnership submit for real (see "Email notifications and file uploads"
-  below); Amazon Consulting is a separate, non-real-estate business and
-  intentionally still uses a `mailto:` link.
+- **`/contact`**: a topic selector (Selling a Property, RV Park, or
+  Capital Partnership, in that order, with Selling a Property selected
+  by default) that swaps in the right form. The RV Park and Capital
+  Partnership tabs render the exact same form components used on
+  `/rv-parks` and `/capital-partners` (see "Shared form components"
+  below), so there is only one implementation of each form on the whole
+  site. There is no Amazon Consulting option on this page; EcomRanx has
+  its own page at `/ecomranx` and is out of scope for the real estate
+  contact form.
+
+## Shared form components
+
+Three form components each have exactly one implementation, reused
+wherever they appear on the site via a `standalone` prop (`true` by
+default renders the component's own section, heading, and intro copy;
+`false` renders just the `<form>` so it can be embedded in another
+page's layout):
+
+- `components/sellers/SellerForm.tsx`: used on `/sellers` only.
+- `components/rv-parks/RVParkForm.tsx`: used standalone on `/rv-parks`
+  and embedded (`standalone={false}`) in the "RV Park" tab on
+  `/contact`.
+- `components/capital/CapitalPartnerForm.tsx`: used standalone at the
+  bottom of `/capital-partners` and embedded (`standalone={false}`) in
+  the "Capital Partnership" tab on `/contact`.
+
+Updating a field, validation rule, or submission behavior in one of
+these files updates it everywhere that form appears.
 
 ## Getting started
 
@@ -270,7 +293,7 @@ it's easy to find:
 2. Go to the **Deployments** tab and open the deployment that's
    currently live (or **Logs**/**Runtime Logs**, if your project has a
    dedicated tab for it).
-3. Filter or search for `[forms:` — every diagnostic message this
+3. Filter or search for `[forms:`. Every diagnostic message this
    project logs is prefixed `[forms:email]`, `[forms:blob]`,
    `[forms:seller]`, `[forms:contact]`, `[forms:capital-partner]`, or
    `[forms:rv-park]`.
