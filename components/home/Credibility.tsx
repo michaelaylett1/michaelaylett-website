@@ -15,7 +15,10 @@ export default function Credibility() {
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 border-t border-line">
           {STATS.map((s) => (
-            <div key={s.label} className="border-r border-line last:border-r-0 py-6 pr-6">
+            <div
+              key={s.label}
+              className="border-r border-line last:border-r-0 py-6 px-4 md:px-6 text-center"
+            >
               <div className="font-display text-2xl md:text-3xl text-brass-light">
                 {s.value}
               </div>
