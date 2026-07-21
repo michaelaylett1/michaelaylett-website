@@ -15,28 +15,43 @@ export default function Process() {
   return (
     <section className="bg-paper text-ink py-24 md:py-28">
       <div className="mx-auto max-w-content px-6 md:px-10">
-        <div className="flex items-end justify-between gap-8">
-          <div>
+        {/* Two-column header: heading and intro copy on the left, a
+            substantially larger, landscape-cropped image on the right,
+            vertically centered against the text block. On mobile this
+            collapses to a single column with the image appearing below
+            the heading (its natural DOM position) and above the five
+            steps. The image runs roughly 40% of the content width on
+            desktop, an offset brass rule behind it gives it a light
+            framed treatment consistent with the site's flat, line-based
+            design language elsewhere on the page. */}
+        <div className="grid lg:grid-cols-5 gap-10 lg:gap-14 items-center">
+          <div className="lg:col-span-3">
             <p className="eyebrow text-brass mb-4">My Process</p>
             <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-xl">
               Five steps, from first call to closing.
             </h2>
+            <p className="mt-5 max-w-md text-ink/70 leading-relaxed">
+              Every property is different, but the path from our first
+              conversation to a closed transaction generally looks like
+              this, so you always know what comes next.
+            </p>
           </div>
-          {/* Hidden below lg (unchanged from before) so the heading never
-              wraps awkwardly next to it on tablet/mobile; sized up ~60%
-              at lg and ~80% at xl (was a fixed 160px) so it reads as a
-              real visual anchor instead of a small thumbnail. aspect-[4/3]
-              plus object-cover keeps it uncropped and undistorted at every
-              size. */}
-          <div className="hidden lg:block relative w-64 xl:w-72 aspect-[4/3] shrink-0 border border-line-dark">
-            <Image
-              src={img.src}
-              alt={img.alt}
-              fill
-              sizes="(min-width: 1280px) 288px, 256px"
-              className="object-cover"
-              loading="lazy"
+
+          <div className="lg:col-span-2 relative">
+            <div
+              aria-hidden="true"
+              className="hidden sm:block absolute -bottom-4 -right-4 w-full h-full border border-brass/40"
             />
+            <div className="relative aspect-[3/2] w-full border border-line-dark">
+              <Image
+                src={img.src}
+                alt={img.alt}
+                fill
+                sizes="(min-width: 1024px) 40vw, 100vw"
+                className="object-cover"
+                loading="lazy"
+              />
+            </div>
           </div>
         </div>
 

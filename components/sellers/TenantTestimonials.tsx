@@ -118,10 +118,6 @@ export default function TenantTestimonials() {
           ))}
         </div>
 
-        <p className="mt-8 max-w-2xl text-ink/50 leading-relaxed text-xs">
-          Shared with permission and edited lightly for length and clarity.
-          Individual experiences vary.
-        </p>
       </div>
     </section>
   );

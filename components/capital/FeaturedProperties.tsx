@@ -3,17 +3,22 @@ import { propertyImages } from "@/lib/propertyImages";
 
 const FEATURED = [
   {
+    // Atlanta and Dallas share an equal-width, equal-height two-column
+    // row on desktop (both lg:col-span-6, both aspect-[4/3]) so neither
+    // reads as bigger than the other; below lg the shared parent grid
+    // (grid-cols-1 sm:grid-cols-2) already puts them side by side on
+    // tablet and stacked on mobile at matching sizes.
     image: propertyImages.aerialNeighborhood,
     location: "Atlanta, Georgia",
     caption: "Suburban community with the downtown Atlanta skyline in view",
-    span: "lg:col-span-7",
+    span: "lg:col-span-6",
     aspect: "aspect-[4/3]",
   },
   {
     image: propertyImages.aerialDallas,
     location: "Dallas, Texas",
     caption: "Established residential neighborhood in Dallas, Texas",
-    span: "lg:col-span-5",
+    span: "lg:col-span-6",
     aspect: "aspect-[4/3]",
   },
   {
