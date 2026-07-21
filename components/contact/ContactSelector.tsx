@@ -1,31 +1,36 @@
 "use client";
 
 /**
- * Real estate related topics on this page ("Selling a Property" and
- * "Capital Partnership") submit directly to the site's own API routes,
- * which validate the submission, upload any attached files to private
- * storage, and email a notification to michael@michaelaylett.com via
- * Resend. See /api/forms/contact and /api/forms/capital-partner, and
- * lib/forms/ for the shared implementation.
+ * All three topics on this page submit directly to the site's own API
+ * routes, which validate the submission, upload any attached files to
+ * private storage, and email a notification to michael@michaelaylett.com
+ * via Resend. See /api/forms/contact, /api/forms/capital-partner, and
+ * /api/forms/rv-park, and lib/forms/ for the shared implementation.
  *
- * The "Amazon Consulting" topic is for the separate EcomRanx business, not
- * real estate, and intentionally still uses a mailto: link. It is out of
- * scope for the real estate lead-handling backend built out here.
+ * The "RV Park" tab renders the same RVParkForm component used on the
+ * dedicated /rv-parks page (rendered with `standalone={false}` here so it
+ * fits this page's own section/heading instead of bringing its own), so
+ * the form's fields, validation, and submission logic only live in one
+ * place. See components/rv-parks/RVParkForm.tsx.
+ *
+ * There is no Amazon Consulting / EcomRanx option on this page. EcomRanx
+ * has its own dedicated page at /ecomranx and its own links to
+ * ecomranx.com elsewhere on the site; it is a separate, non-real-estate
+ * business and intentionally out of scope for this contact form.
  */
 
 import { useState } from "react";
 import { useFormSubmission } from "@/lib/forms/useFormSubmission";
 import FormHoneypot from "@/components/shared/FormHoneypot";
 import FormStatusMessages from "@/components/shared/FormStatusMessages";
+import RVParkForm from "@/components/rv-parks/RVParkForm";
 
-const ECOMRANX_EMAIL = "michael@ecomranx.com";
-
-type Topic = "sell" | "capital" | "ecomranx";
+type Topic = "sell" | "capital" | "rvpark";
 
 const TOPICS: { id: Topic; label: string }[] = [
   { id: "sell", label: "Selling a Property" },
   { id: "capital", label: "Capital Partnership" },
-  { id: "ecomranx", label: "Amazon Consulting" },
+  { id: "rvpark", label: "RV Park" },
 ];
 
 /* ---------------------------------------------------------------------- */
@@ -121,66 +126,6 @@ function SellForm() {
       >
         {isSubmitting ? "Sending..." : "Send Message"}
       </button>
-    </form>
-  );
-}
-
-/* ---------------------------------------------------------------------- */
-/* Amazon Consulting (out of scope: unchanged mailto behavior)            */
-/* ---------------------------------------------------------------------- */
-
-const ECOMRANX_FIELDS: Field[] = [
-  { id: "name", label: "Name", type: "text" },
-  { id: "email", label: "Email", type: "email" },
-  { id: "company", label: "Company / Brand Name", type: "text" },
-  { id: "store", label: "Amazon Store or Website", type: "text" },
-  { id: "message", label: "Tell me about your account", type: "textarea", span: "full" },
-];
-
-function EcomranxForm() {
-  const [values, setValues] = useState<Record<string, string>>({});
-  const set = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
-
-  const body = ECOMRANX_FIELDS.map(
-    (f) => `${f.label}: ${values[f.id] || "Not provided"}`
-  ).join("\n");
-  const mailtoHref = `mailto:${ECOMRANX_EMAIL}?subject=${encodeURIComponent(
-    "Amazon Consulting Inquiry"
-  )}&body=${encodeURIComponent(body)}`;
-
-  return (
-    <form className="grid sm:grid-cols-2 gap-6 max-w-3xl" onSubmit={(e) => e.preventDefault()}>
-      {ECOMRANX_FIELDS.map((f) => (
-        <div key={f.id} className={f.span === "full" ? "sm:col-span-2" : ""}>
-          <label htmlFor={f.id} className="eyebrow text-ink/50 block mb-2">
-            {f.label}
-          </label>
-          {f.type === "textarea" ? (
-            <textarea
-              id={f.id}
-              rows={4}
-              value={values[f.id] || ""}
-              onChange={(e) => set(f.id, e.target.value)}
-              className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink placeholder:text-ink/30 focus:border-brass outline-none resize-none"
-            />
-          ) : (
-            <input
-              id={f.id}
-              type={f.type}
-              value={values[f.id] || ""}
-              onChange={(e) => set(f.id, e.target.value)}
-              className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink placeholder:text-ink/30 focus:border-brass outline-none"
-            />
-          )}
-        </div>
-      ))}
-
-      <a
-        href={mailtoHref}
-        className="sm:col-span-2 mt-2 inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors"
-      >
-        Send Message
-      </a>
     </form>
   );
 }
@@ -543,8 +488,8 @@ export default function ContactSelector() {
 
         {topic === "capital" ? (
           <CapitalPartnerForm key="capital" />
-        ) : topic === "ecomranx" ? (
-          <EcomranxForm key="ecomranx" />
+        ) : topic === "rvpark" ? (
+          <RVParkForm key="rvpark" standalone={false} />
         ) : (
           <SellForm key="sell" />
         )}
