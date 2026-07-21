@@ -1,37 +1,24 @@
 "use client";
 
 /**
- * DEVELOPER CONFIGURATION NOTE
- * -----------------------------------------------------------------------
- * The "Selling a Property" and "Amazon Consulting" forms below submit via
- * a mailto: link, which works without a backend but cannot carry file
- * attachments and depends on the visitor's device having a mail client
- * configured.
+ * Real estate related topics on this page ("Selling a Property" and
+ * "Capital Partnership") submit directly to the site's own API routes,
+ * which validate the submission, upload any attached files to private
+ * storage, and email a notification to michael@michaelaylett.com via
+ * Resend. See /api/forms/contact and /api/forms/capital-partner, and
+ * lib/forms/ for the shared implementation.
  *
- * The "Capital Partnership" form includes a required Proof of Funds file
- * upload. Browsers cannot attach files to a mailto: link, so file uploads
- * are NOT currently wired to a working backend. Before launch, connect
- * the Proof of Funds field (and ideally the rest of this form) to a real
- * form-handling service that supports secure file uploads, for example:
- *
- *   - Jotform (an existing Jotform for this exact questionnaire already
- *     lives at https://form.jotform.com/252527587810160 and is linked
- *     below as a working fallback in the meantime)
- *   - Formspree (with file upload support enabled on a paid plan)
- *   - Basin or Uploadcare, paired with a serverless function
- *
- * Whichever service you choose, set its endpoint / API key as an
- * environment variable (e.g. NEXT_PUBLIC_CAPITAL_FORM_ENDPOINT) and
- * replace the handleCapitalSubmit function below with a fetch() call to
- * that endpoint. Never commit uploaded financial documents, API keys, or
- * form submissions to this repository.
- * -----------------------------------------------------------------------
+ * The "Amazon Consulting" topic is for the separate EcomRanx business, not
+ * real estate, and intentionally still uses a mailto: link. It is out of
+ * scope for the real estate lead-handling backend built out here.
  */
 
 import { useState } from "react";
+import { useFormSubmission } from "@/lib/forms/useFormSubmission";
+import FormHoneypot from "@/components/shared/FormHoneypot";
+import FormStatusMessages from "@/components/shared/FormStatusMessages";
 
-const EMAIL = "michael@ecomranx.com"; // TODO: replace with real contact email
-const CAPITAL_JOTFORM = "https://form.jotform.com/252527587810160";
+const ECOMRANX_EMAIL = "michael@ecomranx.com";
 
 type Topic = "sell" | "capital" | "ecomranx";
 
@@ -42,7 +29,7 @@ const TOPICS: { id: Topic; label: string }[] = [
 ];
 
 /* ---------------------------------------------------------------------- */
-/* Simple field sets: Selling a Property / Amazon Consulting              */
+/* Selling a Property (real submission)                                   */
 /* ---------------------------------------------------------------------- */
 
 type Field = {
@@ -50,52 +37,120 @@ type Field = {
   label: string;
   type: "text" | "email" | "tel" | "date" | "textarea";
   span?: "full";
+  required?: boolean;
 };
 
-const FIELD_SETS: Record<"sell" | "ecomranx", Field[]> = {
-  sell: [
-    { id: "name", label: "Name", type: "text" },
-    { id: "email", label: "Email", type: "email" },
-    { id: "phone", label: "Phone", type: "tel" },
-    { id: "address", label: "Property Address", type: "text", span: "full" },
-    { id: "value", label: "Estimated Property Value", type: "text" },
-    { id: "balance", label: "Mortgage Balance", type: "text" },
-    { id: "payment", label: "Monthly Mortgage Payment", type: "text" },
-    { id: "rate", label: "Interest Rate", type: "text" },
-    { id: "cashNeeded", label: "Cash Needed at Closing", type: "text" },
-    { id: "closingDate", label: "Desired Closing Date", type: "date" },
-    { id: "situation", label: "Tell me about your situation", type: "textarea", span: "full" },
-  ],
-  ecomranx: [
-    { id: "name", label: "Name", type: "text" },
-    { id: "email", label: "Email", type: "email" },
-    { id: "company", label: "Company / Brand Name", type: "text" },
-    { id: "store", label: "Amazon Store or Website", type: "text" },
-    { id: "message", label: "Tell me about your account", type: "textarea", span: "full" },
-  ],
-};
+const SELL_FIELDS: Field[] = [
+  { id: "name", label: "Name", type: "text", required: true },
+  { id: "email", label: "Email", type: "email", required: true },
+  { id: "phone", label: "Phone", type: "tel", required: true },
+  { id: "address", label: "Property Address", type: "text", span: "full" },
+  { id: "value", label: "Estimated Property Value", type: "text" },
+  { id: "balance", label: "Mortgage Balance", type: "text" },
+  { id: "payment", label: "Monthly Mortgage Payment", type: "text" },
+  { id: "rate", label: "Interest Rate", type: "text" },
+  { id: "cashNeeded", label: "Cash Needed at Closing", type: "text" },
+  { id: "closingDate", label: "Desired Closing Date", type: "date" },
+  { id: "situation", label: "Tell me about your situation", type: "textarea", span: "full" },
+];
 
-const SUBJECTS: Record<"sell" | "ecomranx", string> = {
-  sell: "Property Inquiry",
-  ecomranx: "Amazon Consulting Inquiry",
-};
+function SellForm() {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const { isSubmitting, isSuccess, isError, errorMessage, fieldErrors, submit } =
+    useFormSubmission("/api/forms/contact");
 
-function SimpleForm({ topic }: { topic: "sell" | "ecomranx" }) {
+  const set = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const formData = new FormData();
+    for (const f of SELL_FIELDS) {
+      formData.set(f.id, values[f.id] || "");
+    }
+    const result = await submit(formData);
+    if (result.success) setValues({});
+  };
+
+  return (
+    <form className="grid sm:grid-cols-2 gap-6 max-w-3xl" onSubmit={handleSubmit} noValidate>
+      <FormHoneypot />
+
+      {SELL_FIELDS.map((f) => (
+        <div key={f.id} className={f.span === "full" ? "sm:col-span-2" : ""}>
+          <label htmlFor={f.id} className="eyebrow text-ink/50 block mb-2">
+            {f.label}
+            {f.required && <span className="text-brass"> *</span>}
+          </label>
+          {f.type === "textarea" ? (
+            <textarea
+              id={f.id}
+              name={f.id}
+              rows={4}
+              value={values[f.id] || ""}
+              onChange={(e) => set(f.id, e.target.value)}
+              className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink placeholder:text-ink/30 focus:border-brass outline-none resize-none"
+            />
+          ) : (
+            <input
+              id={f.id}
+              name={f.id}
+              type={f.type}
+              value={values[f.id] || ""}
+              onChange={(e) => set(f.id, e.target.value)}
+              aria-invalid={Boolean(fieldErrors[f.id])}
+              className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink placeholder:text-ink/30 focus:border-brass outline-none"
+            />
+          )}
+          {fieldErrors[f.id] && (
+            <p className="mt-1.5 text-sm text-red-700">{fieldErrors[f.id]}</p>
+          )}
+        </div>
+      ))}
+
+      <FormStatusMessages
+        isSuccess={isSuccess}
+        isError={isError}
+        errorMessage={errorMessage}
+        successBody="I've received your message and will follow up personally soon."
+      />
+
+      <button
+        type="submit"
+        disabled={isSubmitting}
+        className="sm:col-span-2 mt-2 inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        {isSubmitting ? "Sending..." : "Send Message"}
+      </button>
+    </form>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Amazon Consulting (out of scope: unchanged mailto behavior)            */
+/* ---------------------------------------------------------------------- */
+
+const ECOMRANX_FIELDS: Field[] = [
+  { id: "name", label: "Name", type: "text" },
+  { id: "email", label: "Email", type: "email" },
+  { id: "company", label: "Company / Brand Name", type: "text" },
+  { id: "store", label: "Amazon Store or Website", type: "text" },
+  { id: "message", label: "Tell me about your account", type: "textarea", span: "full" },
+];
+
+function EcomranxForm() {
   const [values, setValues] = useState<Record<string, string>>({});
   const set = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
 
-  const fields = FIELD_SETS[topic];
-  const body = fields.map((f) => `${f.label}: ${values[f.id] || "Not provided"}`).join("\n");
-  const mailtoHref = `mailto:${EMAIL}?subject=${encodeURIComponent(
-    SUBJECTS[topic]
+  const body = ECOMRANX_FIELDS.map(
+    (f) => `${f.label}: ${values[f.id] || "Not provided"}`
+  ).join("\n");
+  const mailtoHref = `mailto:${ECOMRANX_EMAIL}?subject=${encodeURIComponent(
+    "Amazon Consulting Inquiry"
   )}&body=${encodeURIComponent(body)}`;
 
   return (
-    <form
-      className="grid sm:grid-cols-2 gap-6 max-w-3xl"
-      onSubmit={(e) => e.preventDefault()}
-    >
-      {fields.map((f) => (
+    <form className="grid sm:grid-cols-2 gap-6 max-w-3xl" onSubmit={(e) => e.preventDefault()}>
+      {ECOMRANX_FIELDS.map((f) => (
         <div key={f.id} className={f.span === "full" ? "sm:col-span-2" : ""}>
           <label htmlFor={f.id} className="eyebrow text-ink/50 block mb-2">
             {f.label}
@@ -131,7 +186,7 @@ function SimpleForm({ topic }: { topic: "sell" | "ecomranx" }) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Capital Partner questionnaire                                         */
+/* Capital Partner questionnaire (real submission, with file uploads)     */
 /* ---------------------------------------------------------------------- */
 
 const READY_OPTIONS = [
@@ -180,40 +235,53 @@ function CapitalPartnerForm() {
   const [acknowledged, setAcknowledged] = useState(false);
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
+  const { isSubmitting, isSuccess, isError, errorMessage, fieldErrors, submit } =
+    useFormSubmission("/api/forms/capital-partner");
+
   const fileNames = files ? Array.from(files).map((f) => f.name) : [];
 
-  const canSubmit =
+  const clientCanSubmit =
     firstName && lastName && email && phone && files && files.length > 0 && acknowledged;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAttemptedSubmit(true);
-    if (!canSubmit) return;
+    if (!clientCanSubmit) return;
 
-    // NOTE: mailto cannot carry file attachments. This is a temporary
-    // fallback until a real upload-capable endpoint is connected (see the
-    // developer note at the top of this file).
-    const body = [
-      `First Name: ${firstName}`,
-      `Last Name: ${lastName}`,
-      `Email: ${email}`,
-      `Phone: ${phone}`,
-      `Ready to invest: ${readyToInvest || "Not provided"}`,
-      `Investment range: ${investmentRange || "Not provided"}`,
-      `How they heard about Michael: ${howHeard || "Not provided"}`,
-      `Questions or comments: ${comments || "Not provided"}`,
-      `Proof of funds files selected (not attached, see note): ${
-        fileNames.length ? fileNames.join(", ") : "None"
-      }`,
-    ].join("\n");
+    const formData = new FormData();
+    formData.set("firstName", firstName);
+    formData.set("lastName", lastName);
+    formData.set("email", email);
+    formData.set("phone", phone);
+    formData.set("readyToInvest", readyToInvest);
+    formData.set("investmentRange", investmentRange);
+    formData.set("howHeard", howHeard);
+    formData.set("comments", comments);
+    formData.set("acknowledged", acknowledged ? "true" : "false");
+    if (files) {
+      Array.from(files).forEach((file) => formData.append("proofOfFunds", file));
+    }
 
-    window.location.href = `mailto:${EMAIL}?subject=${encodeURIComponent(
-      "Capital Partnership Inquiry"
-    )}&body=${encodeURIComponent(body)}`;
+    const result = await submit(formData);
+    if (result.success) {
+      setFirstName("");
+      setLastName("");
+      setEmail("");
+      setPhone("");
+      setReadyToInvest("");
+      setInvestmentRange("");
+      setHowHeard("");
+      setComments("");
+      setFiles(null);
+      setAcknowledged(false);
+      setAttemptedSubmit(false);
+    }
   };
 
   return (
-    <form className="max-w-3xl space-y-8" onSubmit={handleSubmit}>
+    <form className="max-w-3xl space-y-8" onSubmit={handleSubmit} noValidate>
+      <FormHoneypot />
+
       <div className="grid sm:grid-cols-2 gap-6">
         <div>
           <label htmlFor="firstName" className="eyebrow text-ink/50 block mb-2">
@@ -221,12 +289,17 @@ function CapitalPartnerForm() {
           </label>
           <input
             id="firstName"
+            name="firstName"
             type="text"
             required
             value={firstName}
             onChange={(e) => setFirstName(e.target.value)}
+            aria-invalid={Boolean(fieldErrors.firstName)}
             className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink outline-none focus:border-brass"
           />
+          {fieldErrors.firstName && (
+            <p className="mt-1.5 text-sm text-red-700">{fieldErrors.firstName}</p>
+          )}
         </div>
         <div>
           <label htmlFor="lastName" className="eyebrow text-ink/50 block mb-2">
@@ -234,12 +307,17 @@ function CapitalPartnerForm() {
           </label>
           <input
             id="lastName"
+            name="lastName"
             type="text"
             required
             value={lastName}
             onChange={(e) => setLastName(e.target.value)}
+            aria-invalid={Boolean(fieldErrors.lastName)}
             className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink outline-none focus:border-brass"
           />
+          {fieldErrors.lastName && (
+            <p className="mt-1.5 text-sm text-red-700">{fieldErrors.lastName}</p>
+          )}
         </div>
         <div>
           <label htmlFor="email" className="eyebrow text-ink/50 block mb-2">
@@ -247,12 +325,17 @@ function CapitalPartnerForm() {
           </label>
           <input
             id="email"
+            name="email"
             type="email"
             required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            aria-invalid={Boolean(fieldErrors.email)}
             className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink outline-none focus:border-brass"
           />
+          {fieldErrors.email && (
+            <p className="mt-1.5 text-sm text-red-700">{fieldErrors.email}</p>
+          )}
         </div>
         <div>
           <label htmlFor="phone" className="eyebrow text-ink/50 block mb-2">
@@ -260,12 +343,17 @@ function CapitalPartnerForm() {
           </label>
           <input
             id="phone"
+            name="phone"
             type="tel"
             required
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
+            aria-invalid={Boolean(fieldErrors.phone)}
             className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink outline-none focus:border-brass"
           />
+          {fieldErrors.phone && (
+            <p className="mt-1.5 text-sm text-red-700">{fieldErrors.phone}</p>
+          )}
         </div>
 
         <div className="sm:col-span-2">
@@ -348,10 +436,11 @@ function CapitalPartnerForm() {
           Please upload a recent bank statement, brokerage statement,
           lender letter, or other documentation showing available funds.
           You may redact account numbers and other sensitive identifying
-          information.
+          information. PDF or image files up to 8MB each.
         </p>
         <input
           id="proofOfFunds"
+          name="proofOfFunds"
           type="file"
           required
           multiple
@@ -366,23 +455,15 @@ function CapitalPartnerForm() {
             ))}
           </ul>
         )}
+        {fieldErrors.proofOfFunds && (
+          <p className="mt-2 text-sm text-red-700">{fieldErrors.proofOfFunds}</p>
+        )}
 
-        <div className="mt-5 border-t border-line-dark pt-4 text-xs text-ink/50 leading-relaxed">
-          Online upload for this field is being connected to a secure
-          document service. Until that&apos;s live, files selected here are
-          listed in your submission but are not actually transmitted. To
-          make sure your documents reach us securely right now, please use
-          our{" "}
-          <a
-            href={CAPITAL_JOTFORM}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline hover:text-brass"
-          >
-            secure capital partner application
-          </a>
-          , which supports file uploads today.
-        </div>
+        <p className="mt-5 border-t border-line-dark pt-4 text-xs text-ink/50 leading-relaxed">
+          Documents are uploaded to secure, private storage and are never
+          publicly accessible. Only a private link, sent to Michael in the
+          notification email, can open them.
+        </p>
 
         <p className="mt-4 text-ink/60 text-sm leading-relaxed">
           Information and documents submitted through this form will be
@@ -405,19 +486,30 @@ function CapitalPartnerForm() {
           any transaction.
         </span>
       </label>
+      {fieldErrors.acknowledged && (
+        <p className="text-sm text-red-700">{fieldErrors.acknowledged}</p>
+      )}
 
-      {attemptedSubmit && !canSubmit && (
+      {attemptedSubmit && !clientCanSubmit && (
         <p className="text-sm text-red-700">
           Please complete all required fields, attach at least one Proof of
           Funds file, and check the acknowledgment box before submitting.
         </p>
       )}
 
+      <FormStatusMessages
+        isSuccess={isSuccess}
+        isError={isError}
+        errorMessage={errorMessage}
+        successBody="I've received your information and documents securely, and will follow up personally soon."
+      />
+
       <button
         type="submit"
-        className="inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors disabled:opacity-50"
+        disabled={isSubmitting}
+        className="inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       >
-        Submit Capital Partner Information
+        {isSubmitting ? "Submitting..." : "Submit Capital Partner Information"}
       </button>
     </form>
   );
@@ -451,8 +543,10 @@ export default function ContactSelector() {
 
         {topic === "capital" ? (
           <CapitalPartnerForm key="capital" />
+        ) : topic === "ecomranx" ? (
+          <EcomranxForm key="ecomranx" />
         ) : (
-          <SimpleForm key={topic} topic={topic} />
+          <SellForm key="sell" />
         )}
       </div>
     </section>

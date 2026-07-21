@@ -1,41 +1,22 @@
 "use client";
 
-/**
- * DEVELOPER CONFIGURATION NOTE
- * -----------------------------------------------------------------------
- * This form submits via a mailto: link, which works without a backend but
- * cannot carry file attachments. The "Financials or Property Documents"
- * upload field below is NOT currently wired to a working backend for that
- * reason.
- *
- * Before launch, connect this field (and ideally the rest of the form) to
- * a real form-handling service that supports secure file uploads, for
- * example Jotform, Formspree with file uploads enabled, Basin, or
- * Uploadcare paired with a serverless function. Set the service's
- * endpoint or API key as an environment variable (for example
- * NEXT_PUBLIC_RV_PARK_FORM_ENDPOINT) and replace the handleSubmit
- * function below with a fetch() call to that endpoint.
- *
- * Never commit uploaded financial documents, API keys, or real form
- * submissions to this repository.
- * -----------------------------------------------------------------------
- */
-
 import { useState } from "react";
-
-const EMAIL = "michael@ecomranx.com"; // TODO: replace with real contact email
+import { useFormSubmission } from "@/lib/forms/useFormSubmission";
+import FormHoneypot from "@/components/shared/FormHoneypot";
+import FormStatusMessages from "@/components/shared/FormStatusMessages";
 
 type Field = {
   id: string;
   label: string;
   type: "text" | "email" | "tel" | "url";
   span?: "full";
+  required?: boolean;
 };
 
 const FIELDS: Field[] = [
-  { id: "name", label: "Name", type: "text" },
-  { id: "email", label: "Email", type: "email" },
-  { id: "phone", label: "Phone", type: "tel" },
+  { id: "name", label: "Name", type: "text", required: true },
+  { id: "email", label: "Email", type: "email", required: true },
+  { id: "phone", label: "Phone", type: "tel", required: true },
   { id: "propertyName", label: "Property Name", type: "text" },
   { id: "propertyAddress", label: "Property Address", type: "text", span: "full" },
   { id: "askingPrice", label: "Asking Price", type: "text" },
@@ -58,24 +39,31 @@ export default function RVParkForm() {
   const [sellerFinancing, setSellerFinancing] = useState("");
   const [comments, setComments] = useState("");
   const [files, setFiles] = useState<FileList | null>(null);
+  const { isSubmitting, isSuccess, isError, errorMessage, fieldErrors, submit } =
+    useFormSubmission("/api/forms/rv-park");
 
   const set = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
   const fileNames = files ? Array.from(files).map((f) => f.name) : [];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const body = [
-      ...FIELDS.map((f) => `${f.label}: ${values[f.id] || "Not provided"}`),
-      `Seller financing available: ${sellerFinancing || "Not provided"}`,
-      `Additional comments: ${comments || "Not provided"}`,
-      `Documents selected (not attached, see note above the upload field): ${
-        fileNames.length ? fileNames.join(", ") : "None"
-      }`,
-    ].join("\n");
+    const formData = new FormData();
+    for (const f of FIELDS) {
+      formData.set(f.id, values[f.id] || "");
+    }
+    formData.set("sellerFinancing", sellerFinancing);
+    formData.set("comments", comments);
+    if (files) {
+      Array.from(files).forEach((file) => formData.append("rvDocs", file));
+    }
 
-    window.location.href = `mailto:${EMAIL}?subject=${encodeURIComponent(
-      `RV Park Submission: ${values.propertyName || "New Submission"}`
-    )}&body=${encodeURIComponent(body)}`;
+    const result = await submit(formData);
+    if (result.success) {
+      setValues({});
+      setSellerFinancing("");
+      setComments("");
+      setFiles(null);
+    }
   };
 
   return (
@@ -92,19 +80,27 @@ export default function RVParkForm() {
           </p>
         </div>
 
-        <form className="grid sm:grid-cols-2 gap-6 max-w-3xl" onSubmit={handleSubmit}>
+        <form className="grid sm:grid-cols-2 gap-6 max-w-3xl" onSubmit={handleSubmit} noValidate>
+          <FormHoneypot />
+
           {FIELDS.map((f) => (
             <div key={f.id} className={f.span === "full" ? "sm:col-span-2" : ""}>
               <label htmlFor={f.id} className="eyebrow text-ink/50 block mb-2">
                 {f.label}
+                {f.required && <span className="text-brass"> *</span>}
               </label>
               <input
                 id={f.id}
+                name={f.id}
                 type={f.type}
                 value={values[f.id] || ""}
                 onChange={(e) => set(f.id, e.target.value)}
+                aria-invalid={Boolean(fieldErrors[f.id])}
                 className="w-full bg-transparent border border-line-dark px-4 py-3 text-ink outline-none focus:border-brass"
               />
+              {fieldErrors[f.id] && (
+                <p className="mt-1.5 text-sm text-red-700">{fieldErrors[f.id]}</p>
+              )}
             </div>
           ))}
 
@@ -146,13 +142,15 @@ export default function RVParkForm() {
             </label>
             <p className="text-ink/60 text-sm leading-relaxed mb-4">
               Rent rolls, profit and loss statements, a site plan, or an
-              offering memorandum, if available.
+              offering memorandum, if available. PDF, image, spreadsheet, or
+              Word files up to 8MB each.
             </p>
             <input
               id="rvDocs"
+              name="rvDocs"
               type="file"
               multiple
-              accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv"
+              accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv,.doc,.docx"
               onChange={(e) => setFiles(e.target.files)}
               className="w-full text-sm text-ink/80 file:mr-4 file:py-2.5 file:px-5 file:border file:border-line-dark file:bg-paper-2 file:text-ink file:eyebrow hover:file:border-brass file:cursor-pointer"
             />
@@ -163,20 +161,29 @@ export default function RVParkForm() {
                 ))}
               </ul>
             )}
+            {fieldErrors.rvDocs && (
+              <p className="mt-2 text-sm text-red-700">{fieldErrors.rvDocs}</p>
+            )}
             <p className="mt-5 border-t border-line-dark pt-4 text-xs text-ink/50 leading-relaxed">
-              Online upload for this field is not yet connected to a secure
-              document service. Files selected here are listed in your
-              submission but are not actually transmitted. If you would
-              rather send documents directly, email them to {EMAIL} after
-              submitting this form.
+              Documents are uploaded to secure, private storage and are never
+              publicly accessible. Only a private link, sent to Michael in the
+              notification email, can open them.
             </p>
           </div>
 
+          <FormStatusMessages
+            isSuccess={isSuccess}
+            isError={isError}
+            errorMessage={errorMessage}
+            successBody="I've received the property details and any documents you attached, and will follow up soon."
+          />
+
           <button
             type="submit"
-            className="sm:col-span-2 mt-2 inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors"
+            disabled={isSubmitting}
+            className="sm:col-span-2 mt-2 inline-flex w-full sm:w-fit justify-center items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Submit RV Park
+            {isSubmitting ? "Submitting..." : "Submit RV Park"}
           </button>
         </form>
       </div>

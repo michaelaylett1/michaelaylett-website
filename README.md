@@ -33,8 +33,10 @@ Aylett: professional real estate investor and founder of EcomRanx.
 - **`/contact`**: a topic selector (Selling a Property, Capital
   Partnership, or Amazon Consulting) that swaps in the right form. The
   Capital Partnership option shows a full questionnaire, including a
-  required Proof of Funds upload; see "File uploads and form services"
-  below before launch.
+  required Proof of Funds upload. Selling a Property and Capital
+  Partnership submit for real (see "Email notifications and file uploads"
+  below); Amazon Consulting is a separate, non-real-estate business and
+  intentionally still uses a `mailto:` link.
 
 ## Getting started
 
@@ -47,9 +49,15 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Before you launch
 
-1. **Email**: replace the placeholder email (`michael@ecomranx.com`) in
-   `components/sellers/SellerForm.tsx`, `components/contact/ContactSelector.tsx`,
-   and `components/rv-parks/RVParkForm.tsx` with your real inbox.
+1. **Environment variables**: the four real estate forms (Seller,
+   Capital Partner, RV Park, and the general Contact page) need
+   `RESEND_API_KEY` set before they can send email, and the Capital
+   Partner and RV Park forms need a private Blob store connected before
+   file uploads work. See "Email notifications and file uploads" below.
+   The Amazon Consulting tab on `/contact` still uses a plain `mailto:`
+   link to `michael@ecomranx.com`, since it belongs to the separate
+   EcomRanx business rather than the real estate lead pipeline; update
+   that address in `components/contact/ContactSelector.tsx` if needed.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -114,34 +122,141 @@ aspect ratio, or explicit `width`/`height`) so the layout doesn't shift
 while it loads. Non-hero images should use `loading="lazy"`; only the
 single image above the fold on a page should use `priority`.
 
-## File uploads and form services
+## Email notifications and file uploads
 
-Three forms on this site submit via `mailto:` links, which work without a
-backend but cannot carry file attachments:
+Four real estate forms submit directly to this site's own API routes,
+which validate the submission server-side, upload any attached files to
+private storage, and send a notification email via
+[Resend](https://resend.com) to **michael@michaelaylett.com**:
 
-- Selling a Property and Amazon Consulting (`components/contact/ContactSelector.tsx`)
-- Capital Partnership (`components/contact/ContactSelector.tsx`), which
-  includes a required Proof of Funds upload
-- RV Park submission (`components/rv-parks/RVParkForm.tsx`), which
-  includes an optional upload for financials and property documents
+| Form | Page | Route | Email subject |
+| --- | --- | --- | --- |
+| Seller Property Inquiry | `/sellers` | `app/api/forms/seller/route.ts` | New Seller Property Inquiry |
+| General Contact (Selling a Property tab) | `/contact` | `app/api/forms/contact/route.ts` | New Website Contact |
+| Capital Partner | `/contact` (Capital Partnership tab) | `app/api/forms/capital-partner/route.ts` | New Capital Partner Submission |
+| RV Park Submission | `/rv-parks` | `app/api/forms/rv-park/route.ts` | New RV Park Opportunity |
 
-**File uploads are not yet wired to a working backend** on either form.
-A full developer note is included as a comment at the top of each file.
-In short, before launch you should either:
+The Amazon Consulting tab on `/contact` is intentionally excluded: it
+belongs to the separate EcomRanx business, not real estate, and still
+uses a simple `mailto:` link. No EcomRanx-specific contact form or
+backend was added.
 
-- Connect the relevant upload field to a real form-handling service that
-  supports secure file uploads, for example Jotform, Formspree with file
-  uploads enabled, Basin, or Uploadcare paired with a serverless
-  function, or
-- For the Capital Partnership form specifically, keep directing partners
-  to the existing secure Jotform at `https://form.jotform.com/252527587810160`,
-  which the on-site form already links to as a working fallback for file
-  submission. No equivalent fallback link exists yet for the RV Park
-  form; connect a real service before relying on that upload field.
+Shared logic lives in `lib/forms/`:
 
-Never commit uploaded financial documents, API keys, or real form
-submissions to this repository. Do not expose Proof of Funds or RV park
-financial documents publicly.
+- `validate.ts`: trims/length-caps every field, escapes HTML before it
+  goes into the email body, and validates name/email/phone.
+- `spam.ts` + `guard.ts`: a hidden honeypot field, a minimum-time check
+  (rejects submissions completed in under 1.5 seconds), and a best-effort
+  per-instance rate limit (5 submissions/minute per IP).
+- `email.ts`: builds and sends the notification email with Resend.
+- `storage.ts`: uploads files to a private Vercel Blob store and creates
+  time-limited signed links for the email (see below).
+
+### 1. Create a Resend account
+
+1. Sign up at [resend.com](https://resend.com).
+2. In the dashboard, go to **API Keys** and create a new key.
+3. Copy it; you'll need it for `RESEND_API_KEY` below.
+
+### 2. Verify the sending domain
+
+Resend's shared sandbox sender (`onboarding@resend.dev`) only delivers to
+the email address on your own Resend account, which is fine for an
+initial smoke test but not for real visitor submissions. Before relying
+on this in production:
+
+1. In the Resend dashboard, go to **Domains** and add `michaelaylett.com`
+   (or a subdomain you're comfortable sending from, e.g. `mail.michaelaylett.com`).
+2. Add the DNS records Resend shows you (SPF, DKIM, and DMARC) at your
+   domain registrar or DNS host.
+3. Wait for Resend to show the domain as **Verified** (usually minutes to
+   a few hours, depending on DNS propagation).
+4. Set `RESEND_FROM_EMAIL` (see below) to an address on that domain, for
+   example `Michael Aylett Website <notifications@michaelaylett.com>`.
+
+**Sender address currently used by this project**: `RESEND_FROM_EMAIL` if
+set, otherwise the Resend sandbox address
+`Michael Aylett Website <onboarding@resend.dev>` (see
+`lib/forms/email.ts`). All notification emails always go **to**
+`michael@michaelaylett.com`, which is hardcoded as a constant rather than
+an environment variable so it can't be silently redirected by a
+misconfigured setting.
+
+### 3. Create the RESEND_API_KEY environment variable in Vercel
+
+1. Open your project on [vercel.com](https://vercel.com).
+2. Go to **Settings > Environment Variables**.
+3. Add `RESEND_API_KEY` with the value from step 1, for the
+   **Production** (and, if you want to test on preview deployments,
+   **Preview**) environment.
+4. Optionally add `RESEND_FROM_EMAIL` the same way once your domain is
+   verified.
+5. Redeploy so the new variables take effect.
+
+For local development, copy `.env.example` to `.env.local` and fill in
+the same values; `.env.local` is already gitignored and never committed.
+
+### 4. Environment variables needed for file storage
+
+The Capital Partner (required) and RV Park (optional) forms upload files.
+They're stored in a **private** Vercel Blob store, never in this
+repository or the public `public/` directory, so uploaded financial
+documents can't end up on GitHub or be served as static site assets:
+
+1. In the Vercel project, go to **Storage > Create Database > Blob**.
+2. Set access to **Private** when creating the store.
+3. Connect the store to this project (Vercel then provides the
+   credentials the `@vercel/blob` SDK needs automatically in
+   production, no manual token copy required).
+4. For local development, run `vercel env pull .env.local` after
+   connecting the store so the required token is available locally too.
+
+Because the store is private, uploaded files are never reachable by a
+guessable public URL. The notification email instead includes a signed,
+time-limited link (valid 7 days, the maximum Vercel allows) generated
+with Vercel's signed-URL API. Only someone with that exact link, within
+the validity window, can open the file. Each file is capped at 8MB and a
+submission may include up to 5 files; adjust `MAX_FILE_SIZE_BYTES` and
+`MAX_FILES_PER_SUBMISSION` in `lib/forms/storage.ts` if you need
+different limits (Vercel serverless functions have their own request
+size limits too, so very large files may need a different upload
+strategy).
+
+### 5. How to test each form
+
+With `RESEND_API_KEY` (and, for file uploads, a connected Blob store) set
+in `.env.local`:
+
+```bash
+npm install
+npm run dev
+```
+
+Then, with the dev server running at `http://localhost:3000`:
+
+- **Seller**: visit `/sellers`, fill in the intake form at the bottom,
+  and submit. Check michael@michaelaylett.com for a "New Seller Property
+  Inquiry" email.
+- **General contact**: visit `/contact`, stay on the default "Selling a
+  Property" tab, fill it in, and submit. Check for "New Website Contact".
+- **Capital partner**: visit `/contact`, switch to "Capital Partnership",
+  fill in the required fields, attach at least one file, check the
+  acknowledgment box, and submit. Check for "New Capital Partner
+  Submission" with a working file link.
+- **RV park**: visit `/rv-parks`, fill in the submission form (a file
+  upload is optional here), and submit. Check for "New RV Park
+  Opportunity".
+
+For each form, also verify: leaving a required field blank shows an
+inline validation message instead of submitting; the submit button
+disables and shows a "Sending..."/"Submitting..." state while the request
+is in flight; a success message appears after a real submission without
+the page navigating or refreshing; and temporarily using an invalid
+`RESEND_API_KEY` produces a visible error message instead of a silent
+failure.
+
+Never commit uploaded financial documents, API keys, or `.env.local` to
+this repository.
 
 ## Content guardrails in place
 
@@ -177,12 +292,31 @@ financial documents publicly.
 - `lucide-react` for icons
 - Fonts via `next/font/google`: Fraunces (display), Inter (body/EcomRanx),
   IBM Plex Mono (data/labels)
+- `resend` for transactional email notifications
+- `@vercel/blob` for private, time-limited-link file storage
 
 ## Deploying
 
-The project deploys as-is to Vercel. No environment variables are
-required for the site to build and run, though you'll want to add one
-once you connect a real form-handling service for file uploads (see
-above). To push to your existing GitHub repo: unzip this project over (or
-into) your repo, commit, and push. Vercel will pick up the changes
-automatically on the next deploy.
+The project deploys to Vercel. Before (or right after) your first
+production deploy, set the environment variables described in "Email
+notifications and file uploads" above:
+
+- `RESEND_API_KEY` (required for any form to send email)
+- `RESEND_FROM_EMAIL` (optional until your sending domain is verified)
+- A private Vercel Blob store connected to the project (required for the
+  Capital Partner and RV Park file uploads)
+
+To push to your existing GitHub repo: unzip this project over (or into)
+your repo, commit, and push. Vercel will pick up the changes
+automatically on the next deploy. `.env.local` and any real API keys are
+gitignored and should never be committed; set them as Vercel Environment
+Variables instead.
+
+### A note on Next.js version
+
+This project pins `next@14.2.35`, the latest 14.x patch release, to pick
+up published security fixes while staying on the same major version as
+the rest of the app (no breaking API changes). A newer major version
+(Next.js 16) is available upstream with additional fixes; consider
+evaluating an upgrade separately, as it is a larger change outside the
+scope of this update.
