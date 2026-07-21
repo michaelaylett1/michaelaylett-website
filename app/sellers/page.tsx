@@ -7,6 +7,7 @@ import Process from "@/components/sellers/Process";
 import FAQ from "@/components/sellers/FAQ";
 import TenantTestimonials from "@/components/sellers/TenantTestimonials";
 import SellerFinancingCalculator from "@/components/sellers/SellerFinancingCalculator";
+import SubjectToCalculator from "@/components/sellers/SubjectToCalculator";
 import SellerForm from "@/components/sellers/SellerForm";
 import ImageBanner from "@/components/shared/ImageBanner";
 import { propertyImages } from "@/lib/propertyImages";
@@ -28,6 +29,7 @@ export default function SellersPage() {
       <FAQ />
       <TenantTestimonials />
       <SellerFinancingCalculator />
+      <SubjectToCalculator />
       <ImageBanner
         image={propertyImages.hallwayNumberedDoors}
         eyebrow="Ready When You Are"
