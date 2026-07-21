@@ -4,19 +4,18 @@
  * Illustrative subject-to and seller carry calculator for the Sellers
  * page. Models a hypothetical purchase structured as:
  *
- *   - The existing mortgage is purchased subject to its current terms.
+ *   - The existing mortgage is purchased subject to its current terms;
+ *     the buyer takes responsibility for making those payments, but the
+ *     loan is not formally assumed or transferred by the lender.
  *   - Cash paid to the seller at closing is capped at the lesser of the
  *     seller's available equity or 7% of the property value.
  *   - Any equity above that cash cap becomes a seller-carried balance,
- *     financed at a hypothetical 2% annual rate over a 30-year, 360
- *     payment, principal-and-interest amortization schedule with no
- *     balloon payment.
- *
- * Like the Seller Financing Payment Calculator, the seller-carry payment
- * is built from a true month-by-month amortization schedule (interest on
- * the declining balance, not a flat estimate), so principal grows and
- * interest shrinks over the 360 payments and the schedule always lands
- * on an exact $0.00 ending balance.
+ *     repaid through PRINCIPAL-ONLY monthly payments over 30 years (360
+ *     equal payments, 0% interest, no balloon payment). There is no
+ *     interest calculation anywhere in this calculator: the seller-carry
+ *     balance is simply divided across 360 equal principal payments,
+ *     with the final payment nudged by a few cents if needed so the
+ *     schedule always lands on an exact $0.00 ending balance.
  *
  * Illustrative and educational only. Not an offer, guarantee, or
  * substitute for underwriting, title review, lender consent, or legal
@@ -27,10 +26,8 @@
 import { useMemo, useState } from "react";
 
 const MAX_CASH_RATE = 0.07; // cash at closing capped at 7% of property value
-const ANNUAL_INTEREST_RATE = 0.02; // 2% fixed annual interest on seller carry
-const AMORTIZATION_YEARS = 30;
-const NUM_PAYMENTS = AMORTIZATION_YEARS * 12; // 360 monthly payments
-const MONTHLY_RATE = ANNUAL_INTEREST_RATE / 12;
+const REPAYMENT_YEARS = 30;
+const NUM_PAYMENTS = REPAYMENT_YEARS * 12; // 360 principal-only payments
 
 const VALUE_MIN = 100000;
 const VALUE_MAX = 5000000;
@@ -70,114 +67,77 @@ function parseTypedAmount(raw: string): number {
   return n;
 }
 
-type AmortizationRow = {
+type PrincipalOnlyRow = {
   payment: number;
   beginningBalance: number;
   principal: number;
-  interest: number;
-  totalPayment: number;
   endingBalance: number;
 };
 
 type Schedule = {
   monthlyPayment: number;
-  rows: AmortizationRow[];
+  rows: PrincipalOnlyRow[];
   totalPrincipal: number;
-  totalInterest: number;
-  totalPayments: number;
 };
 
-/** True, fully amortizing month-by-month schedule: interest each month is
- * charged on the remaining unpaid balance (declining balance, not flat
- * interest), principal and interest are equal for every payment except
- * the last, and the final payment is adjusted so the schedule always
- * lands on exactly $0.00. */
-function buildAmortizationSchedule(principal: number): Schedule {
-  if (principal <= 0) {
-    return { monthlyPayment: 0, rows: [], totalPrincipal: 0, totalInterest: 0, totalPayments: 0 };
+/**
+ * Builds a principal-only repayment schedule for the seller-carried
+ * balance: 0% interest, 360 equal monthly principal payments, no
+ * interest calculated anywhere. The final payment is adjusted so the
+ * schedule always lands on exactly $0.00 rather than drifting a few
+ * cents from rounding across 360 payments.
+ */
+function buildPrincipalOnlySchedule(balance: number): Schedule {
+  if (balance <= 0) {
+    return { monthlyPayment: 0, rows: [], totalPrincipal: 0 };
   }
 
-  const r = MONTHLY_RATE;
   const n = NUM_PAYMENTS;
-  const rawPayment =
-    (principal * (r * Math.pow(1 + r, n))) / (Math.pow(1 + r, n) - 1);
-  const monthlyPayment = round2(rawPayment);
+  const monthlyPayment = round2(balance / n);
 
-  const rows: AmortizationRow[] = [];
-  let balance = principal;
+  const rows: PrincipalOnlyRow[] = [];
+  let remaining = balance;
   let totalPrincipal = 0;
-  let totalInterest = 0;
-  let totalPayments = 0;
 
   for (let i = 1; i <= n; i++) {
-    const beginningBalance = balance;
-    const interest = round2(beginningBalance * r);
-    let principalPaid: number;
-    let totalPaymentThisRow: number;
+    const beginningBalance = remaining;
+    const principal = i < n ? monthlyPayment : beginningBalance;
+    const endingBalance = round2(beginningBalance - principal);
 
-    if (i < n) {
-      totalPaymentThisRow = monthlyPayment;
-      principalPaid = round2(totalPaymentThisRow - interest);
-    } else {
-      principalPaid = beginningBalance;
-      totalPaymentThisRow = round2(principalPaid + interest);
-    }
+    rows.push({ payment: i, beginningBalance, principal, endingBalance });
 
-    const endingBalance = round2(beginningBalance - principalPaid);
-
-    rows.push({
-      payment: i,
-      beginningBalance,
-      principal: principalPaid,
-      interest,
-      totalPayment: totalPaymentThisRow,
-      endingBalance,
-    });
-
-    totalPrincipal = round2(totalPrincipal + principalPaid);
-    totalInterest = round2(totalInterest + interest);
-    totalPayments = round2(totalPayments + totalPaymentThisRow);
-    balance = endingBalance;
+    totalPrincipal = round2(totalPrincipal + principal);
+    remaining = endingBalance;
   }
 
-  return { monthlyPayment, rows, totalPrincipal, totalInterest, totalPayments };
+  return { monthlyPayment, rows, totalPrincipal };
 }
 
 type AnnualSummaryRow = {
   year: number;
   beginningBalance: number;
   principal: number;
-  interest: number;
   endingBalance: number;
 };
 
-function buildAnnualSummary(rows: AmortizationRow[]): AnnualSummaryRow[] {
+function buildAnnualSummary(rows: PrincipalOnlyRow[]): AnnualSummaryRow[] {
   const years: AnnualSummaryRow[] = [];
-  for (let y = 0; y < AMORTIZATION_YEARS; y++) {
+  for (let y = 0; y < REPAYMENT_YEARS; y++) {
     const yearRows = rows.slice(y * 12, y * 12 + 12);
     if (yearRows.length === 0) continue;
     const principal = round2(yearRows.reduce((sum, r) => sum + r.principal, 0));
-    const interest = round2(yearRows.reduce((sum, r) => sum + r.interest, 0));
     years.push({
       year: y + 1,
       beginningBalance: yearRows[0].beginningBalance,
       principal,
-      interest,
       endingBalance: yearRows[yearRows.length - 1].endingBalance,
     });
   }
   return years;
 }
 
-function downloadCsv(rows: AmortizationRow[], propertyValue: number) {
-  const header = [
-    "Payment Number",
-    "Beginning Balance",
-    "Principal",
-    "Interest",
-    "Total Payment",
-    "Ending Balance",
-  ];
+function downloadCsv(rows: PrincipalOnlyRow[], propertyValue: number) {
+  const header = ["Payment Number", "Beginning Balance", "Principal Payment", "Ending Balance"];
   const lines = [header.join(",")];
   for (const row of rows) {
     lines.push(
@@ -185,8 +145,6 @@ function downloadCsv(rows: AmortizationRow[], propertyValue: number) {
         row.payment,
         row.beginningBalance.toFixed(2),
         row.principal.toFixed(2),
-        row.interest.toFixed(2),
-        row.totalPayment.toFixed(2),
         row.endingBalance.toFixed(2),
       ].join(",")
     );
@@ -196,7 +154,7 @@ function downloadCsv(rows: AmortizationRow[], propertyValue: number) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `subject-to-seller-carry-schedule-${Math.round(propertyValue)}.csv`;
+  a.download = `subject-to-principal-only-schedule-${Math.round(propertyValue)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -241,9 +199,6 @@ export default function SubjectToCalculator() {
     setMortgageBalance(parseTypedAmount(raw));
   };
   const handleMortgageBlur = () => {
-    // Enforce $0 minimum and clamp to the property value on blur, since
-    // the mortgage balance being acquired can never exceed what the
-    // property is estimated to be worth.
     const clamped = Math.min(Math.max(0, mortgageBalance), Math.max(0, propertyValue));
     setMortgageBalance(clamped);
     setMortgageInput(formatWhole(clamped));
@@ -277,14 +232,16 @@ export default function SubjectToCalculator() {
   );
 
   const schedule = useMemo(
-    () => buildAmortizationSchedule(sellerCarriedBalance),
+    () => buildPrincipalOnlySchedule(sellerCarriedBalance),
     [sellerCarriedBalance]
   );
   const annualSummary = useMemo(() => buildAnnualSummary(schedule.rows), [schedule.rows]);
 
+  // Principal-only: the total of all seller-carry payments is exactly
+  // the seller-carried balance, since no interest is ever added.
   const totalReceived = useMemo(
-    () => round2(cashAtClosing + schedule.totalPayments),
-    [cashAtClosing, schedule.totalPayments]
+    () => round2(cashAtClosing + schedule.totalPrincipal),
+    [cashAtClosing, schedule.totalPrincipal]
   );
 
   const hasSellerCarry = sellerCarriedBalance > 0;
@@ -295,8 +252,6 @@ export default function SubjectToCalculator() {
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  // Stacked bar segment widths, as a percentage of the property value, so
-  // the three components of the transaction are visible at a glance.
   const safeValue = propertyValue > 0 ? propertyValue : 1;
   const mortgagePct = Math.min(100, (mortgageBalance / safeValue) * 100);
   const cashPct = Math.min(100 - mortgagePct, (cashAtClosing / safeValue) * 100);
@@ -314,12 +269,53 @@ export default function SubjectToCalculator() {
             Enter the estimated property value and current mortgage balance
             to see how a potential subject-to purchase could be
             structured. Cash paid at closing is capped at 7% of the
-            property value. Any remaining equity may be financed by the
-            seller.
+            property value. Any remaining equity may be carried by the
+            seller as principal-only payments.
           </p>
         </div>
 
-        <div className="mt-12 bg-paper text-ink p-7 sm:p-10 md:p-12">
+        {/* Explains what "subject-to" means before any numbers are shown,
+            and is careful not to imply the lender formally transfers or
+            approves the existing loan. */}
+        <div className="mt-8 max-w-3xl border border-line bg-ink-2 p-6 md:p-8">
+          <p className="eyebrow text-brass-light mb-3">What Subject-To Means</p>
+          <p className="text-bone/85 leading-relaxed">
+            A subject-to purchase means the buyer takes ownership of the
+            property while taking responsibility for making the payments
+            on the seller&apos;s existing mortgage. The existing loan
+            generally remains in the seller&apos;s name and is not
+            formally assumed by the buyer. Any seller equity that is not
+            paid at closing may be carried separately by the seller under
+            agreed written terms.
+          </p>
+          <ul className="mt-5 space-y-2 text-sm text-bone/70">
+            <li className="flex gap-3">
+              <span className="mt-2 h-1 w-1 shrink-0 bg-brass" />
+              <span>The buyer makes the existing mortgage payments.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2 h-1 w-1 shrink-0 bg-brass" />
+              <span>The existing mortgage balance remains part of the purchase structure.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2 h-1 w-1 shrink-0 bg-brass" />
+              <span>Cash paid to the seller at closing is capped at 7% of the property value.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2 h-1 w-1 shrink-0 bg-brass" />
+              <span>Any remaining seller equity is paid through principal-only monthly payments.</span>
+            </li>
+            <li className="flex gap-3">
+              <span className="mt-2 h-1 w-1 shrink-0 bg-brass" />
+              <span>
+                Each transaction is subject to title review, loan documents, lender rights,
+                written agreements, and professional advice.
+              </span>
+            </li>
+          </ul>
+        </div>
+
+        <div className="mt-10 bg-paper text-ink p-7 sm:p-10 md:p-12">
           <div className="grid lg:grid-cols-2 gap-10 lg:gap-16">
             {/* Property value */}
             <div>
@@ -419,9 +415,7 @@ export default function SubjectToCalculator() {
             </div>
           </div>
 
-          {/* Transaction breakdown: stacked bar showing the three
-              components of the structure relative to the property value,
-              plus a legend with exact amounts. */}
+          {/* Transaction breakdown */}
           <div className="mt-10 pt-8 border-t border-line-dark">
             <p className="eyebrow text-ink/50 mb-4">Transaction Breakdown</p>
             <div className="flex h-8 w-full overflow-hidden border border-line-dark">
@@ -463,7 +457,7 @@ export default function SubjectToCalculator() {
             </div>
           </div>
 
-          {/* Results */}
+          {/* Results: principal-only, no interest figures anywhere. */}
           <div className="mt-10 pt-8 border-t border-line-dark grid sm:grid-cols-2 gap-4">
             <div className="border border-line-dark bg-paper-2 p-6">
               <p className="eyebrow text-ink/50 mb-1.5">Estimated Property Value</p>
@@ -471,9 +465,7 @@ export default function SubjectToCalculator() {
             </div>
 
             <div className="border border-line-dark bg-paper-2 p-6">
-              <p className="eyebrow text-ink/50 mb-1.5">
-                Existing Mortgage Purchased Subject To
-              </p>
+              <p className="eyebrow text-ink/50 mb-1.5">Existing Mortgage Balance</p>
               <p className="font-display text-2xl">{formatWhole(mortgageBalance)}</p>
             </div>
 
@@ -495,16 +487,15 @@ export default function SubjectToCalculator() {
 
             <div className="sm:col-span-2 border border-line-dark bg-paper-2 p-6">
               <p className="eyebrow text-ink/50 mb-1.5">
-                Remaining Equity Financed by Seller
+                Remaining Equity Carried by Seller
               </p>
               <p className="font-display text-2xl">{formatWhole(sellerCarriedBalance)}</p>
             </div>
 
-            {/* Monthly seller-carry payment: headline figure, largest
-                type, brass on dark, full width for prominence. */}
+            {/* Monthly principal-only payment: headline figure. */}
             <div className="sm:col-span-2 border border-line-dark bg-ink text-bone p-7 md:p-8">
               <p className="eyebrow text-brass-light mb-1.5">
-                Estimated Monthly Principal and Interest Payment to Seller
+                Estimated Monthly Principal-Only Payment
               </p>
               {hasSellerCarry ? (
                 <p className="font-display text-4xl md:text-5xl text-brass-light leading-none">
@@ -518,34 +509,26 @@ export default function SubjectToCalculator() {
               )}
             </div>
 
-            <div className="border border-line-dark bg-paper-2 p-6">
+            <div className="sm:col-span-2 border border-line-dark bg-paper-2 p-6">
               <p className="eyebrow text-ink/50 mb-1.5">
-                Total of 360 Seller-Carry Payments
+                Total of 360 Principal-Only Payments
               </p>
-              <p className="font-display text-2xl">{formatWhole(schedule.totalPayments)}</p>
+              <p className="font-display text-2xl">{formatWhole(schedule.totalPrincipal)}</p>
             </div>
 
-            <div className="border border-line-dark bg-paper-2 p-6">
-              <p className="eyebrow text-ink/50 mb-1.5">
-                Estimated Interest Received on Seller-Carried Balance
-              </p>
-              <p className="font-display text-2xl">{formatWhole(schedule.totalInterest)}</p>
-            </div>
-
-            {/* Total received: second headline figure, matching
-                prominence treatment. */}
+            {/* Total received: second headline figure. */}
             <div className="sm:col-span-2 border border-line-dark bg-ink text-bone p-6">
               <p className="eyebrow text-brass-light mb-1.5">
-                Total Received by Seller From Cash and Seller-Carry
-                Payments
+                Total Received From Cash and Seller-Carry Payments
               </p>
               <p className="font-display text-3xl text-brass-light">
                 {formatWhole(totalReceived)}
               </p>
               <p className="mt-2 text-slate text-xs leading-relaxed max-w-lg">
-                This figure does not include mortgage payments made
-                directly to the existing lender under the subject-to
-                arrangement.
+                The total shown includes the seller&apos;s estimated cash
+                at closing and principal-only payments on the remaining
+                equity. It does not include payments made by the buyer
+                directly to the existing mortgage lender.
               </p>
             </div>
           </div>
@@ -555,16 +538,15 @@ export default function SubjectToCalculator() {
             <ul className="grid sm:grid-cols-2 gap-x-8 gap-y-1.5 text-sm text-ink/70">
               <li>Existing mortgage purchased subject to</li>
               <li>Cash paid at closing capped at 7% of property value</li>
-              <li>Remaining equity seller financed</li>
-              <li>2% fixed interest rate on seller-carried balance</li>
-              <li>30-year amortization</li>
+              <li>Remaining equity carried by the seller</li>
+              <li>Principal-only monthly payments on the carried balance</li>
+              <li>30-year repayment term</li>
               <li>360 monthly payments</li>
               <li>No balloon payment assumed</li>
             </ul>
           </div>
 
-          {/* Amortization schedule for the seller-carried balance, only
-              relevant when a seller-carried balance actually exists. */}
+          {/* Principal-only payment schedule. */}
           <div className="mt-10 pt-8 border-t border-line-dark">
             {hasSellerCarry ? (
               <>
@@ -574,22 +556,22 @@ export default function SubjectToCalculator() {
                   aria-expanded={scheduleOpen}
                   className="inline-flex items-center gap-2 border border-line-dark px-5 py-2.5 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
                 >
-                  {scheduleOpen ? "Hide" : "View"} Estimated Seller-Carry
-                  Amortization Schedule
+                  {scheduleOpen ? "Hide" : "View"} Estimated Principal-Only
+                  Payment Schedule
                 </button>
 
                 {scheduleOpen && (
                   <div className="mt-6">
                     <p className="text-ink/60 text-sm leading-relaxed max-w-2xl">
                       Annual summary of the estimated 360-payment
-                      seller-carry schedule. Principal grows and interest
-                      shrinks each year as the balance declines,
-                      consistent with a standard fixed-rate amortizing
-                      loan.
+                      principal-only schedule. There is no interest in
+                      this calculator, so each payment reduces the
+                      seller-carried balance by an equal amount until it
+                      reaches $0.
                     </p>
 
                     <div className="mt-4 overflow-x-auto border border-line-dark">
-                      <table className="w-full min-w-[560px] text-sm">
+                      <table className="w-full min-w-[480px] text-sm">
                         <thead>
                           <tr className="bg-paper-2 text-left">
                             <th className="p-3 eyebrow text-ink/50 font-normal">Year</th>
@@ -597,10 +579,7 @@ export default function SubjectToCalculator() {
                               Beginning Balance
                             </th>
                             <th className="p-3 eyebrow text-ink/50 font-normal">
-                              Principal
-                            </th>
-                            <th className="p-3 eyebrow text-ink/50 font-normal">
-                              Interest
+                              Principal Paid
                             </th>
                             <th className="p-3 eyebrow text-ink/50 font-normal">
                               Ending Balance
@@ -616,9 +595,6 @@ export default function SubjectToCalculator() {
                               </td>
                               <td className="p-3 text-ink/80">
                                 {formatWhole(row.principal)}
-                              </td>
-                              <td className="p-3 text-ink/80">
-                                {formatWhole(row.interest)}
                               </td>
                               <td className="p-3 text-ink/80">
                                 {formatWhole(row.endingBalance)}
@@ -659,16 +635,17 @@ export default function SubjectToCalculator() {
         <p className="mt-8 max-w-3xl text-slate/70 leading-relaxed text-xs">
           This calculator is provided for illustrative and educational
           purposes only. It assumes the purchase price equals the
-          estimated property value, the existing mortgage is purchased
-          subject to its current financing, cash paid to the seller at
-          closing is capped at 7% of the property value, and any
-          remaining equity is seller financed at 2% interest over 30
-          years. Actual transaction terms depend on the property,
-          existing loan documents, lender rights, title review, taxes,
-          insurance, servicing, closing costs, negotiation, written
-          agreements, and professional legal and tax advice. Subject-to
-          transactions may involve a due-on-sale clause. This calculator
-          does not constitute an offer or guarantee.
+          estimated property value, the buyer takes ownership subject to
+          the existing mortgage, cash paid to the seller at closing is
+          capped at 7% of the property value, and any remaining seller
+          equity is repaid through principal-only payments over 30 years.
+          The existing loan generally remains in the seller&apos;s name,
+          and subject-to transactions may involve a due-on-sale clause.
+          Actual terms depend on the property, loan documents, lender
+          rights, title review, taxes, insurance, servicing, closing
+          costs, negotiation, written agreements, and professional legal
+          and tax advice. This calculator does not constitute an offer or
+          guarantee.
         </p>
       </div>
     </section>
