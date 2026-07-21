@@ -50,6 +50,41 @@ Open [http://localhost:3000](http://localhost:3000).
    anonymized, illustrative examples rather than named clients or specific
    figures. Replace with real case studies (with permission) when you have
    them.
+6. **Property photos**: see "Real property photography" below before
+   adding more images, so new photos stay optimized and get accurate alt
+   text.
+
+## Real property photography
+
+The Sellers and Capital Partners pages use real, optimized photos from the
+portfolio instead of stock imagery. Source files live in
+`public/images/properties/` and are pre-resized (longest side capped
+around 2000 to 2600px) and compressed as progressive JPEGs, each well
+under 600KB. Metadata (path, descriptive alt text, and width/height for
+`next/image`) is centralized in `lib/propertyImages.ts`.
+
+Where each photo is used:
+
+- `entryway-staircase.jpg`: side image on the Sellers page (Why Sellers
+  Consider Creative Financing) and in the Capital Partners Featured
+  Properties grid.
+- `hallway-numbered-doors.jpg`: Capital Partners hero image, the "Real
+  Managed Property" banner on the Sellers page, and the Featured
+  Properties grid.
+- `aerial-neighborhood-atlanta.jpg`: Sellers hero image and the "Target
+  Markets" banner on the Capital Partners page.
+- `kitchen-renovated.jpg`: side image on the Sellers page (Ways I
+  Purchase Properties) and in the Featured Properties grid.
+- `bathroom-renovated.jpg`: Featured Properties grid on the Capital
+  Partners page.
+
+To add more photos: drop a resized, compressed JPEG into
+`public/images/properties/`, add an entry with real dimensions and
+descriptive alt text to `lib/propertyImages.ts`, then reference it with
+`next/image` (`fill` inside a `relative` container with a fixed aspect
+ratio, or explicit `width`/`height`) so the layout doesn't shift while it
+loads. Non-hero images should use `loading="lazy"`; only the single image
+above the fold on a page should use `priority`.
 
 ## Capital partner form and file uploads
 
@@ -92,6 +127,9 @@ publicly.
 - No use of the word "PadSplit" and no bedroom-conversion detail.
 - No guaranteed or specific projected returns, and no public-offering
   language.
+- No stock photography on the Sellers or Capital Partners pages; both use
+  real, optimized photos of owned and operated properties (see "Real
+  property photography" above).
 
 ## Stack
 

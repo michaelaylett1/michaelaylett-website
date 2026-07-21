@@ -1,0 +1,82 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
+const FEATURED = [
+  {
+    image: propertyImages.aerialNeighborhood,
+    location: "Atlanta, GA",
+    caption: "Suburban community with the downtown Atlanta skyline in view",
+    span: "lg:col-span-7",
+    aspect: "aspect-[4/3]",
+  },
+  {
+    image: propertyImages.hallwayNumberedDoors,
+    location: "Professionally Managed",
+    caption: "Numbered rooms inside an operating co-living residence",
+    span: "lg:col-span-5",
+    aspect: "aspect-[4/3]",
+  },
+  {
+    image: propertyImages.kitchenRenovated,
+    location: "Modern Kitchen",
+    caption: "Updated finishes designed for long-term durability",
+    span: "lg:col-span-4",
+    aspect: "aspect-square",
+  },
+  {
+    image: propertyImages.bathroomRenovated,
+    location: "Renovated Bathroom",
+    caption: "High-quality materials and professional craftsmanship",
+    span: "lg:col-span-4",
+    aspect: "aspect-square",
+  },
+  {
+    image: propertyImages.entrywayStaircase,
+    location: "Renovated Interior",
+    caption: "Bright, move-in ready entryways throughout",
+    span: "lg:col-span-4",
+    aspect: "aspect-square",
+  },
+];
+
+export default function FeaturedProperties() {
+  return (
+    <section className="bg-ink text-bone py-24 md:py-28 border-t border-line">
+      <div className="mx-auto max-w-content px-6 md:px-10">
+        <p className="eyebrow text-brass-light mb-4">Featured Properties</p>
+        <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-xl">
+          A look at the kind of assets we acquire and operate.
+        </h2>
+        <p className="mt-5 max-w-2xl text-slate leading-relaxed text-sm">
+          A small sample of properties currently owned and professionally
+          managed across the portfolio.
+        </p>
+
+        <div className="mt-14 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-6">
+          {FEATURED.map((item, i) => (
+            <figure
+              key={item.location}
+              className={`group relative overflow-hidden ${item.span} ${item.aspect}`}
+            >
+              <Image
+                src={item.image.src}
+                alt={item.image.alt}
+                fill
+                sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 40vw"
+                className="object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                loading={i === 0 ? "eager" : "lazy"}
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-ink/90 via-ink/5 to-transparent" />
+              <figcaption className="absolute inset-x-0 bottom-0 p-5 md:p-6">
+                <p className="eyebrow text-brass-light mb-1">{item.location}</p>
+                <p className="text-bone text-sm md:text-base leading-snug max-w-xs">
+                  {item.caption}
+                </p>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}

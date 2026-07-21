@@ -1,6 +1,11 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
 export default function CapitalHero() {
+  const img = propertyImages.hallwayNumberedDoors;
+
   return (
-    <section className="relative overflow-hidden bg-ink bg-noise pt-32 pb-16 md:pt-44 md:pb-20">
+    <section className="relative overflow-hidden bg-ink bg-noise pt-32 pb-16 md:pt-40 md:pb-20">
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.06]"
         style={{
@@ -10,22 +15,37 @@ export default function CapitalHero() {
         }}
       />
       <div className="relative mx-auto max-w-content px-6 md:px-10">
-        <p className="eyebrow text-brass-light mb-6">For Capital Partners</p>
-        <h1 className="font-display text-bone leading-[1.05] text-[2.4rem] sm:text-5xl md:text-6xl max-w-2xl">
-          Disciplined acquisitions, long-term ownership.
-        </h1>
-        <p className="mt-8 max-w-xl text-slate text-base md:text-lg leading-relaxed">
-          I partner with qualified investors on real estate acquisitions
-          that meet our underwriting standards. This page explains how I
-          think about deals, markets, and ownership, so you know what to
-          expect before we ever discuss a specific opportunity.
-        </p>
-        <a
-          href="#schedule"
-          className="mt-10 inline-flex items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors"
-        >
-          Schedule a Conversation
-        </a>
+        <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+          <div>
+            <p className="eyebrow text-brass-light mb-6">For Capital Partners</p>
+            <h1 className="font-display text-bone leading-[1.05] text-[2.4rem] sm:text-5xl md:text-6xl max-w-xl">
+              Disciplined acquisitions, long-term ownership.
+            </h1>
+            <p className="mt-8 max-w-xl text-slate text-base md:text-lg leading-relaxed">
+              I partner with qualified investors on real estate acquisitions
+              that meet our underwriting standards. This page explains how I
+              think about deals, markets, and ownership, so you know what to
+              expect before we ever discuss a specific opportunity.
+            </p>
+            <a
+              href="#schedule"
+              className="mt-10 inline-flex items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors"
+            >
+              Schedule a Conversation
+            </a>
+          </div>
+
+          <div className="relative aspect-[4/3] w-full border border-line">
+            <Image
+              src={img.src}
+              alt={img.alt}
+              fill
+              sizes="(max-width: 1024px) 100vw, 50vw"
+              className="object-cover"
+              priority
+            />
+          </div>
+        </div>
       </div>
     </section>
   );

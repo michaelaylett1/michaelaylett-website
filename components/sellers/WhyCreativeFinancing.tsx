@@ -1,3 +1,6 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
 const REASONS = [
   "Limited equity in the property",
   "Wanting monthly income rather than a lump sum",
@@ -9,6 +12,8 @@ const REASONS = [
 ];
 
 export default function WhyCreativeFinancing() {
+  const img = propertyImages.entrywayStaircase;
+
   return (
     <section className="bg-ink text-bone py-24 md:py-28">
       <div className="mx-auto max-w-content px-6 md:px-10">
@@ -26,6 +31,17 @@ export default function WhyCreativeFinancing() {
               yours may be one of these, a combination, or something else
               entirely.
             </p>
+
+            <div className="relative mt-10 aspect-[3/2] w-full max-w-md border border-line">
+              <Image
+                src={img.src}
+                alt={img.alt}
+                fill
+                sizes="(max-width: 1024px) 100vw, 40vw"
+                className="object-cover"
+                loading="lazy"
+              />
+            </div>
           </div>
 
           <ul className="divide-y divide-line border-t border-b border-line">

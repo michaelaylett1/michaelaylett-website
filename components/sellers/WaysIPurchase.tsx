@@ -1,3 +1,6 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
 const WAYS = [
   {
     n: "01",
@@ -17,21 +20,38 @@ const WAYS = [
 ];
 
 export default function WaysIPurchase() {
+  const img = propertyImages.kitchenRenovated;
+
   return (
     <section className="bg-paper text-ink py-24 md:py-28">
       <div className="mx-auto max-w-content px-6 md:px-10">
-        <p className="eyebrow text-brass mb-4">Ways I Purchase Properties</p>
-        <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-2xl">
-          I purchase through creative financing, not a one-size-fits-all offer.
-        </h2>
-        <p className="mt-6 max-w-2xl text-ink/70 leading-relaxed">
-          Below is a plain-language look at how each structure works. Every
-          transaction depends on the property, the existing financing,
-          title review, your goals as the seller, and a written agreement
-          both sides are comfortable with. None of these is guaranteed to
-          fit your property; we&apos;ll work through that together before
-          anything is decided.
-        </p>
+        <div className="grid lg:grid-cols-2 gap-12 lg:gap-16 items-center">
+          <div>
+            <p className="eyebrow text-brass mb-4">Ways I Purchase Properties</p>
+            <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-2xl">
+              I purchase through creative financing, not a one-size-fits-all offer.
+            </h2>
+            <p className="mt-6 max-w-2xl text-ink/70 leading-relaxed">
+              Below is a plain-language look at how each structure works.
+              Every transaction depends on the property, the existing
+              financing, title review, your goals as the seller, and a
+              written agreement both sides are comfortable with. None of
+              these is guaranteed to fit your property; we&apos;ll work
+              through that together before anything is decided.
+            </p>
+          </div>
+
+          <div className="relative aspect-[4/3] w-full border border-line-dark order-first lg:order-last">
+            <Image
+              src={img.src}
+              alt={img.alt}
+              fill
+              sizes="(max-width: 1024px) 100vw, 50vw"
+              className="object-cover"
+              loading="lazy"
+            />
+          </div>
+        </div>
 
         <div className="mt-16 grid md:grid-cols-3 gap-x-10 gap-y-12">
           {WAYS.map((w) => (
