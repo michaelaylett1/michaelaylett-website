@@ -5,6 +5,7 @@ import Philosophy from "@/components/capital/Philosophy";
 import FeaturedProperties from "@/components/capital/FeaturedProperties";
 import WorkWithPartners from "@/components/capital/WorkWithPartners";
 import Testimonials from "@/components/capital/Testimonials";
+import CashFlowCalculator from "@/components/capital/CashFlowCalculator";
 import CapitalPartnerForm from "@/components/capital/CapitalPartnerForm";
 import ImageBanner from "@/components/shared/ImageBanner";
 import { propertyImages } from "@/lib/propertyImages";
@@ -30,6 +31,7 @@ export default function CapitalPartnersPage() {
       <FeaturedProperties />
       <WorkWithPartners />
       <Testimonials />
+      <CashFlowCalculator />
       <CapitalPartnerForm />
     </>
   );
