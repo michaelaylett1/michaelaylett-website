@@ -11,9 +11,9 @@ export default function Experience() {
             <p className="mt-6 text-white/60 leading-relaxed max-w-md">
               Before founding EcomRanx, I managed Amazon accounts for major
               brands including NetGear and Overstock, overseeing more than
-              $72 million in combined annual revenue. That experience — the
+              $72 million in combined annual revenue. That experience (the
               account-health issues, the advertising trade-offs, the
-              catalog decisions that actually move revenue — is what
+              catalog decisions that actually move revenue) is what
               EcomRanx is built on.
             </p>
           </div>

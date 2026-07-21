@@ -18,7 +18,7 @@ export default function ValuesMission() {
               For sellers, that means honest options instead of a single
               lowball offer. For residents, it means a well-run, affordable
               place to live. For capital partners, it means disciplined,
-              transparent ownership. Those aren't separate goals — they're
+              transparent ownership. Those aren't separate goals: they're
               the same one, seen from different sides.
             </p>
           </div>

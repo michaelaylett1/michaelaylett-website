@@ -18,9 +18,11 @@ export default function WorkWithPartners() {
               A relationship first, a deal second.
             </h2>
             <p className="mt-6 text-ink/70 leading-relaxed max-w-md">
-              I work with a small number of capital partners at a time, and
-              I&apos;d rather build a long-term relationship than rush a single
-              transaction. Here&apos;s what that looks like in practice.
+              I&apos;m interested in building long-term relationships with
+              qualified capital partners whose goals align with my
+              acquisition strategy, and I&apos;d rather build a real
+              relationship than rush a single transaction. Here&apos;s what
+              that looks like in practice.
             </p>
 
             <ul className="mt-10 space-y-4">

@@ -27,9 +27,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Michael Aylett — Real Estate Acquisitions & Capital Partnerships",
+  title: "Michael Aylett - Real Estate Acquisitions & Capital Partnerships",
   description:
-    "Michael Aylett is a professional real estate investor purchasing property directly from owners through traditional and creative financing, partnering with capital investors on select acquisitions, and founder of EcomRanx, an Amazon consulting company.",
+    "Michael Aylett is a professional real estate investor purchasing property directly from owners through creative financing, partnering with qualified capital investors on acquisitions, and founder of EcomRanx, an Amazon consulting company.",
 };
 
 export default function RootLayout({

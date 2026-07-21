@@ -5,7 +5,7 @@ import Philosophy from "@/components/capital/Philosophy";
 import WorkWithPartners from "@/components/capital/WorkWithPartners";
 
 export const metadata: Metadata = {
-  title: "Capital Partners — Michael Aylett",
+  title: "Capital Partners - Michael Aylett",
   description:
     "Learn how Michael Aylett underwrites, acquires, and operates real estate, and how he works with qualified capital partners.",
 };

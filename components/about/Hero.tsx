@@ -15,7 +15,7 @@ export default function AboutHero() {
           From Amazon accounts to real estate ownership.
         </h1>
         <p className="mt-8 max-w-xl text-slate text-base md:text-lg leading-relaxed">
-          Based in Salt Lake City, Utah — here&apos;s how I got here, and why
+          Based in Salt Lake City, Utah. Here&apos;s how I got here, and why
           I do the work the way I do.
         </p>
       </div>

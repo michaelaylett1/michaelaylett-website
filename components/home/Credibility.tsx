@@ -1,5 +1,5 @@
 const STATS = [
-  { value: "81", label: "Co-Living Rooms Owned" },
+  { value: "91", label: "Doors Owned" },
   { value: "3+", label: "Markets" },
   { value: "Long-Term", label: "Owner / Operator" },
   { value: "Conservative", label: "Underwriting Standard" },
@@ -24,7 +24,7 @@ export default function Credibility() {
           ))}
         </div>
         <p className="mt-10 max-w-2xl text-slate leading-relaxed text-sm">
-          Every acquisition is professionally managed after closing — not
+          91 doors owned and professionally managed after closing, not
           flipped, not left vacant. That combination of disciplined
           underwriting and hands-on, long-term management is what property
           owners, brokers, and capital partners can expect when they work

@@ -6,15 +6,19 @@ import { Plus } from "lucide-react";
 const FAQS = [
   {
     q: "What is subject-to?",
-    a: "It means I take ownership of the property and take over making the monthly mortgage payments, while the existing loan stays in your name. It can offer a faster, more flexible path to selling, but it isn't the right fit for every loan or every seller — we'll talk through whether it makes sense for your situation.",
+    a: "It means I purchase the property subject to the existing mortgage. The loan stays in your name, and I take responsibility for making the monthly payments according to our written agreement. The lender isn't formally transferring or assuming the loan; we're simply agreeing, in writing, on how those payments are handled going forward. It isn't the right fit for every loan or every seller, so we'll talk through whether it makes sense for your situation.",
   },
   {
     q: "What is seller financing?",
-    a: "Instead of a cash purchase, you act as the lender: I make agreed-upon payments to you over time, typically with interest. It can create ongoing income and potential tax benefits, and terms are negotiated to work for both sides.",
+    a: "You act as the lender: I make agreed-upon payments to you over time, typically with interest, under terms we put in writing. It can create ongoing income and potential tax benefits, and terms are negotiated to work for both sides.",
+  },
+  {
+    q: "What is subject-to with seller financing?",
+    a: "It's a combination of the two: the existing mortgage stays in place, and you carry the remaining equity through a separate seller-financed note. Some people call a similar concept a wraparound mortgage, but I generally prefer structuring these as a subject-to purchase alongside a separate note rather than a single wraparound loan.",
   },
   {
     q: "Do I still receive monthly payments?",
-    a: "With seller financing, yes — that's the structure. With subject-to, no; you're selling the property and I take over the existing payments going forward. With a traditional purchase, you receive your proceeds at closing.",
+    a: "With seller financing, yes, that's the structure. With a straight subject-to purchase, you don't receive ongoing payments; instead, I take over making the existing mortgage payments going forward.",
   },
   {
     q: "Who makes the mortgage payments?",
@@ -30,7 +34,7 @@ const FAQS = [
   },
   {
     q: "How quickly can we close?",
-    a: "It depends on the structure and the property, but I can typically move faster than a traditional listing process, and we'll agree on a closing date that works for you.",
+    a: "It depends on the structure and the property, but creative financing can often move faster than a traditional listing process, and we'll agree on a closing date that works for you.",
   },
 ];
 

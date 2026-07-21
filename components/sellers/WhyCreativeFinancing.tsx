@@ -22,7 +22,7 @@ export default function WhyCreativeFinancing() {
             </h2>
             <p className="mt-6 text-slate leading-relaxed max-w-md">
               Sellers come to these conversations for a lot of different
-              reasons. Here are some of the most common ones I hear —
+              reasons. Here are some of the most common ones I hear:
               yours may be one of these, a combination, or something else
               entirely.
             </p>

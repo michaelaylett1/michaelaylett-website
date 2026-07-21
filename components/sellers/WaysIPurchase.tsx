@@ -1,18 +1,18 @@
 const WAYS = [
   {
     n: "01",
-    t: "Traditional Purchase",
-    d: "A straightforward cash purchase, closed on your timeline with no financing contingencies or repair demands. This is often the right fit when you want the simplest possible path to closing.",
+    t: "Subject-To",
+    d: "I purchase the property subject to the existing mortgage. The loan stays in your name, and I take on responsibility for making the monthly payments according to our written agreement. The lender isn't formally involved in transferring or assuming the loan; we simply agree, in writing, on how those payments will be handled going forward.",
   },
   {
     n: "02",
     t: "Seller Financing",
-    d: "Instead of receiving all your proceeds at closing, you act as the lender and receive payments over time — often at attractive terms for both sides, and with potential tax advantages worth discussing with your advisor.",
+    d: "I finance some or all of the purchase price directly with you as the seller. You receive payments over time under mutually agreed written terms, rather than a lump sum at closing.",
   },
   {
     n: "03",
-    t: "Subject-To",
-    d: "I take over the property and its existing mortgage payments while the loan stays in your name. This can be a fit when a traditional sale isn't practical, though it isn't the right fit for every situation and every existing loan.",
+    t: "Subject-To With Seller Financing",
+    d: "A combination of both: the existing mortgage stays in place while you carry the remaining equity through a separate seller-financed note, with its own written terms.",
   },
 ];
 
@@ -22,13 +22,15 @@ export default function WaysIPurchase() {
       <div className="mx-auto max-w-content px-6 md:px-10">
         <p className="eyebrow text-brass mb-4">Ways I Purchase Properties</p>
         <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-2xl">
-          Not every property fits the same box — so I don&apos;t use one.
+          I purchase through creative financing, not a one-size-fits-all offer.
         </h2>
         <p className="mt-6 max-w-2xl text-ink/70 leading-relaxed">
-          Below is a plain-language look at how each option works. None of
-          these is guaranteed to fit your property — the right structure
-          depends on your equity position, your loan, and your goals. We&apos;ll
-          work through that together before anything is decided.
+          Below is a plain-language look at how each structure works. Every
+          transaction depends on the property, the existing financing,
+          title review, your goals as the seller, and a written agreement
+          both sides are comfortable with. None of these is guaranteed to
+          fit your property; we&apos;ll work through that together before
+          anything is decided.
         </p>
 
         <div className="mt-16 grid md:grid-cols-3 gap-x-10 gap-y-12">

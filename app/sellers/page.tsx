@@ -7,9 +7,9 @@ import FAQ from "@/components/sellers/FAQ";
 import SellerForm from "@/components/sellers/SellerForm";
 
 export const metadata: Metadata = {
-  title: "Sell Your Property — Michael Aylett",
+  title: "Sell Your Property - Michael Aylett",
   description:
-    "Traditional purchase, seller financing, or subject-to — learn how Michael Aylett structures property purchases around your goals.",
+    "Subject-to, seller financing, or subject-to with seller financing: learn how Michael Aylett structures creative-financing property purchases around your goals.",
 };
 
 export default function SellersPage() {

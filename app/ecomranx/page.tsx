@@ -6,7 +6,7 @@ import CaseStudies from "@/components/ecomranx/CaseStudies";
 import CTA from "@/components/ecomranx/CTA";
 
 export const metadata: Metadata = {
-  title: "EcomRanx — Amazon Consulting by Michael Aylett",
+  title: "EcomRanx - Amazon Consulting by Michael Aylett",
   description:
     "EcomRanx is an independent Amazon consulting company founded by Michael Aylett, offering account management, advertising, and growth strategy for established brands.",
 };

@@ -5,14 +5,14 @@ const CARDS = [
   {
     n: "01",
     t: "Selling Your Property",
-    d: "I purchase property through traditional cash purchases as well as creative structures — including seller financing and subject-to transactions — built around your timeline and goals, not a one-size-fits-all offer.",
+    d: "I purchase property through creative financing structures, including seller financing and subject-to transactions, built around your timeline and goals rather than a one-size-fits-all offer.",
     cta: "Learn More",
     href: "/sellers",
   },
   {
     n: "02",
     t: "Capital Partnerships",
-    d: "I occasionally partner with qualified investors on acquisitions that meet my underwriting standards, taking a long-term, conservative approach to ownership and operations.",
+    d: "I partner with qualified investors on acquisitions that meet my underwriting standards, taking a long-term, conservative approach to ownership and operations.",
     cta: "Learn More",
     href: "/capital-partners",
   },

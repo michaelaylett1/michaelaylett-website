@@ -28,9 +28,9 @@ export default function SellerForm() {
 
   const set = (id: string, v: string) => setValues((prev) => ({ ...prev, [id]: v }));
 
-  const body = FIELDS.map((f) => `${f.label}: ${values[f.id] || "—"}`).join("\n");
+  const body = FIELDS.map((f) => `${f.label}: ${values[f.id] || "Not provided"}`).join("\n");
   const mailtoHref = `mailto:${EMAIL}?subject=${encodeURIComponent(
-    `Property Inquiry — ${values.address || "New Submission"}`
+    `Property Inquiry: ${values.address || "New Submission"}`
   )}&body=${encodeURIComponent(body)}`;
 
   return (

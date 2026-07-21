@@ -20,7 +20,7 @@ export default function CaseStudies() {
           Two examples of the problems we get called in for.
         </h2>
         <p className="mt-5 max-w-xl text-white/55 leading-relaxed text-sm">
-          Client details are kept confidential — these are representative
+          Client details are kept confidential. These are representative
           of the categories and challenges EcomRanx works on.
         </p>
 

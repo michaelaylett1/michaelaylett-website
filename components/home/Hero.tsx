@@ -26,11 +26,12 @@ export default function Hero() {
         </h1>
 
         <p className="mt-8 max-w-xl text-slate text-base md:text-lg leading-relaxed">
-          I&apos;m Michael Aylett. I buy property directly from owners —
-          through traditional purchases and creative financing structures —
-          and turn select acquisitions into well-run, professionally managed
-          shared housing. I also partner with qualified capital investors and
-          founded EcomRanx, an Amazon consulting company.
+          I&apos;m Michael Aylett. I buy property directly from owners through
+          creative financing structures, including subject-to and seller
+          financing, and turn select acquisitions into well-run,
+          professionally managed shared housing. I also partner with
+          qualified capital investors and founded EcomRanx, an Amazon
+          consulting company.
         </p>
 
         <div className="mt-10 flex flex-col sm:flex-row flex-wrap gap-4">

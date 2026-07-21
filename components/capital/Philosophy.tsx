@@ -2,7 +2,7 @@ const PILLARS = [
   {
     n: "01",
     t: "Investment Philosophy",
-    d: "I look for properties with a clear, durable path to stable income — not deals that only work under best-case assumptions. If the underwriting only pencils on paper, I pass.",
+    d: "I look for properties with a clear, durable path to stable income, not deals that only work under best-case assumptions. If the underwriting only pencils on paper, I pass.",
   },
   {
     n: "02",
@@ -12,7 +12,7 @@ const PILLARS = [
   {
     n: "03",
     t: "Acquisition Strategy",
-    d: "Properties are sourced directly from owners, brokers, and my existing network — allowing for more flexible terms than a competitive open-market listing.",
+    d: "Properties are sourced directly from owners, brokers, and my existing network, allowing for more flexible terms than a competitive open-market listing.",
   },
   {
     n: "04",

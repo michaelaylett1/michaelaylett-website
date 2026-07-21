@@ -15,9 +15,9 @@ export default function CapitalHero() {
           Disciplined acquisitions, long-term ownership.
         </h1>
         <p className="mt-8 max-w-xl text-slate text-base md:text-lg leading-relaxed">
-          I occasionally partner with qualified investors on acquisitions
-          that meet my underwriting standards. This page explains how I
-          think about deals, markets, and ownership — so you know what to
+          I partner with qualified investors on real estate acquisitions
+          that meet our underwriting standards. This page explains how I
+          think about deals, markets, and ownership, so you know what to
           expect before we ever discuss a specific opportunity.
         </p>
         <a

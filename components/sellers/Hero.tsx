@@ -18,9 +18,8 @@ export default function SellersHero() {
           A traditional sale isn&apos;t always the best fit for every
           property or every situation. I work directly with owners,
           realtors, brokers, wholesalers, title companies, and attorneys to
-          structure purchases around what the seller actually needs —
-          whether that&apos;s a straightforward cash close or a more
-          creative path.
+          structure creative financing purchases around what the seller
+          actually needs.
         </p>
         <a
           href="#contact-form"
