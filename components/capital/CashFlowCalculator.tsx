@@ -1,13 +1,18 @@
 "use client";
 
 /**
- * Illustrative cash flow calculator for the Capital Partners page.
+ * Illustrative capital partner cash flow calculator for the Capital
+ * Partners page.
  *
- * Purely a client-side estimate: Investment Amount x 10% assumed annual
- * cash-on-cash return, divided by 12 for a monthly figure. This is not an
- * offer, projection, or guarantee of any actual investment's performance,
- * and the disclaimer below the calculator says so explicitly. No values
- * here are ever submitted anywhere; nothing here talks to the server.
+ * Purely a client-side estimate of the return TO THE CAPITAL PARTNER on
+ * their own invested capital: Investment Amount x 10% assumed annual
+ * cash-on-cash return, divided by 12 for a monthly figure. Every label
+ * here is worded to make clear this is the capital partner's estimated
+ * return on their own investment, not the property's total cash-on-cash
+ * return or the overall project's return. This is not an offer,
+ * projection, or guarantee of any actual investment's performance, and
+ * the disclaimer below the calculator says so explicitly. No values here
+ * are ever submitted anywhere; nothing here talks to the server.
  */
 
 import { useMemo, useState } from "react";
@@ -96,13 +101,12 @@ export default function CashFlowCalculator() {
         <div className="max-w-2xl">
           <p className="eyebrow text-brass-light mb-4">Cash Flow Calculator</p>
           <h2 className="font-display text-3xl md:text-4xl leading-tight">
-            Estimate your potential cash flow.
+            Capital Partner Cash Flow Calculator
           </h2>
           <p className="mt-5 text-slate leading-relaxed">
-            Enter a potential investment amount to see an illustrative
-            annual and monthly cash flow, based on a 10% assumed annual
-            cash-on-cash return. This is a planning tool, not a projection
-            for any specific deal.
+            Estimate the potential cash flow a capital partner could
+            receive based on a 10% annual cash-on-cash return on their
+            invested capital.
           </p>
         </div>
 
@@ -111,7 +115,7 @@ export default function CashFlowCalculator() {
             {/* Input side */}
             <div>
               <label htmlFor="investmentAmount" className="eyebrow text-ink/50 block mb-3">
-                Potential Investment Amount
+                Capital Partner Investment Amount
               </label>
               <div className="relative">
                 <span
@@ -128,7 +132,7 @@ export default function CashFlowCalculator() {
                   onChange={handleTextChange}
                   onBlur={handleTextBlur}
                   placeholder="$100,000"
-                  aria-label="Potential Investment Amount in dollars"
+                  aria-label="Capital Partner Investment Amount in dollars"
                   className="w-full bg-white border border-line-dark pl-9 pr-4 py-4 text-ink font-display text-2xl outline-none focus:border-brass"
                 />
               </div>
@@ -141,7 +145,7 @@ export default function CashFlowCalculator() {
                   step={STEP}
                   value={sliderValue}
                   onChange={handleSlider}
-                  aria-label="Potential investment amount slider"
+                  aria-label="Capital partner investment amount slider"
                   className="w-full accent-brass cursor-pointer"
                 />
                 <div className="mt-2 flex justify-between text-xs text-ink/50 font-mono">
@@ -159,13 +163,13 @@ export default function CashFlowCalculator() {
             {/* Results side */}
             <div className="w-full lg:w-80 border border-line-dark bg-paper-2 p-7 md:p-8">
               <div>
-                <p className="eyebrow text-ink/50 mb-1.5">Potential Investment</p>
+                <p className="eyebrow text-ink/50 mb-1.5">Capital Partner Investment</p>
                 <p className="font-display text-2xl">{formatWhole(amount)}</p>
               </div>
 
               <div className="mt-6 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-ink/50 mb-1.5">
-                  Estimated Annual Cash Flow
+                  Estimated Annual Cash Flow to Capital Partner
                 </p>
                 <p className="font-display text-2xl">{formatWhole(annual)}</p>
               </div>
@@ -174,7 +178,7 @@ export default function CashFlowCalculator() {
                   brass color, its own emphasized block. */}
               <div className="mt-6 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-brass mb-1.5">
-                  Estimated Monthly Cash Flow
+                  Estimated Monthly Cash Flow to Capital Partner
                 </p>
                 <p className="font-display text-4xl md:text-5xl text-brass leading-none">
                   {formatCents(monthly)}
@@ -183,12 +187,23 @@ export default function CashFlowCalculator() {
 
               <div className="mt-6 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-ink/50 mb-1.5">
-                  Assumed Cash-on-Cash Return
+                  Assumed Capital Partner Cash-on-Cash Return
                 </p>
-                <p className="text-ink/80">10% annually</p>
+                <p className="text-ink/80">
+                  10% annual cash-on-cash return to the capital partner
+                </p>
               </div>
             </div>
           </div>
+
+          {/* Clarifies exactly what the assumed 10% figure measures, so it
+              can't be mistaken for the property's total cash-on-cash
+              return or the overall project's return. */}
+          <p className="mt-6 max-w-3xl text-ink/50 text-xs leading-relaxed">
+            Cash-on-cash return is calculated using the capital
+            partner&apos;s invested cash and the estimated cash
+            distributions attributable to that investment.
+          </p>
 
           <button
             type="button"
@@ -201,10 +216,12 @@ export default function CashFlowCalculator() {
 
         <p className="mt-8 max-w-3xl text-slate/70 leading-relaxed text-xs">
           This calculator is provided for illustrative purposes only and
-          assumes a 10% annual cash-on-cash return. It does not represent a
-          guarantee, projection, offer, or promise of actual investment
-          performance. Actual returns, distributions, timing, expenses, and
-          risks may vary by transaction.
+          estimates potential cash flow to a capital partner based on an
+          assumed 10% annual cash-on-cash return on invested capital. It
+          does not represent a guarantee, projection, offer, or promise of
+          actual investment performance. Actual returns, distributions,
+          timing, expenses, ownership structure, and risks may vary by
+          transaction.
         </p>
       </div>
     </section>
