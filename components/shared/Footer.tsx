@@ -7,6 +7,7 @@ const COLUMNS = [
       { href: "/", label: "Home" },
       { href: "/sellers", label: "Sellers" },
       { href: "/capital-partners", label: "Capital Partners" },
+      { href: "/rv-parks", label: "RV Parks" },
       { href: "/about", label: "About" },
     ],
   },

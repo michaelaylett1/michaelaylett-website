@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import SellersHero from "@/components/sellers/Hero";
 import WaysIPurchase from "@/components/sellers/WaysIPurchase";
 import WhyCreativeFinancing from "@/components/sellers/WhyCreativeFinancing";
+import LongTermOwnership from "@/components/sellers/LongTermOwnership";
 import Process from "@/components/sellers/Process";
 import FAQ from "@/components/sellers/FAQ";
 import SellerForm from "@/components/sellers/SellerForm";
@@ -20,14 +21,15 @@ export default function SellersPage() {
       <SellersHero />
       <WaysIPurchase />
       <WhyCreativeFinancing />
+      <LongTermOwnership />
       <Process />
+      <FAQ />
       <ImageBanner
         image={propertyImages.hallwayNumberedDoors}
-        eyebrow="A Real, Managed Property"
-        caption="Every property I acquire is professionally managed after closing, not flipped, not left vacant."
-        height="h-[46vh] md:h-[56vh]"
+        eyebrow="Ready When You Are"
+        caption="Let's talk about your property and the options that could work for you."
+        height="h-[42vh] md:h-[50vh]"
       />
-      <FAQ />
       <SellerForm />
     </>
   );

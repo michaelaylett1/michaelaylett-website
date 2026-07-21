@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import AboutHero from "@/components/about/Hero";
 import Story from "@/components/about/Story";
 import ValuesMission from "@/components/about/ValuesMission";
+import ImageBanner from "@/components/shared/ImageBanner";
+import { propertyImages } from "@/lib/propertyImages";
 
 export const metadata: Metadata = {
   title: "About - Michael Aylett",
@@ -14,6 +16,12 @@ export default function AboutPage() {
     <>
       <AboutHero />
       <Story />
+      <ImageBanner
+        image={propertyImages.kitchenClassicMaintained}
+        eyebrow="Pride of Ownership"
+        caption="Properties improved and maintained for long-term ownership."
+        height="h-[42vh] md:h-[52vh]"
+      />
       <ValuesMission />
     </>
   );

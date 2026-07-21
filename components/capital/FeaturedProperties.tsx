@@ -4,20 +4,27 @@ import { propertyImages } from "@/lib/propertyImages";
 const FEATURED = [
   {
     image: propertyImages.aerialNeighborhood,
-    location: "Atlanta, GA",
+    location: "Atlanta, Georgia",
     caption: "Suburban community with the downtown Atlanta skyline in view",
     span: "lg:col-span-7",
+    aspect: "aspect-[4/3]",
+  },
+  {
+    image: propertyImages.aerialDallas,
+    location: "Dallas, Texas",
+    caption: "Established residential neighborhood in Dallas, Texas",
+    span: "lg:col-span-5",
     aspect: "aspect-[4/3]",
   },
   {
     image: propertyImages.hallwayNumberedDoors,
     location: "Professionally Managed",
     caption: "Numbered rooms inside an operating co-living residence",
-    span: "lg:col-span-5",
-    aspect: "aspect-[4/3]",
+    span: "lg:col-span-4",
+    aspect: "aspect-square",
   },
   {
-    image: propertyImages.kitchenRenovated,
+    image: propertyImages.kitchenWhiteRenovated,
     location: "Modern Kitchen",
     caption: "Updated finishes designed for long-term durability",
     span: "lg:col-span-4",
@@ -31,11 +38,11 @@ const FEATURED = [
     aspect: "aspect-square",
   },
   {
-    image: propertyImages.entrywayStaircase,
-    location: "Renovated Interior",
-    caption: "Bright, move-in ready entryways throughout",
-    span: "lg:col-span-4",
-    aspect: "aspect-square",
+    image: propertyImages.diningFireplace,
+    location: "Shared Common Area",
+    caption: "Comfortable shared common areas",
+    span: "lg:col-span-12",
+    aspect: "aspect-[21/9]",
   },
 ];
 
@@ -43,13 +50,15 @@ export default function FeaturedProperties() {
   return (
     <section className="bg-ink text-bone py-24 md:py-28 border-t border-line">
       <div className="mx-auto max-w-content px-6 md:px-10">
-        <p className="eyebrow text-brass-light mb-4">Featured Properties</p>
+        <p className="eyebrow text-brass-light mb-4">
+          Properties We Own and Operate
+        </p>
         <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-xl">
           A look at the kind of assets we acquire and operate.
         </h2>
         <p className="mt-5 max-w-2xl text-slate leading-relaxed text-sm">
           A small sample of properties currently owned and professionally
-          managed across the portfolio.
+          managed across the portfolio, spanning multiple markets.
         </p>
 
         <div className="mt-14 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-6">
@@ -76,6 +85,12 @@ export default function FeaturedProperties() {
             </figure>
           ))}
         </div>
+
+        <p className="mt-8 max-w-2xl text-slate/70 leading-relaxed text-xs">
+          Images are representative of properties owned or operated by
+          Michael Aylett and are provided for general background purposes
+          only. They do not represent a current investment offering.
+        </p>
       </div>
     </section>
   );

@@ -1,3 +1,6 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
 const STEPS = [
   { n: "01", t: "Conversation", d: "A no-pressure call to understand your property and your goals." },
   { n: "02", t: "Property Review", d: "I look at the property, the loan (if any), and the numbers." },
@@ -7,13 +10,29 @@ const STEPS = [
 ];
 
 export default function Process() {
+  const img = propertyImages.kitchenWhiteRenovated;
+
   return (
     <section className="bg-paper text-ink py-24 md:py-28">
       <div className="mx-auto max-w-content px-6 md:px-10">
-        <p className="eyebrow text-brass mb-4">My Process</p>
-        <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-xl">
-          Five steps, from first call to closing.
-        </h2>
+        <div className="flex items-end justify-between gap-8">
+          <div>
+            <p className="eyebrow text-brass mb-4">My Process</p>
+            <h2 className="font-display text-3xl md:text-4xl leading-tight max-w-xl">
+              Five steps, from first call to closing.
+            </h2>
+          </div>
+          <div className="hidden lg:block relative w-40 aspect-[4/3] shrink-0 border border-line-dark">
+            <Image
+              src={img.src}
+              alt={img.alt}
+              fill
+              sizes="160px"
+              className="object-cover"
+              loading="lazy"
+            />
+          </div>
+        </div>
 
         <div className="mt-16 relative">
           {/* connecting line */}

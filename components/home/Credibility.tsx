@@ -1,3 +1,6 @@
+import Image from "next/image";
+import { propertyImages } from "@/lib/propertyImages";
+
 const STATS = [
   { value: "91", label: "Doors Owned" },
   { value: "3+", label: "Markets" },
@@ -5,7 +8,16 @@ const STATS = [
   { value: "Conservative", label: "Underwriting Standard" },
 ];
 
+const PILLARS = [
+  "Long-term ownership",
+  "Professional management",
+  "Disciplined underwriting",
+  "Resident-focused operations",
+];
+
 export default function Credibility() {
+  const img = propertyImages.diningFireplace;
+
   return (
     <>
       <section className="bg-ink text-bone py-20 md:py-24 border-t border-line">
@@ -30,23 +42,51 @@ export default function Credibility() {
         </div>
       </section>
 
-      {/* Standalone mission statement, deliberately set apart from the stats above */}
-      <section className="bg-ink text-bone py-28 md:py-40 border-t border-line">
-        <div className="mx-auto max-w-[880px] px-6 md:px-10 text-center">
-          <p className="eyebrow text-brass-light mb-8">Mission</p>
-          <h2 className="font-display font-medium text-bone leading-[1.15] text-3xl sm:text-4xl md:text-5xl">
-            91 doors owned and professionally managed.
-          </h2>
-          <p className="mt-8 md:mt-10 text-slate text-lg md:text-xl leading-relaxed md:leading-loose max-w-2xl mx-auto">
-            Every property I acquire is intended to be owned and operated
-            for the long term, not flipped or left vacant.
-          </p>
-          <p className="mt-6 text-slate text-lg md:text-xl leading-relaxed md:leading-loose max-w-2xl mx-auto">
-            My focus is disciplined underwriting, responsible ownership,
-            and creating professionally managed shared housing that
-            benefits property owners, residents, brokers, and capital
-            partners alike.
-          </p>
+      {/* Standalone mission section, image on one side, text vertically centered on the other */}
+      <section className="bg-ink text-bone border-t border-line">
+        <div className="grid lg:grid-cols-2">
+          <div className="relative h-[42vh] lg:h-auto min-h-[420px]">
+            <Image
+              src={img.src}
+              alt={img.alt}
+              fill
+              sizes="(max-width: 1024px) 100vw, 50vw"
+              className="object-cover"
+              loading="lazy"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-ink/90 via-ink/20 to-transparent lg:bg-gradient-to-r lg:from-transparent lg:via-transparent lg:to-ink/10" />
+          </div>
+
+          <div className="flex items-center py-20 md:py-28 lg:py-0">
+            <div className="px-6 md:px-10 lg:pl-16 lg:pr-16 xl:pl-20 xl:pr-24 max-w-2xl">
+              <div className="border-l-2 border-brass/60 pl-6">
+                <p className="eyebrow text-brass-light mb-6">
+                  Long-Term Ownership
+                </p>
+                <h2 className="font-display font-medium text-bone leading-[1.1] text-4xl sm:text-5xl md:text-[3.4rem]">
+                  91 doors owned and professionally managed.
+                </h2>
+                <p className="mt-8 text-slate text-lg leading-relaxed">
+                  Every property I acquire is intended to be owned and
+                  operated for the long term, not flipped or left vacant.
+                </p>
+                <p className="mt-5 text-slate text-lg leading-relaxed">
+                  My focus is disciplined underwriting, responsible
+                  ownership, and professionally managed shared housing that
+                  creates value for property owners, residents, brokers,
+                  and capital partners.
+                </p>
+
+                <div className="mt-10 flex flex-wrap gap-x-8 gap-y-3">
+                  {PILLARS.map((p) => (
+                    <span key={p} className="eyebrow text-slate/80">
+                      {p}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </>

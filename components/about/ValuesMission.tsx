@@ -1,3 +1,6 @@
+import Image from "next/image";
+import { profileImage } from "@/lib/propertyImages";
+
 const VALUES = [
   { t: "Transparency", d: "Partners and sellers get straight answers, including when the answer is that a deal isn't a fit." },
   { t: "Discipline", d: "Conservative underwriting over exciting projections, every time." },
@@ -10,7 +13,19 @@ export default function ValuesMission() {
       <div className="mx-auto max-w-content px-6 md:px-10">
         <div className="grid lg:grid-cols-2 gap-14 lg:gap-20">
           <div>
-            <p className="eyebrow text-brass-light mb-4">Mission</p>
+            <div className="flex items-center gap-4 mb-4">
+              <div className="relative h-14 w-11 shrink-0 rounded-sm overflow-hidden border border-line">
+                <Image
+                  src={profileImage.src}
+                  alt={profileImage.alt}
+                  fill
+                  sizes="44px"
+                  className="object-cover"
+                  loading="lazy"
+                />
+              </div>
+              <p className="eyebrow text-brass-light">Mission</p>
+            </div>
             <h2 className="font-display text-3xl md:text-4xl leading-tight">
               Create real value for the people on both sides of a deal.
             </h2>

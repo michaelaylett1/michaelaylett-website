@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/", label: "Home" },
   { href: "/sellers", label: "Sellers" },
   { href: "/capital-partners", label: "Capital Partners" },
+  { href: "/rv-parks", label: "RV Parks" },
   { href: "/ecomranx", label: "EcomRanx" },
   { href: "/about", label: "About" },
   { href: "/contact", label: "Contact" },
@@ -40,7 +41,7 @@ export default function Header() {
             Michael Aylett
           </Link>
 
-          <nav className="hidden lg:flex items-center gap-7">
+          <nav className="hidden lg:flex items-center gap-5 xl:gap-7">
             {LINKS.map((l) => (
               <Link
                 key={l.href}
