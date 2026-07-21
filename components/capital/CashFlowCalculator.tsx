@@ -18,7 +18,7 @@
 import { useMemo, useState } from "react";
 
 const ASSUMED_RATE = 0.1; // 10% annual cash-on-cash, illustrative only
-const MIN_AMOUNT = 10000;
+const MIN_AMOUNT = 100000;
 const MAX_AMOUNT = 1000000;
 const STEP = 5000;
 const DEFAULT_AMOUNT = 100000;
@@ -79,8 +79,19 @@ export default function CashFlowCalculator() {
   };
 
   const handleTextBlur = () => {
-    setInputValue(formatWhole(Math.max(0, amount)));
+    // Once the visitor finishes typing, enforce the $100,000 minimum
+    // capital partner investment: anything typed below it snaps up to
+    // the minimum rather than silently calculating on an amount that
+    // isn't actually a valid investment size.
+    const clamped = Math.max(MIN_AMOUNT, amount);
+    setAmount(clamped);
+    setInputValue(formatWhole(clamped));
   };
+
+  // Shown live, while the visitor is still typing a value below the
+  // minimum, so they understand why it will snap up to $100,000 on blur
+  // rather than that just happening silently.
+  const belowMinimum = amount > 0 && amount < MIN_AMOUNT;
 
   const handleSlider = (e: React.ChangeEvent<HTMLInputElement>) => {
     const n = Number(e.target.value);
@@ -133,9 +144,16 @@ export default function CashFlowCalculator() {
                   onBlur={handleTextBlur}
                   placeholder="$100,000"
                   aria-label="Capital Partner Investment Amount in dollars"
+                  aria-invalid={belowMinimum}
                   className="w-full bg-white border border-line-dark pl-9 pr-4 py-4 text-ink font-display text-2xl outline-none focus:border-brass"
                 />
               </div>
+              {belowMinimum && (
+                <p className="mt-2 text-sm text-red-700">
+                  The minimum capital partner investment is{" "}
+                  {formatWhole(MIN_AMOUNT)}.
+                </p>
+              )}
 
               <div className="mt-6">
                 <input
