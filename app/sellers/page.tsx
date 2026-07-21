@@ -5,6 +5,7 @@ import WhyCreativeFinancing from "@/components/sellers/WhyCreativeFinancing";
 import LongTermOwnership from "@/components/sellers/LongTermOwnership";
 import Process from "@/components/sellers/Process";
 import FAQ from "@/components/sellers/FAQ";
+import TenantTestimonials from "@/components/sellers/TenantTestimonials";
 import SellerForm from "@/components/sellers/SellerForm";
 import ImageBanner from "@/components/shared/ImageBanner";
 import { propertyImages } from "@/lib/propertyImages";
@@ -24,6 +25,7 @@ export default function SellersPage() {
       <LongTermOwnership />
       <Process />
       <FAQ />
+      <TenantTestimonials />
       <ImageBanner
         image={propertyImages.hallwayNumberedDoors}
         eyebrow="Ready When You Are"

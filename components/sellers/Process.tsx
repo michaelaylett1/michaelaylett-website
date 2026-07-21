@@ -22,12 +22,18 @@ export default function Process() {
               Five steps, from first call to closing.
             </h2>
           </div>
-          <div className="hidden lg:block relative w-40 aspect-[4/3] shrink-0 border border-line-dark">
+          {/* Hidden below lg (unchanged from before) so the heading never
+              wraps awkwardly next to it on tablet/mobile; sized up ~60%
+              at lg and ~80% at xl (was a fixed 160px) so it reads as a
+              real visual anchor instead of a small thumbnail. aspect-[4/3]
+              plus object-cover keeps it uncropped and undistorted at every
+              size. */}
+          <div className="hidden lg:block relative w-64 xl:w-72 aspect-[4/3] shrink-0 border border-line-dark">
             <Image
               src={img.src}
               alt={img.alt}
               fill
-              sizes="160px"
+              sizes="(min-width: 1280px) 288px, 256px"
               className="object-cover"
               loading="lazy"
             />
