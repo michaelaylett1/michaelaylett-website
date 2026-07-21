@@ -184,14 +184,25 @@ misconfigured setting.
 
 ### 3. Create the RESEND_API_KEY environment variable in Vercel
 
+The exact steps, in the Vercel dashboard:
+
 1. Open your project on [vercel.com](https://vercel.com).
 2. Go to **Settings > Environment Variables**.
-3. Add `RESEND_API_KEY` with the value from step 1, for the
-   **Production** (and, if you want to test on preview deployments,
-   **Preview**) environment.
-4. Optionally add `RESEND_FROM_EMAIL` the same way once your domain is
-   verified.
-5. Redeploy so the new variables take effect.
+3. Click **Add New**.
+   - **Key**: `RESEND_API_KEY`
+   - **Value**: the key you copied from Resend in step 1.
+   - **Environments**: check **Production**. Also check **Preview** if you
+     test forms on preview deployments (e.g. pull request previews), and
+     **Development** if you use `vercel dev`.
+4. Click **Save**.
+5. Repeat for `RESEND_FROM_EMAIL` once your domain is verified (step 2).
+   Value example: `Michael Aylett Website <notifications@michaelaylett.com>`.
+6. **Redeploy.** Environment variable changes do not apply to deployments
+   that already exist; you must trigger a new deployment (Deployments tab
+   > ... menu on the latest deployment > Redeploy, or push a new commit)
+   after adding or changing a variable. This is the single most common
+   reason a variable "is set" in the dashboard but the live site still
+   fails as if it were missing.
 
 For local development, copy `.env.example` to `.env.local` and fill in
 the same values; `.env.local` is already gitignored and never committed.
@@ -201,62 +212,145 @@ the same values; `.env.local` is already gitignored and never committed.
 The Capital Partner (required) and RV Park (optional) forms upload files.
 They're stored in a **private** Vercel Blob store, never in this
 repository or the public `public/` directory, so uploaded financial
-documents can't end up on GitHub or be served as static site assets:
+documents can't end up on GitHub or be served as static site assets.
 
-1. In the Vercel project, go to **Storage > Create Database > Blob**.
-2. Set access to **Private** when creating the store.
-3. Connect the store to this project (Vercel then provides the
-   credentials the `@vercel/blob` SDK needs automatically in
-   production, no manual token copy required).
-4. For local development, run `vercel env pull .env.local` after
-   connecting the store so the required token is available locally too.
+**This store must be connected to this exact project.** A Blob store
+created in a different Vercel project, or never connected to any
+project, will not work here, even if it exists in the same Vercel team.
+
+1. In the Vercel project, go to **Storage** tab > **Create Database** >
+   **Blob**.
+2. Click **Continue**, then set access to **Private** (not Public; see
+   "Important security requirement" below for why this matters).
+3. Name the store and select **Create**.
+4. On the store's page, go to the **Projects** tab and select **Connect
+   to Project**. Choose this project and the environments you need
+   (Production, and Preview/Development if you test there too).
+5. Connecting the store adds environment variables to this project
+   automatically: `BLOB_READ_WRITE_TOKEN` (a static token, used as a
+   fallback) and, when connected this way, `BLOB_STORE_ID` plus
+   `VERCEL_OIDC_TOKEN` (Vercel's preferred, auto-rotating credential,
+   populated automatically on every deployment). You do not need to copy
+   any token by hand for production.
+6. **Redeploy** after connecting the store, for the same reason as step
+   3 above: the credentials are injected into new deployments, not
+   retroactively into ones that are already running.
+7. For local development, run `vercel env pull .env.local` after
+   connecting the store so `BLOB_READ_WRITE_TOKEN` (and related
+   variables) are available locally too.
 
 Because the store is private, uploaded files are never reachable by a
-guessable public URL. The notification email instead includes a signed,
-time-limited link (valid 7 days, the maximum Vercel allows) generated
-with Vercel's signed-URL API. Only someone with that exact link, within
-the validity window, can open the file. Each file is capped at 8MB and a
+guessable public URL, and the code never falls back to a public store.
+The notification email instead includes a signed, time-limited link
+(valid 7 days, the maximum Vercel allows) generated with Vercel's
+signed-URL API (`issueSignedToken` + `presignUrl` from `@vercel/blob`,
+in `lib/forms/storage.ts`). Only someone with that exact link, within the
+validity window, can open the file. Each file is capped at 8MB and a
 submission may include up to 5 files; adjust `MAX_FILE_SIZE_BYTES` and
 `MAX_FILES_PER_SUBMISSION` in `lib/forms/storage.ts` if you need
-different limits (Vercel serverless functions have their own request
-size limits too, so very large files may need a different upload
-strategy).
+different limits (Vercel Functions have their own request size limits
+too, so very large files may need a different upload strategy).
 
-### 5. How to test each form
+File type is checked twice: by extension (`.pdf`, `.jpg`, `.jpeg`,
+`.png`, `.xlsx`, `.xls`, `.csv`, `.doc`, `.docx`) and, when the browser
+provides one, by MIME type, so a file renamed to spoof its extension is
+rejected. Filenames are sanitized before storage (anything other than
+letters, numbers, `.`, `_`, and `-` becomes `_`), so spaces and
+punctuation in the original filename are handled safely and can't affect
+the storage path.
 
-With `RESEND_API_KEY` (and, for file uploads, a connected Blob store) set
-in `.env.local`:
+### 5. How to inspect Vercel Function logs
+
+When a form fails in production, the visitor sees a generic message on
+purpose (so technical details aren't exposed to strangers on the
+internet), but the real cause is always logged server-side, tagged so
+it's easy to find:
+
+1. Open the project on [vercel.com](https://vercel.com).
+2. Go to the **Deployments** tab and open the deployment that's
+   currently live (or **Logs**/**Runtime Logs**, if your project has a
+   dedicated tab for it).
+3. Filter or search for `[forms:` — every diagnostic message this
+   project logs is prefixed `[forms:email]`, `[forms:blob]`,
+   `[forms:seller]`, `[forms:contact]`, `[forms:capital-partner]`, or
+   `[forms:rv-park]`.
+4. Reproduce the failing submission, then refresh the logs. You can also
+   use the Vercel CLI: `vercel logs <deployment-url>` (or `vercel logs
+   --follow` while you submit a test form) streams the same logs to your
+   terminal.
+
+None of these logs include the Resend API key, the Blob token, uploaded
+file contents, or full submitted field values (name/email/phone and
+message text are not logged; only operational details like file size,
+file extension, error type, and Resend's own error message/name).
+
+### 6. Diagnosing common production errors
+
+| Symptom | Likely cause | Where to look |
+| --- | --- | --- |
+| Seller/Contact/Capital Partner/RV Park form: "Something went wrong while sending your submission" | `RESEND_API_KEY` missing or invalid in this environment, sending domain not verified, or `RESEND_FROM_EMAIL` not on a verified domain | Vercel log line starting `[forms:email]`. A missing key logs `RESEND_API_KEY is not set in this environment`. A Resend-side rejection (bad key, unverified domain, invalid from address) logs `Resend API error (<name>): <message>` with the exact reason from Resend. |
+| Capital Partner/RV Park form: "Failed to securely store [filename]" | No private Blob store connected to this project/environment, connected but not redeployed since, or the store was created as Public instead of Private | Vercel log line starting `[forms:blob] upload failed`, which names the specific error (for example `BlobStoreNotFoundError` or `BlobAccessError`) and a one-line hint on what to check |
+| "[filename] was uploaded but a secure link could not be generated" | The file itself stored successfully, but generating the signed link failed (transient Vercel Blob issue, or a store/credential problem that only affects signing) | `[forms:blob] sign-token failed` in the logs |
+| Form works locally but not in production | Environment variables set locally (`.env.local`) but not added in Vercel, or added but not redeployed | Compare `.env.local` against Vercel's Environment Variables list; redeploy after adding anything |
+| No `[forms:...]` log lines appear at all for a failed submission | The request may not be reaching the function (check the Network tab in your browser for the actual HTTP status of the `/api/forms/...` request), or you're looking at logs for the wrong deployment | Confirm the deployment URL you're testing matches the one whose logs you're viewing |
+
+### 7. How to test each form
+
+**Locally first:**
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then, with the dev server running at `http://localhost:3000`:
+With `RESEND_API_KEY` (and, for file uploads, a connected Blob store's
+credentials) in `.env.local`, exercise each form at
+`http://localhost:3000` as described below.
 
-- **Seller**: visit `/sellers`, fill in the intake form at the bottom,
-  and submit. Check michael@michaelaylett.com for a "New Seller Property
-  Inquiry" email.
+**Then in production**, after completing the manual setup in this
+section and confirming you redeployed:
+
+- **Seller**: visit `/sellers`, fill in the intake form at the bottom
+  (no file involved), and submit. Confirm the page shows a success
+  message without navigating away, and that michael@michaelaylett.com
+  receives a "New Seller Property Inquiry" email with every field you
+  entered.
 - **General contact**: visit `/contact`, stay on the default "Selling a
-  Property" tab, fill it in, and submit. Check for "New Website Contact".
-- **Capital partner**: visit `/contact`, switch to "Capital Partnership",
-  fill in the required fields, attach at least one file, check the
-  acknowledgment box, and submit. Check for "New Capital Partner
-  Submission" with a working file link.
-- **RV park**: visit `/rv-parks`, fill in the submission form (a file
-  upload is optional here), and submit. Check for "New RV Park
-  Opportunity".
+  Property" tab, fill it in, and submit. Confirm success on-page and a
+  "New Website Contact" email.
+- **Capital partner**: visit `/contact`, switch to "Capital
+  Partnership", fill in the required fields, check the acknowledgment
+  box, and submit three times, once each with a small PNG, a JPG, and a
+  PDF attached. Confirm success on-page each time and a "New Capital
+  Partner Submission" email each time, with a working, clickable secure
+  link to the uploaded file (opening it should show the document; it
+  should not be a plain public Blob URL).
+- **RV park**: visit `/rv-parks`, fill in the submission form and attach
+  a document (any allowed type), and submit. Confirm success on-page and
+  a "New RV Park Opportunity" email with a working secure file link.
 
-For each form, also verify: leaving a required field blank shows an
+For every form, also confirm: leaving a required field blank shows an
 inline validation message instead of submitting; the submit button
-disables and shows a "Sending..."/"Submitting..." state while the request
-is in flight; a success message appears after a real submission without
-the page navigating or refreshing; and temporarily using an invalid
-`RESEND_API_KEY` produces a visible error message instead of a silent
-failure.
+disables and shows a "Sending..."/"Submitting..." state while the
+request is in flight; the page never navigates away or refreshes; and no
+form on the site (other than the Amazon Consulting tab, which is
+intentionally out of scope) opens your email client.
 
 Never commit uploaded financial documents, API keys, or `.env.local` to
 this repository.
+
+### Important security requirement, reconfirmed
+
+Proof of Funds and other financial documents are only ever written to a
+**private** Vercel Blob store (`access: "private"` in
+`lib/forms/storage.ts`) and are never placed in `public/` or committed
+to the repository. Access requires a signed link with an expiry, not a
+guessable or permanently public URL. If you inspect a store in the
+Vercel dashboard and its access shows as **Public**, delete it and
+recreate it as **Private**, then reconnect and redeploy; a public store
+is not compatible with this code (`put()` calls request
+`access: "private"` explicitly, so uploads will fail against a
+public-only store rather than silently becoming public).
 
 ## Content guardrails in place
 
@@ -320,3 +414,94 @@ the rest of the app (no breaking API changes). A newer major version
 (Next.js 16) is available upstream with additional fixes; consider
 evaluating an upgrade separately, as it is a larger change outside the
 scope of this update.
+
+## Production failure fix: what changed and what's still manual
+
+This section documents the round of fixes made after the forms were
+reported failing in production ("Something went wrong while sending your
+submission" on the Seller form, "Failed to securely store [filename]" on
+the Capital Partner form). I don't have access to this project's live
+Vercel deployment, account, or logs, so I could not read the actual
+runtime error directly; the fixes below come from a careful audit of the
+API routes, `lib/forms/`, and the current `@vercel/blob` and Resend SDKs,
+targeted at exactly the two symptoms reported, plus the debugging tools
+needed to pin down the real cause from your own Vercel logs.
+
+### A. Code changes completed
+
+- **Fixed a real bug**: `lib/forms/storage.ts` caught every file-upload
+  error (auth, missing store, size limits, network) and silently
+  discarded the real error before showing a generic message. Nothing was
+  logged, so the Vercel Function logs would have shown nothing useful for
+  the Capital Partner failure. This is fixed: the real error is now
+  logged server-side (`[forms:blob]`, using `@vercel/blob`'s specific
+  error classes like `BlobStoreNotFoundError` and `BlobAccessError` to
+  say exactly what's wrong), while the visitor still only sees a safe,
+  generic message.
+- Added the same style of logging to `lib/forms/email.ts`
+  (`[forms:email]`): a missing `RESEND_API_KEY` is logged explicitly, and
+  a rejected send now logs Resend's own error name and message (for
+  example, an unverified domain or invalid API key) instead of only
+  surfacing a wrapped generic error.
+- Added a shared `jsonServerError()` helper (`lib/forms/response.ts`) so
+  every route's catch-all block logs consistently, tagged by form
+  (`[forms:seller]`, `[forms:contact]`, `[forms:capital-partner]`,
+  `[forms:rv-park]`), searchable in Vercel's Runtime Logs.
+- Added MIME-type validation in `lib/forms/storage.ts` on top of the
+  existing extension check, so a file with a spoofed extension is
+  rejected rather than silently accepted.
+- Added `maxDuration = 30` to the Capital Partner and RV Park routes,
+  since file upload + signed-link generation + email together can take
+  longer than the platform's 10-second default on some plans.
+- Confirmed (no change needed): all four routes already declared
+  `export const runtime = "nodejs"`; `RESEND_API_KEY` is read server-side
+  only, inside a route handler, and is never sent to the browser;
+  notifications are always sent `to: michael@michaelaylett.com` from a
+  hardcoded constant; the `from` address is read from
+  `RESEND_FROM_EMAIL` server-side; uploads use `access: "private"`
+  exclusively; filenames are sanitized; and no logging statement anywhere
+  in `lib/forms/` includes the Resend API key, the Blob token, uploaded
+  file contents, or full submitted field values.
+- Verified: `npm run build` succeeds, `tsc --noEmit` is clean, and every
+  route handler's actual logic (validation, honeypot, rate limiting, the
+  new error paths) was exercised directly with a standalone test harness
+  hitting the real `POST` functions with constructed requests. I could
+  not exercise a real, successful send or upload from this environment,
+  since I have no network access to Resend's or Vercel's APIs and no
+  credentials for your accounts.
+
+### B. Manual setup you still need to complete
+
+I cannot see your Vercel project, so I can't confirm which of these is
+actually the cause, only that the symptoms you described are consistent
+with one or more of them. Please check, in order:
+
+1. **Resend**: an API key exists and is valid, and it's the one entered
+   as `RESEND_API_KEY` in Vercel (see "3. Create the RESEND_API_KEY
+   environment variable in Vercel" above).
+2. **Resend sending domain**: verified in the Resend dashboard, and
+   `RESEND_FROM_EMAIL` in Vercel is set to an address on that domain
+   (see "2. Verify the sending domain" above). Until this is done, email
+   sent from the sandbox address can fail to reach
+   michael@michaelaylett.com.
+3. **Vercel environment variables redeployed**: `RESEND_API_KEY` and
+   `RESEND_FROM_EMAIL` must be added for the **Production** environment
+   specifically (not just Preview/Development), and the project must be
+   **redeployed** after adding them.
+4. **Vercel Blob store**: a store exists, its access is set to
+   **Private**, and it is connected to this exact project under
+   **Storage > your store > Projects > Connect to Project** (see "4.
+   Environment variables needed for file storage" above). Then
+   **redeploy**.
+5. Once the above are in place, follow "5. How to inspect Vercel
+   Function logs" and "6. Diagnosing common production errors" above to
+   confirm from the actual `[forms:email]` / `[forms:blob]` log lines
+   which specific step is still misconfigured, if any.
+
+I have not stated that the forms are fully working end to end in
+production, because I cannot verify that from here. What I can confirm:
+the code builds successfully, type-checks cleanly, and each route's
+logic behaves correctly when called directly with realistic requests.
+Whether email actually delivers and files actually upload in your
+specific Vercel + Resend accounts depends on the manual setup above,
+which only you can complete and verify.

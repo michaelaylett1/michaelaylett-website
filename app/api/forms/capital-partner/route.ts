@@ -1,10 +1,16 @@
 import { runSpamGuards } from "@/lib/forms/guard";
 import { sendNotificationEmail } from "@/lib/forms/email";
-import { jsonError, jsonSuccess } from "@/lib/forms/response";
+import { jsonError, jsonServerError, jsonSuccess } from "@/lib/forms/response";
 import { sanitizeString, validateContactBasics } from "@/lib/forms/validate";
 import { FileUploadError, uploadFormFiles } from "@/lib/forms/storage";
 
 export const runtime = "nodejs";
+// File uploads (validation + Blob storage + signed-link generation) plus
+// sending the email can take longer than the platform's 10s default on
+// some plans. Raise the ceiling; actual duration is normally a couple of
+// seconds. Requires a plan that supports durations above 10s for this to
+// take effect (Hobby is capped at 10s regardless of this setting).
+export const maxDuration = 30;
 
 export async function POST(request: Request) {
   try {
@@ -79,10 +85,6 @@ export async function POST(request: Request) {
 
     return jsonSuccess();
   } catch (err) {
-    console.error("Capital partner form submission failed:", err);
-    return jsonError(
-      "Something went wrong while sending your submission. Please try again, or email michael@michaelaylett.com directly.",
-      500
-    );
+    return jsonServerError("capital-partner", err);
   }
 }

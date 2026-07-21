@@ -1,6 +1,6 @@
 import { runSpamGuards } from "@/lib/forms/guard";
 import { sendNotificationEmail } from "@/lib/forms/email";
-import { jsonError, jsonSuccess } from "@/lib/forms/response";
+import { jsonError, jsonServerError, jsonSuccess } from "@/lib/forms/response";
 import { sanitizeString, validateContactBasics } from "@/lib/forms/validate";
 
 export const runtime = "nodejs";
@@ -53,10 +53,6 @@ export async function POST(request: Request) {
 
     return jsonSuccess();
   } catch (err) {
-    console.error("Contact form submission failed:", err);
-    return jsonError(
-      "Something went wrong while sending your submission. Please try again, or email michael@michaelaylett.com directly.",
-      500
-    );
+    return jsonServerError("contact", err);
   }
 }

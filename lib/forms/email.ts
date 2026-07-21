@@ -9,6 +9,10 @@ let resendClient: Resend | null = null;
 function getResendClient(): Resend {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
+    console.error(
+      "[forms:email] RESEND_API_KEY is not set in this environment. " +
+        "Add it in Vercel: Project > Settings > Environment Variables (Production and Preview), then redeploy. See README.md."
+    );
     throw new Error(
       "RESEND_API_KEY is not set. Add it to your environment variables (see README.md)."
     );
@@ -142,16 +146,46 @@ export async function sendNotificationEmail(
   const resend = getResendClient();
   const from = process.env.RESEND_FROM_EMAIL || DEFAULT_FROM;
 
-  const { error } = await resend.emails.send({
-    from,
-    to: NOTIFICATION_EMAIL,
-    subject: input.subject,
-    html: buildHtml(input),
-    text: buildText(input),
-    replyTo: input.replyTo,
-  });
-
-  if (error) {
-    throw new Error(`Resend failed to send email: ${error.message}`);
+  if (!process.env.RESEND_FROM_EMAIL) {
+    console.warn(
+      `[forms:email] RESEND_FROM_EMAIL is not set; sending from the Resend sandbox address (${DEFAULT_FROM}). ` +
+        "The sandbox address only delivers to the email on your own Resend account, so this notification " +
+        "may not reach michael@michaelaylett.com. Verify a sending domain in Resend and set RESEND_FROM_EMAIL. See README.md."
+    );
   }
+
+  let result;
+  try {
+    result = await resend.emails.send({
+      from,
+      to: NOTIFICATION_EMAIL,
+      subject: input.subject,
+      html: buildHtml(input),
+      text: buildText(input),
+      replyTo: input.replyTo,
+    });
+  } catch (err) {
+    // Network failure, Resend outage, malformed request thrown as an
+    // exception rather than returned as `{ error }`, etc.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[forms:email] Resend request threw an exception: ${message}`);
+    throw new Error("The email service could not be reached.");
+  }
+
+  if (result.error) {
+    // Log the specific Resend error (name + message; Resend errors don't
+    // include your API key or email body) so the exact cause (e.g. "domain
+    // is not verified", "invalid from address", "invalid API key") is
+    // visible in Vercel Function logs even though the visitor only sees a
+    // generic message.
+    console.error(
+      `[forms:email] Resend API error (${result.error.name}): ${result.error.message}. ` +
+        `from="${from}" to="${NOTIFICATION_EMAIL}" subject="${input.subject}"`
+    );
+    throw new Error(`Resend failed to send email: ${result.error.message}`);
+  }
+
+  console.log(
+    `[forms:email] Sent "${input.subject}" (Resend id: ${result.data?.id ?? "unknown"}).`
+  );
 }

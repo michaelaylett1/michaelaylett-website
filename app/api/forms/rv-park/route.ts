@@ -1,10 +1,13 @@
 import { runSpamGuards } from "@/lib/forms/guard";
 import { sendNotificationEmail } from "@/lib/forms/email";
-import { jsonError, jsonSuccess } from "@/lib/forms/response";
+import { jsonError, jsonServerError, jsonSuccess } from "@/lib/forms/response";
 import { sanitizeString, validateContactBasics } from "@/lib/forms/validate";
 import { FileUploadError, uploadFormFiles } from "@/lib/forms/storage";
 
 export const runtime = "nodejs";
+// See the comment in app/api/forms/capital-partner/route.ts: this route
+// also uploads files, so it gets the same higher duration ceiling.
+export const maxDuration = 30;
 
 export async function POST(request: Request) {
   try {
@@ -76,10 +79,6 @@ export async function POST(request: Request) {
 
     return jsonSuccess();
   } catch (err) {
-    console.error("RV park form submission failed:", err);
-    return jsonError(
-      "Something went wrong while sending your submission. Please try again, or email michael@michaelaylett.com directly.",
-      500
-    );
+    return jsonServerError("rv-park", err);
   }
 }
