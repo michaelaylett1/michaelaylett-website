@@ -653,6 +653,78 @@ function BalloonRefinancePrintCard({
   );
 }
 
+// The printable-report card for Traditional Financing's Long-Term Rent
+// LTV Qualification, matching BalloonRefinancePrintCard's pattern:
+// purely presentational, same status wording as the on-page panel, and
+// rendered by the caller only when a Long-Term Rent was actually
+// entered -- when it is blank, the caller renders nothing at all here,
+// so no blank or near-blank section or stray page is ever created.
+function TraditionalLtvPrintCard({
+  longTermRent,
+  piti,
+  selectedLtvPct,
+  requiredDownPaymentPct,
+  meetsRentTest,
+}: {
+  longTermRent: number;
+  piti: number;
+  selectedLtvPct: number;
+  requiredDownPaymentPct: number;
+  meetsRentTest: boolean;
+}) {
+  return (
+    <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <Landmark size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+          Long-Term Rent LTV Qualification
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Estimated Monthly Long-Term Rent</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatCents(longTermRent)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Estimated Monthly PITI</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatCents(piti)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Selected LTV</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatPercent(selectedLtvPct)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Required Down Payment Percentage</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatPercent(requiredDownPaymentPct)}</span>
+        </div>
+      </div>
+      <div className="mt-2 pt-2 border-t border-ink/10">
+        {meetsRentTest ? (
+          <div className="rounded border border-green-700 bg-green-50 p-2.5">
+            <p className="text-[9pt] text-green-800 leading-relaxed inline-flex items-start gap-1.5">
+              <CheckCircle2 size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>
+                Estimated long-term rent supports the monthly PITI. Proceeding with an 80% LTV
+                assumption.
+              </span>
+            </p>
+          </div>
+        ) : (
+          <div className="rounded border border-red-700 bg-red-50 p-2.5">
+            <p className="text-[9pt] text-red-800 leading-relaxed inline-flex items-start gap-1.5">
+              <XCircle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>
+                Estimated long-term rent is below the monthly PITI. Using a more conservative 75%
+                LTV assumption.
+              </span>
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
 // Traditional Financing: a true fixed-rate, fully amortizing 30-year
 // loan schedule (principal and interest only, no balloon payment). The
@@ -1139,7 +1211,7 @@ function HighlightBullet({
   const badgeClass = accent === "brass" ? "bg-brass" : "bg-ink";
   const badgeStyle = accent === "green" ? { backgroundColor: "#1E8E3E" } : undefined;
   return (
-    <div className="flex items-start gap-3 py-2.5 border-b border-ink/10 last:border-b-0">
+    <div className="flex items-start gap-3 py-2 border-b border-ink/10 last:border-b-0">
       <div
         className={`h-7 w-7 flex-shrink-0 rounded-full text-white flex items-center justify-center ${
           accent === "green" ? "" : badgeClass
@@ -1240,6 +1312,10 @@ type CapitalKey =
   | "tcAndLlc"
   | "stackTcFee"
   | "stackLlcFee"
+  | "traditionalTcFee"
+  | "traditionalLlcFee"
+  | "subjectToTcFee"
+  | "subjectToLlcFee"
   | "agentFee"
   | "assignmentFee";
 
@@ -1251,9 +1327,10 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   photos: 300,
   upfrontInsurance: 3000,
   acquisitionFee: 10000,
-  // "TC and LLC" (Traditional Financing, Subject To, Seller Financing,
-  // and Subject To & Seller Finance Hybrid): a single combined field,
-  // unchanged.
+  // "TC and LLC" (Seller Financing and Subject To & Seller Finance
+  // Hybrid only): a single combined field, unchanged. No longer used by
+  // Traditional Financing or Subject To -- see their own separate fee
+  // pairs below.
   tcAndLlc: 2000,
   // Stack Method only: TC and LLC are two separate, independently
   // editable fees instead of the combined field above. Never used by
@@ -1261,6 +1338,16 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   // is never used by Stack Method -- each fee is included exactly once.
   stackTcFee: 2500,
   stackLlcFee: 1000,
+  // Traditional Financing only: its own independent TC Fee / LLC Entity
+  // Formation Cost pair, separate from every other financing structure's
+  // fields, so editing one structure's fees never affects another's.
+  traditionalTcFee: 1500,
+  traditionalLlcFee: 1000,
+  // Subject To only: its own independent TC Fee / LLC Entity Formation
+  // Cost pair, same defaults as Traditional Financing but tracked
+  // completely separately.
+  subjectToTcFee: 1500,
+  subjectToLlcFee: 1000,
   agentFee: 0,
   assignmentFee: 0,
 };
@@ -1614,6 +1701,16 @@ export default function SharedHousingCalculator() {
   const [stackLongTermRent, setStackLongTermRent] = useState<number | null>(null);
   const [stackLongTermRentDraft, setStackLongTermRentDraft] = useState("");
 
+  // Estimated Monthly Long-Term Rent (Traditional Financing): the same
+  // optional, blank-by-default pattern as Stack Method's Long-Term Rent
+  // Qualification above. While blank, the manually selected Down
+  // Payment Percentage is used unchanged; once a value is entered, it
+  // is compared against the Estimated Monthly PITI at an 80% LTV
+  // assumption to automatically select an 80% or 75% Selected LTV (see
+  // traditionalLtvAutoSelected above).
+  const [traditionalLongTermRent, setTraditionalLongTermRent] = useState<number | null>(null);
+  const [traditionalLongTermRentDraft, setTraditionalLongTermRentDraft] = useState("");
+
   // ---------------------------------------------------------------------
   // Balloon Refinance Analysis: one independent Yes/No + terms + 70% LTV
   // contingency set per applicable financing structure (Stack Method,
@@ -1818,6 +1915,23 @@ export default function SharedHousingCalculator() {
     setStackLongTermRentDraft(formatCents(clamped));
   }
 
+  // Estimated Monthly Long-Term Rent (Traditional Financing): same
+  // blank-vs-$0 handling as handleStackLongTermRentChange/Blur above.
+  function handleTraditionalLongTermRentChange(raw: string) {
+    setTraditionalLongTermRentDraft(raw);
+    setTraditionalLongTermRent(raw.trim() === "" ? null : parseTypedAmount(raw));
+  }
+  function handleTraditionalLongTermRentBlur() {
+    if (traditionalLongTermRentDraft.trim() === "") {
+      setTraditionalLongTermRent(null);
+      setTraditionalLongTermRentDraft("");
+      return;
+    }
+    const clamped = round2(Math.max(0, parseTypedAmount(traditionalLongTermRentDraft)));
+    setTraditionalLongTermRent(clamped);
+    setTraditionalLongTermRentDraft(formatCents(clamped));
+  }
+
   function handleMaintenanceExpenseChange(key: MaintenanceExpenseKey, raw: string) {
     setMaintenanceExpensesDraft((prev) => ({ ...prev, [key]: raw }));
     setMaintenanceExpenses((prev) => ({ ...prev, [key]: parseTypedAmount(raw) }));
@@ -1871,7 +1985,7 @@ export default function SharedHousingCalculator() {
     const remainingSlots = MAX_PROPERTY_IMAGES - propertyImages.length;
     if (remainingSlots <= 0) {
       setImageError(
-        `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Remove a photo before adding another.`
+        `Maximum of ${MAX_PROPERTY_IMAGES} property photos reached. Remove a photo before adding another.`
       );
       return;
     }
@@ -1994,6 +2108,11 @@ export default function SharedHousingCalculator() {
     // Bank Loan-to-Value Percentage goes back to being manually selected.
     setStackLongTermRent(null);
     setStackLongTermRentDraft("");
+    // Long-Term Rent LTV Qualification (Traditional Financing): blank/
+    // null is the default, meaning Down Payment Percentage goes back to
+    // being manually selected.
+    setTraditionalLongTermRent(null);
+    setTraditionalLongTermRentDraft("");
     // Balloon Refinance Analysis: every "Exists" flag resets to No, the
     // year fields reset to their 5-year default, and every 70% LTV
     // contingency resets to Yes, for all four applicable structures.
@@ -2071,12 +2190,58 @@ export default function SharedHousingCalculator() {
   // always in sync.
   // ---------------------------------------------------------------------
 
+  // Long-Term Rent LTV qualification check: compares the optional
+  // Estimated Monthly Long-Term Rent against the Estimated Monthly PITI
+  // evaluated hypothetically at an 80% LTV (20% down) -- a fixed
+  // reference point that never itself depends on which LTV ends up
+  // selected, avoiding a circular calculation -- to decide whether an
+  // 80% or a more conservative 75% LTV assumption should be used.
+  // Always uses the fixed 30-year/360-payment amortization. Only takes
+  // effect once a Long-Term Rent has been entered; while the field is
+  // blank (null), the manually entered percent.traditionalDownPaymentPct
+  // is used unchanged instead, matching the same pattern already used
+  // for Stack Method's Long-Term Rent Qualification check.
+  const traditionalLoanAmountAt80 = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice * 0.8)),
+    [financing.purchasePrice]
+  );
+  const traditionalPITIAt80 = useMemo(() => {
+    const monthlyPI = calculateMonthlyPrincipalAndInterest(
+      traditionalLoanAmountAt80,
+      percent.traditionalInterestRatePct
+    );
+    return round2(monthlyPI + financing.annualPropertyTaxes / 12 + financing.annualPropertyInsurance / 12);
+  }, [
+    traditionalLoanAmountAt80,
+    percent.traditionalInterestRatePct,
+    financing.annualPropertyTaxes,
+    financing.annualPropertyInsurance,
+  ]);
+  // null while Long-Term Rent is blank (no automatic adjustment); 80 or
+  // 75 once a value has been entered.
+  const traditionalLtvAutoSelected: 75 | 80 | null = useMemo(() => {
+    if (traditionalLongTermRent === null) return null;
+    return traditionalLongTermRent >= traditionalPITIAt80 ? 80 : 75;
+  }, [traditionalLongTermRent, traditionalPITIAt80]);
+  // Selected LTV actually used for every calculation below: the
+  // auto-selected value once a Long-Term Rent has been entered,
+  // otherwise 100 - the manually entered Down Payment Percentage,
+  // unchanged.
+  const traditionalSelectedLtvPct =
+    traditionalLtvAutoSelected !== null ? traditionalLtvAutoSelected : 100 - percent.traditionalDownPaymentPct;
+  // Required Down Payment Percentage: the complement of Selected LTV.
+  const traditionalEffectiveDownPaymentPct =
+    traditionalLtvAutoSelected !== null ? 100 - traditionalLtvAutoSelected : percent.traditionalDownPaymentPct;
+
   // Down Payment is entered as a percentage of the Purchase Price
   // (Down Payment Percentage), not a dollar amount. Estimated Down
-  // Payment = Purchase Price x Down Payment Percentage.
+  // Payment = Purchase Price x effective Down Payment Percentage (see
+  // traditionalEffectiveDownPaymentPct above -- automatically 20% or
+  // 25% once a Long-Term Rent has been entered, otherwise the manually
+  // selected percentage).
   const traditionalDownPaymentAmount = useMemo(
-    () => round2(financing.purchasePrice * (percent.traditionalDownPaymentPct / 100)),
-    [financing.purchasePrice, percent.traditionalDownPaymentPct]
+    () => round2(financing.purchasePrice * (traditionalEffectiveDownPaymentPct / 100)),
+    [financing.purchasePrice, traditionalEffectiveDownPaymentPct]
   );
 
   // Loan Balance = Purchase Price - Estimated Down Payment, never
@@ -2912,6 +3077,19 @@ export default function SharedHousingCalculator() {
       round2(stackBaseCapitalRequired + stackClosingCashAdjustment)
     );
 
+    // TC Fee + LLC Entity Formation Cost: Traditional Financing and
+    // Subject To each use their own independent fee pair; Seller
+    // Financing and Hybrid still use the single combined tcAndLlc field.
+    // Stack Method never reaches this branch (it uses
+    // stackTcFee/stackLlcFee above instead). Each fee is included
+    // exactly once.
+    const tcAndLlcTotal =
+      financingMode === "traditional"
+        ? capital.traditionalTcFee + capital.traditionalLlcFee
+        : financingMode === "subjectTo"
+          ? capital.subjectToTcFee + capital.subjectToLlcFee
+          : capital.tcAndLlc;
+
     const totalCapitalRequired =
       financingMode === "stackMethod"
         ? stackAdjustedTotalCapitalRequired
@@ -2926,7 +3104,7 @@ export default function SharedHousingCalculator() {
               RESERVES_AMOUNT +
               (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
               capital.acquisitionFee +
-              capital.tcAndLlc +
+              tcAndLlcTotal +
               closingCosts +
               capital.agentFee +
               capital.assignmentFee
@@ -3072,7 +3250,10 @@ export default function SharedHousingCalculator() {
                 { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
                 { label: "Financing Structure", value: financingStructureLabel },
                 { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-                { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
+                {
+                  label: "Down Payment Percentage",
+                  value: formatPercent(traditionalEffectiveDownPaymentPct),
+                },
                 { label: "Estimated Down Payment", value: formatCents(traditionalDownPaymentAmount) },
                 { label: "Estimated Loan Balance", value: formatCents(traditionalLoanBalance) },
                 { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
@@ -3278,7 +3459,17 @@ export default function SharedHousingCalculator() {
                   ? []
                   : [{ label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) }]),
                 { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
-                { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
+                ...(financingMode === "traditional"
+                  ? [
+                      { label: "TC Fee", value: formatCents(capital.traditionalTcFee) },
+                      { label: "LLC Entity Formation Cost", value: formatCents(capital.traditionalLlcFee) },
+                    ]
+                  : financingMode === "subjectTo"
+                    ? [
+                        { label: "TC Fee", value: formatCents(capital.subjectToTcFee) },
+                        { label: "LLC Entity Formation Cost", value: formatCents(capital.subjectToLlcFee) },
+                      ]
+                    : [{ label: "TC and LLC", value: formatCents(capital.tcAndLlc) }]),
                 ...(financingMode === "traditional"
                   ? [
                       {
@@ -3354,6 +3545,7 @@ export default function SharedHousingCalculator() {
       stackSellerFinancePaymentsRequired,
       stackZeroOutOfPocket,
       stackEffectiveBankLtvPct,
+      traditionalEffectiveDownPaymentPct,
     ]
   );
 
@@ -3366,7 +3558,10 @@ export default function SharedHousingCalculator() {
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         ...(financingMode === "traditional"
           ? [
-              { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
+              {
+                label: "Down Payment Percentage",
+                value: formatPercent(traditionalEffectiveDownPaymentPct),
+              },
               { label: "Estimated Down Payment", value: formatWhole(traditionalDownPaymentAmount) },
               { label: "Estimated Loan Balance", value: formatWhole(traditionalLoanBalance) },
               { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
@@ -3379,6 +3574,26 @@ export default function SharedHousingCalculator() {
               {
                 label: "Traditional Closing Cost Percentage",
                 value: formatPercent(percent.traditionalClosingCostPct),
+              },
+              {
+                label: "Estimated Monthly Long-Term Rent",
+                value:
+                  traditionalLongTermRent === null ? "Not entered" : formatCents(traditionalLongTermRent),
+              },
+              { label: "Estimated Monthly PITI", value: formatCents(results.monthlyHousingPayment) },
+              { label: "Selected LTV", value: formatPercent(traditionalSelectedLtvPct) },
+              {
+                label: "Required Down Payment Percentage",
+                value: formatPercent(traditionalEffectiveDownPaymentPct),
+              },
+              {
+                label: "Long-Term Rent LTV Status",
+                value:
+                  traditionalLongTermRent === null
+                    ? "No long-term rent entered."
+                    : traditionalLongTermRent >= traditionalPITIAt80
+                      ? "Estimated long-term rent supports the monthly PITI. Proceeding with an 80% LTV assumption."
+                      : "Estimated long-term rent is below the monthly PITI. Using a more conservative 75% LTV assumption.",
               },
             ]
           : financingMode === "hybrid"
@@ -3588,6 +3803,10 @@ export default function SharedHousingCalculator() {
       subjectToBalloonAnalysis,
       sellerFinancingBalloonAnalysis,
       hybridBalloonAnalysis,
+      traditionalLongTermRent,
+      traditionalSelectedLtvPct,
+      traditionalEffectiveDownPaymentPct,
+      traditionalPITIAt80,
     ]
   );
 
@@ -3660,6 +3879,18 @@ export default function SharedHousingCalculator() {
         capital.acquisitionFee +
         capital.photos
     );
+    const tcAndLlcBars =
+      financingMode === "traditional"
+        ? [
+            { label: "TC Fee", value: capital.traditionalTcFee, color: "#C08A3E" },
+            { label: "LLC Entity Formation Cost", value: capital.traditionalLlcFee, color: "#C08A3E" },
+          ]
+        : financingMode === "subjectTo"
+          ? [
+              { label: "TC Fee", value: capital.subjectToTcFee, color: "#C08A3E" },
+              { label: "LLC Entity Formation Cost", value: capital.subjectToLlcFee, color: "#C08A3E" },
+            ]
+          : [{ label: "TC and LLC", value: capital.tcAndLlc, color: "#C08A3E" }];
     return [
       { label: downPaymentLabel, value: results.downPaymentForCapital, color: "#12181C" },
       { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
@@ -3667,7 +3898,7 @@ export default function SharedHousingCalculator() {
       { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
       { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
       { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
-      { label: "TC and LLC", value: capital.tcAndLlc, color: "#C08A3E" },
+      ...tcAndLlcBars,
       { label: "Closing Costs", value: results.closingCosts, color: "#C08A3E" },
       { label: "Agent Fee", value: capital.agentFee, color: "#C08A3E" },
       { label: "Assignment Fee", value: capital.assignmentFee, color: "#C08A3E" },
@@ -4044,7 +4275,7 @@ export default function SharedHousingCalculator() {
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
             {propertyImages.length >= MAX_PROPERTY_IMAGES
-              ? `You can upload up to ${MAX_PROPERTY_IMAGES} property photos.`
+              ? `Maximum of ${MAX_PROPERTY_IMAGES} property photos reached.`
               : `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Supported formats: JPG, PNG, and WEBP.`}{" "}
             Images are used only to personalize the underwriting summary
             generated from this calculator.
@@ -4470,14 +4701,23 @@ export default function SharedHousingCalculator() {
                   onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
                   onBlur={() => handleFinancingBlur("purchasePrice")}
                 />
-                <PercentField
-                  id="traditionalDownPaymentPct"
-                  label="Down Payment Percentage"
-                  draft={percentDraft.traditionalDownPaymentPct}
-                  onChange={(raw) => handlePercentChange("traditionalDownPaymentPct", raw)}
-                  onBlur={() => handlePercentBlur("traditionalDownPaymentPct")}
-                  info="Allows decimals, e.g. 15.5%. Applied to the purchase price to calculate the down payment."
-                />
+                {traditionalLtvAutoSelected !== null ? (
+                  <ReadOnlyStat
+                    label="Down Payment Percentage"
+                    value={formatPercent(traditionalEffectiveDownPaymentPct)}
+                    helperText="Automatically set by the Long-Term Rent LTV Qualification check below. Clear the Estimated Monthly Long-Term Rent field to select a percentage manually again."
+                    info="Applied to the purchase price to calculate the down payment."
+                  />
+                ) : (
+                  <PercentField
+                    id="traditionalDownPaymentPct"
+                    label="Down Payment Percentage"
+                    draft={percentDraft.traditionalDownPaymentPct}
+                    onChange={(raw) => handlePercentChange("traditionalDownPaymentPct", raw)}
+                    onBlur={() => handlePercentBlur("traditionalDownPaymentPct")}
+                    info="Allows decimals, e.g. 15.5%. Applied to the purchase price to calculate the down payment."
+                  />
+                )}
                 <ReadOnlyStat
                   label="Estimated Down Payment"
                   value={formatWhole(traditionalDownPaymentAmount)}
@@ -4529,6 +4769,69 @@ export default function SharedHousingCalculator() {
                   value={formatWhole(traditionalClosingCosts)}
                   helperText="Estimated Loan Balance x Closing Cost Percentage."
                 />
+              </div>
+
+              {/* Long-Term Rent LTV Qualification: an optional check
+                  comparing what the property could rent for on a
+                  traditional long-term lease against the Estimated
+                  Monthly PITI at an 80% LTV assumption, to decide whether
+                  an 80% or a more conservative 75% LTV (20% or 25% down
+                  payment) should be used. Only takes effect once a
+                  Long-Term Rent has been entered; leaving it blank keeps
+                  the manually selected Down Payment Percentage above
+                  unchanged. Mirrors the same check already used for
+                  Stack Method's Bank Loan-to-Value Percentage. */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Long-Term Rent LTV Qualification</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <CurrencyField
+                    id="traditionalLongTermRent"
+                    label="Estimated Monthly Long-Term Rent"
+                    draft={traditionalLongTermRentDraft}
+                    onChange={handleTraditionalLongTermRentChange}
+                    onBlur={handleTraditionalLongTermRentBlur}
+                    helperText="Optional. The property's projected monthly rent on a traditional long-term lease (not co-living). Leave blank to select the Down Payment Percentage above manually instead."
+                  />
+                  <div className="grid grid-cols-2 gap-5">
+                    <ReadOnlyStat label="Selected LTV" value={formatPercent(traditionalSelectedLtvPct)} />
+                    <ReadOnlyStat
+                      label="Required Down Payment"
+                      value={formatPercent(traditionalEffectiveDownPaymentPct)}
+                    />
+                  </div>
+                </div>
+
+                {traditionalLongTermRent === null ? (
+                  <div className="mt-4 rounded border border-ink/30 bg-paper-2 p-4">
+                    <p className="text-sm text-ink/70 leading-relaxed inline-flex items-start gap-2">
+                      <HelpCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        Enter an estimated monthly long-term rent to evaluate the 80% or 75% LTV
+                        assumption.
+                      </span>
+                    </p>
+                  </div>
+                ) : traditionalLongTermRent >= traditionalPITIAt80 ? (
+                  <div className="mt-4 rounded border border-green-700 bg-green-50 p-4">
+                    <p className="text-sm text-green-800 leading-relaxed inline-flex items-start gap-2">
+                      <CheckCircle2 size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        Estimated long-term rent supports the monthly PITI. Proceeding with an 80% LTV
+                        assumption.
+                      </span>
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded border border-red-700 bg-red-50 p-4">
+                    <p className="text-sm text-red-800 leading-relaxed inline-flex items-start gap-2">
+                      <XCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        Estimated long-term rent is below the monthly PITI. Using a more conservative
+                        75% LTV assumption.
+                      </span>
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -5940,6 +6243,44 @@ export default function SharedHousingCalculator() {
                   helperText="Entity formation cost."
                 />
               </>
+            ) : financingMode === "traditional" ? (
+              <>
+                <CurrencyField
+                  id="traditionalTcFee"
+                  label="TC Fee"
+                  draft={capitalDraft.traditionalTcFee}
+                  onChange={(raw) => handleCapitalChange("traditionalTcFee", raw)}
+                  onBlur={() => handleCapitalBlur("traditionalTcFee")}
+                  helperText="Transaction coordination cost."
+                />
+                <CurrencyField
+                  id="traditionalLlcFee"
+                  label="LLC Entity Formation Cost"
+                  draft={capitalDraft.traditionalLlcFee}
+                  onChange={(raw) => handleCapitalChange("traditionalLlcFee", raw)}
+                  onBlur={() => handleCapitalBlur("traditionalLlcFee")}
+                  helperText="Entity formation cost."
+                />
+              </>
+            ) : financingMode === "subjectTo" ? (
+              <>
+                <CurrencyField
+                  id="subjectToTcFee"
+                  label="TC Fee"
+                  draft={capitalDraft.subjectToTcFee}
+                  onChange={(raw) => handleCapitalChange("subjectToTcFee", raw)}
+                  onBlur={() => handleCapitalBlur("subjectToTcFee")}
+                  helperText="Transaction coordination cost."
+                />
+                <CurrencyField
+                  id="subjectToLlcFee"
+                  label="LLC Entity Formation Cost"
+                  draft={capitalDraft.subjectToLlcFee}
+                  onChange={(raw) => handleCapitalChange("subjectToLlcFee", raw)}
+                  onBlur={() => handleCapitalBlur("subjectToLlcFee")}
+                  helperText="Entity formation cost."
+                />
+              </>
             ) : (
               <CurrencyField
                 id="tcAndLlc"
@@ -6135,12 +6476,12 @@ export default function SharedHousingCalculator() {
             duplicates space for fixed-position elements unpredictably
             during print pagination, so a single static footer is the
             reliable choice here. */}
-        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug pt-6 px-6 pb-2">
+        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug pt-4 px-6 pb-1.5">
           {/* Report header: brand lockup, title, and a meta row with
               property address (if entered), bedroom count, financing
               structure, generated date, and source. */}
-          <div className="mb-4 print:break-inside-avoid-page">
-            <div className="flex items-start justify-between gap-6 pb-4 border-b-4 border-brass">
+          <div className="mb-3 print:break-inside-avoid-page">
+            <div className="flex items-start justify-between gap-6 pb-3 border-b-4 border-brass">
               <div className="flex items-center gap-3">
                 <div className="h-11 w-11 rounded-lg border-2 border-brass flex items-center justify-center flex-shrink-0">
                   <Home size={22} className="text-brass" />
@@ -6159,7 +6500,7 @@ export default function SharedHousingCalculator() {
               </h1>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[8.5pt] text-ink/70">
+            <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-[8.5pt] text-ink/70">
               {propertyAddress.trim() && (
                 <span className="inline-flex items-center gap-1.5">
                   <MapPin size={12} className="text-brass" />
@@ -6198,10 +6539,10 @@ export default function SharedHousingCalculator() {
               gallery thumbnails, plus a Video Walkthrough button, if
               either was provided. Omitted entirely when neither exists. */}
           {(propertyImages.length > 0 || videoWalkthroughLink.trim() !== "") && (
-            <div className="mb-4 print:break-inside-avoid-page grid grid-cols-3 gap-3">
+            <div className="mb-3 print:break-inside-avoid-page grid grid-cols-3 gap-3">
               {propertyImages.length > 0 && (
                 <div className={videoWalkthroughLink.trim() !== "" ? "col-span-2" : "col-span-3"}>
-                  <div className="rounded-xl overflow-hidden border border-ink/15 h-[2.6in]">
+                  <div className="rounded-xl overflow-hidden border border-ink/15 h-[2.2in]">
                     <img
                       src={propertyImages[0].dataUrl}
                       alt={propertyImages[0].name || "Featured property photo"}
@@ -6213,7 +6554,7 @@ export default function SharedHousingCalculator() {
                       {propertyImages.slice(1, 5).map((img) => (
                         <div
                           key={img.id}
-                          className="rounded-lg overflow-hidden border border-ink/15 h-[0.9in]"
+                          className="rounded-lg overflow-hidden border border-ink/15 h-[0.75in]"
                         >
                           <img
                             src={img.dataUrl}
@@ -6250,7 +6591,7 @@ export default function SharedHousingCalculator() {
               Required and Estimated Cash-on-Cash Return are the strongest
               visual elements, with the COCR card always using the same
               bright-green (#00FF00) treatment regardless of the value. */}
-          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-5 gap-2 items-stretch">
+          <div className="mb-3 print:break-inside-avoid-page grid grid-cols-5 gap-2 items-stretch">
             <PrintKpiCard
               icon={<Home size={16} />}
               label="Purchase Price"
@@ -6281,15 +6622,15 @@ export default function SharedHousingCalculator() {
 
           {/* Investment Highlights: a concise, scannable card summarizing
               the deal before the detailed sections below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
             <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-1 pb-2 border-b border-brass/40">
               Investment Highlights
             </p>
             <div>
               <HighlightBullet
                 icon={<Users size={13} />}
-                label={`${results.totalBedrooms} Bedrooms`}
-                detail="Co-living layout with per-bedroom rental income."
+                label={`${results.totalBedrooms} Total Bedrooms`}
+                detail={`${sharedBathBedrooms} Shared-Bath Bedrooms, ${ensuiteBedrooms} Ensuite Bedrooms`}
               />
               <HighlightBullet
                 icon={<Landmark size={13} />}
@@ -6333,14 +6674,14 @@ export default function SharedHousingCalculator() {
               every bar is individually labeled with its exact dollar
               amount printed alongside it, so nothing here depends on
               color alone to stay readable, including in grayscale. */}
-          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
-            <div className="rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-ink/15 bg-white p-2.5">
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-2 pb-1.5 border-b border-brass/40">
                 Monthly Income and Expense Breakdown
               </p>
               <HorizontalBarChart bars={monthlyIncomeExpenseBars} />
             </div>
-            <div className="rounded-xl border border-ink/15 bg-white p-3">
+            <div className="rounded-xl border border-ink/15 bg-white p-2.5">
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-2 pb-1.5 border-b border-brass/40">
                 Capital Required Breakdown
               </p>
@@ -6355,8 +6696,8 @@ export default function SharedHousingCalculator() {
               conditional logic: PITI shows a single combined payment line,
               Principal and Interest Only shows the payment plus taxes,
               insurance, and the full monthly housing payment. */}
-          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
-            <div className="rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page grid grid-cols-2 gap-3">
+            <div className="rounded-xl border border-ink/15 bg-white p-2.5">
               <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Home size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Property</p>
@@ -6392,7 +6733,7 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
             </div>
-            <div className="rounded-xl border border-ink/15 bg-white p-3">
+            <div className="rounded-xl border border-ink/15 bg-white p-2.5">
               <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Landmark size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Financing</p>
@@ -6415,7 +6756,7 @@ export default function SharedHousingCalculator() {
                     <div className="flex justify-between">
                       <span className="text-ink/60">Down Payment Percentage</span>
                       <span className="font-medium text-ink">
-                        {formatPercent(percent.traditionalDownPaymentPct)}
+                        {formatPercent(traditionalEffectiveDownPaymentPct)}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -6576,6 +6917,16 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
+          {financingMode === "traditional" && traditionalLongTermRent !== null && (
+            <TraditionalLtvPrintCard
+              longTermRent={traditionalLongTermRent}
+              piti={results.monthlyHousingPayment}
+              selectedLtvPct={traditionalSelectedLtvPct}
+              requiredDownPaymentPct={traditionalEffectiveDownPaymentPct}
+              meetsRentTest={traditionalLongTermRent >= traditionalPITIAt80}
+            />
+          )}
+
           {financingMode === "subjectTo" && subjectToBalloonAnalysis && (
             <BalloonRefinancePrintCard
               analysis={subjectToBalloonAnalysis}
@@ -6621,7 +6972,7 @@ export default function SharedHousingCalculator() {
               from the Stack Method calculation, printed only when Stack
               Method is the selected Financing Structure. */}
           {financingMode === "stackMethod" && (
-            <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+            <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
               <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Landmark size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
@@ -6782,12 +7133,12 @@ export default function SharedHousingCalculator() {
               out as large highlight tiles (Effective Monthly Rent uses a
               subtle green tint, since it is the positive, spendable
               figure), with the supporting line items below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
             <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <DollarSign size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Rental Income</p>
             </div>
-            <div className="grid grid-cols-2 gap-4 mb-3">
+            <div className="grid grid-cols-2 gap-3 mb-3">
               <div className="rounded-lg bg-paper-2 px-3 py-2.5">
                 <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">Gross Monthly Rent</p>
                 <p className="text-[14pt] font-bold text-ink">{formatCents(results.grossMonthlyRent)}</p>
@@ -6817,7 +7168,7 @@ export default function SharedHousingCalculator() {
 
           {/* Monthly Operating Expenses card: alternating row backgrounds,
               Total Monthly Operating Expenses called out at the bottom. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
             <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <Wallet size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
@@ -6864,7 +7215,7 @@ export default function SharedHousingCalculator() {
               up the Total Capital Required calculation, laid out as a
               two-column list with Total Capital Required called out
               below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+          <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
             <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <PiggyBank size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Capital Required</p>
@@ -6913,6 +7264,28 @@ export default function SharedHousingCalculator() {
                   <div className="flex justify-between">
                     <span className="text-ink/60">LLC Entity Formation Cost</span>
                     <span className="text-ink">{formatCents(capital.stackLlcFee)}</span>
+                  </div>
+                </>
+              ) : financingMode === "traditional" ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">TC Fee</span>
+                    <span className="text-ink">{formatCents(capital.traditionalTcFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">LLC Entity Formation Cost</span>
+                    <span className="text-ink">{formatCents(capital.traditionalLlcFee)}</span>
+                  </div>
+                </>
+              ) : financingMode === "subjectTo" ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">TC Fee</span>
+                    <span className="text-ink">{formatCents(capital.subjectToTcFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">LLC Entity Formation Cost</span>
+                    <span className="text-ink">{formatCents(capital.subjectToLlcFee)}</span>
                   </div>
                 </>
               ) : (
@@ -7001,17 +7374,17 @@ export default function SharedHousingCalculator() {
               cards, Estimated Cash-on-Cash Return repeated as a large
               green summary card, matching the executive-summary treatment. */}
           <div className="mb-2 print:break-inside-avoid-page">
-            <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1.5 mb-3">
+            <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2">
               Estimated Returns
             </p>
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl border border-ink/15 bg-white p-3 text-center">
+              <div className="rounded-xl border border-ink/15 bg-white p-2.5 text-center">
                 <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
                   Estimated Monthly Cash Flow
                 </p>
                 <p className="mt-1 text-[16pt] font-bold text-ink">{formatCents(results.monthlyCashFlow)}</p>
               </div>
-              <div className="rounded-xl border border-ink/15 bg-white p-3 text-center">
+              <div className="rounded-xl border border-ink/15 bg-white p-2.5 text-center">
                 <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
                   Estimated Annual Cash Flow
                 </p>
@@ -7069,7 +7442,7 @@ export default function SharedHousingCalculator() {
               Floor Plan image onto a stray extra page). A single static
               footer here is reliable and does not affect layout above
               it. */}
-          <div className="hidden print:flex mt-4 items-center justify-between px-4 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60 print:break-inside-avoid-page">
+          <div className="hidden print:flex mt-2 items-center justify-between px-4 py-1.5 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60 print:break-inside-avoid-page">
             <span className="font-semibold text-ink">Michael Aylett</span>
             <span>Co-Living Investment Analysis</span>
             <span>michaelaylett.com</span>
