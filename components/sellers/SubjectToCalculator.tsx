@@ -24,6 +24,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
 const MAX_CASH_RATE = 0.07; // cash at closing capped at 7% of property value
 const REPAYMENT_YEARS = 30;
@@ -246,10 +247,20 @@ export default function SubjectToCalculator() {
 
   const hasSellerCarry = sellerCarriedBalance > 0;
 
+  const pathname = usePathname();
+  const router = useRouter();
+
+  // On the Sellers page itself, smooth-scroll to the inquiry form. From
+  // anywhere else (e.g. the standalone Seller Calculators page), navigate
+  // to the Sellers page and land on the form there instead.
   const scrollToForm = () => {
-    document
-      .getElementById("contact-form")
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (pathname === "/sellers") {
+      document
+        .getElementById("contact-form")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      router.push("/sellers#contact-form");
+    }
   };
 
   const safeValue = propertyValue > 0 ? propertyValue : 1;

@@ -25,6 +25,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
 const DOWN_PAYMENT_RATE = 0.07; // 7% down payment at closing
 const FINANCED_RATE = 0.93; // 93% seller-financed balance
@@ -259,10 +260,20 @@ export default function SellerFinancingCalculator() {
     commitPrice(Number.isFinite(n) ? n : 0);
   };
 
+  const pathname = usePathname();
+  const router = useRouter();
+
+  // On the Sellers page itself, smooth-scroll to the inquiry form. From
+  // anywhere else (e.g. the standalone Seller Calculators page), navigate
+  // to the Sellers page and land on the form there instead.
   const scrollToForm = () => {
-    document
-      .getElementById("contact-form")
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (pathname === "/sellers") {
+      document
+        .getElementById("contact-form")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      router.push("/sellers#contact-form");
+    }
   };
 
   const sliderValue = Math.min(MAX_PRICE, Math.max(MIN_PRICE, price));
