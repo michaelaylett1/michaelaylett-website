@@ -203,12 +203,114 @@ function isLikelyValidUrl(value: string): boolean {
 }
 
 // Financing Structure: Seller Financing and Subject To are independent
-// checkboxes, so all four combinations are possible.
-function getFinancingStructureLabel(sellerFinancing: boolean, subjectTo: boolean): string {
+// toggles and may be combined. Traditional Financing is mutually
+// exclusive with both of them (it requires different inputs and
+// calculations -- see the Traditional Financing section below), so a
+// visitor may select either "Seller Financing and/or Subject To" or
+// "Traditional Financing", never both at once.
+function getFinancingStructureLabel(
+  sellerFinancing: boolean,
+  subjectTo: boolean,
+  traditional: boolean
+): string {
+  if (traditional) return "Traditional Financing";
   if (sellerFinancing && subjectTo) return "Subject To and Seller Financing";
   if (subjectTo) return "Subject To";
   if (sellerFinancing) return "Seller Financing";
   return "Not Specified";
+}
+
+// ---------------------------------------------------------------------
+// Traditional Financing: a true fixed-rate, fully amortizing 30-year
+// loan schedule (principal and interest only, no balloon payment). The
+// same standard amortization formula is used for the headline "Estimated
+// Monthly Principal and Interest Payment" figure and for generating the
+// full 360-payment schedule below, so the two are always guaranteed to
+// agree with each other.
+//
+//   M = P x [r(1 + r)^n] / [(1 + r)^n - 1]
+//
+// where P is the loan amount, r is the monthly interest rate (the
+// entered annual rate divided by 12), and n is the number of monthly
+// payments (360, fixed). A 0% interest rate is handled as a special
+// case (Loan Amount / 360) to avoid dividing by zero.
+const TRADITIONAL_TERM_YEARS = 30;
+const TRADITIONAL_NUM_PAYMENTS = 360;
+
+function calculateMonthlyPrincipalAndInterest(loanAmount: number, annualRatePct: number): number {
+  if (!Number.isFinite(loanAmount) || loanAmount <= 0) return 0;
+  const monthlyRate = annualRatePct / 100 / 12;
+  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
+    return loanAmount / TRADITIONAL_NUM_PAYMENTS;
+  }
+  const factor = Math.pow(1 + monthlyRate, TRADITIONAL_NUM_PAYMENTS);
+  const payment = (loanAmount * (monthlyRate * factor)) / (factor - 1);
+  return Number.isFinite(payment) ? payment : 0;
+}
+
+type AmortizationRow = {
+  paymentNumber: number;
+  beginningBalance: number;
+  principalPaid: number;
+  interestPaid: number;
+  totalPayment: number;
+  endingBalance: number;
+};
+
+// Builds the complete month-by-month amortization schedule using
+// declining principal (not simple/flat interest): each payment's
+// interest portion is calculated on that month's actual beginning
+// balance. The unrounded monthly payment drives every month's math
+// internally; only the final, displayed figures are rounded to cents.
+// The very last payment is adjusted by whatever a few cents of
+// accumulated rounding requires, so the schedule always ends at exactly
+// $0.00 rather than a few cents above or below zero.
+function buildAmortizationSchedule(
+  loanAmount: number,
+  annualRatePct: number
+): { schedule: AmortizationRow[]; monthlyPayment: number } {
+  const roundedLoanAmount = round2(Math.max(0, loanAmount));
+  const monthlyPaymentUnrounded = calculateMonthlyPrincipalAndInterest(roundedLoanAmount, annualRatePct);
+  const monthlyPayment = round2(monthlyPaymentUnrounded);
+
+  if (roundedLoanAmount <= 0) {
+    return { schedule: [], monthlyPayment: 0 };
+  }
+
+  const monthlyRate = annualRatePct / 100 / 12;
+  const schedule: AmortizationRow[] = [];
+  let balance = roundedLoanAmount;
+
+  for (let i = 1; i <= TRADITIONAL_NUM_PAYMENTS; i++) {
+    const beginningBalance = balance;
+    const interestPaid = round2(beginningBalance * monthlyRate);
+    const isFinalPayment = i === TRADITIONAL_NUM_PAYMENTS;
+    let principalPaid = round2(monthlyPayment - interestPaid);
+
+    // Guards against rounding ever taking the balance below $0, whether
+    // on the scheduled final payment or (in an edge case with a very
+    // small loan/high rate) an earlier one.
+    if (isFinalPayment || principalPaid >= beginningBalance) {
+      principalPaid = beginningBalance;
+    }
+
+    const totalPayment = round2(interestPaid + principalPaid);
+    const endingBalance = Math.max(0, round2(beginningBalance - principalPaid));
+
+    schedule.push({
+      paymentNumber: i,
+      beginningBalance,
+      principalPaid,
+      interestPaid,
+      totalPayment,
+      endingBalance,
+    });
+
+    balance = endingBalance;
+    if (balance <= 0) break;
+  }
+
+  return { schedule, monthlyPayment };
 }
 
 // ---------------------------------------------------------------------
@@ -425,7 +527,8 @@ type FinancingKey =
   | "sellerDownPayment"
   | "monthlyPayment"
   | "annualPropertyTaxes"
-  | "annualPropertyInsurance";
+  | "annualPropertyInsurance"
+  | "traditionalDownPayment";
 
 const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   purchasePrice: 0,
@@ -434,6 +537,7 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   monthlyPayment: 0,
   annualPropertyTaxes: 0,
   annualPropertyInsurance: 0,
+  traditionalDownPayment: 0,
 };
 
 type CapitalKey =
@@ -461,13 +565,19 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   assignmentFee: 0,
 };
 
-type PercentKey = "vacancyPct" | "propertyManagementPct" | "platformFeePct" | "closingCostPct";
+type PercentKey =
+  | "vacancyPct"
+  | "propertyManagementPct"
+  | "platformFeePct"
+  | "closingCostPct"
+  | "traditionalInterestRatePct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
   propertyManagementPct: 8,
   platformFeePct: 15,
   closingCostPct: 1.5,
+  traditionalInterestRatePct: 0,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -716,6 +826,7 @@ export default function SharedHousingCalculator() {
     propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
     platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
     closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
+    traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
   });
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -776,7 +887,34 @@ export default function SharedHousingCalculator() {
   const [financingStructure, setFinancingStructure] = useState({
     sellerFinancing: false,
     subjectTo: false,
+    traditional: false,
   });
+
+  // Financing Structure selection logic: Seller Financing and Subject To
+  // may be selected together (or alone), but Traditional Financing is a
+  // separate financing mode with its own inputs and calculations, so
+  // selecting it deselects the other two, and selecting either of the
+  // other two deselects it.
+  function toggleFinancingStructure(key: "sellerFinancing" | "subjectTo" | "traditional") {
+    setFinancingStructure((prev) => {
+      if (key === "traditional") {
+        const next = !prev.traditional;
+        return {
+          sellerFinancing: next ? false : prev.sellerFinancing,
+          subjectTo: next ? false : prev.subjectTo,
+          traditional: next,
+        };
+      }
+      const next = !prev[key];
+      return { ...prev, [key]: next, traditional: next ? false : prev.traditional };
+    });
+  }
+
+  // Amortization schedule expand/collapse state for the Traditional
+  // Financing section (see the "View Estimated Amortization Schedule"
+  // section further down).
+  const [amortizationOpen, setAmortizationOpen] = useState(false);
+  const [amortizationShowAll, setAmortizationShowAll] = useState(false);
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
@@ -785,7 +923,13 @@ export default function SharedHousingCalculator() {
   }
   function handleFinancingBlur(key: FinancingKey) {
     setFinancing((prev) => {
-      const clamped = round2(Math.max(0, prev[key]));
+      let clamped = round2(Math.max(0, prev[key]));
+      // The Traditional Financing Down Payment cannot exceed the
+      // Purchase Price (see Estimated Loan Amount / Estimated Equity
+      // below, which would otherwise go negative before being floored).
+      if (key === "traditionalDownPayment") {
+        clamped = Math.min(clamped, prev.purchasePrice);
+      }
       setFinancingDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
       return { ...prev, [key]: clamped };
     });
@@ -964,6 +1108,7 @@ export default function SharedHousingCalculator() {
       propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
       platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
       closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
+      traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
     });
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
@@ -990,8 +1135,48 @@ export default function SharedHousingCalculator() {
     setVideoWalkthroughLink("");
     setFloorPlan(null);
     setFloorPlanError("");
-    setFinancingStructure({ sellerFinancing: false, subjectTo: false });
+    // Financing Structure resets to its default of no selection (all
+    // three unselected), which also clears the Traditional Financing
+    // inputs (Purchase Price and Seller Down Payment are already reset
+    // above; the Traditional-specific Down Payment and Interest Rate are
+    // part of `financing`/`percent`, reset above too), and the
+    // amortization schedule -- being derived entirely from that state --
+    // resets automatically along with it.
+    setFinancingStructure({ sellerFinancing: false, subjectTo: false, traditional: false });
+    setAmortizationOpen(false);
+    setAmortizationShowAll(false);
   }
+
+  // ---------------------------------------------------------------------
+  // Traditional Financing: Estimated Loan Amount, Estimated Monthly
+  // Principal and Interest Payment, and the full 360-payment
+  // amortization schedule. All three are computed here (rather than
+  // inline) so they can feed both the Property and Financing section and
+  // the dedicated Traditional Financing section below, always in sync.
+  // ---------------------------------------------------------------------
+
+  // Loan Amount = Purchase Price - Down Payment, never allowed below $0.
+  const traditionalLoanAmount = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice - financing.traditionalDownPayment)),
+    [financing.purchasePrice, financing.traditionalDownPayment]
+  );
+
+  // Estimated Monthly Principal and Interest Payment: a true fixed-rate,
+  // fully amortizing 30-year (360-payment) loan, principal and interest
+  // only, no balloon payment. Handles a 0% interest rate as a special
+  // case (Loan Amount / 360) and a $0 loan amount as a $0 payment.
+  const traditionalMonthlyPI = useMemo(
+    () => round2(calculateMonthlyPrincipalAndInterest(traditionalLoanAmount, percent.traditionalInterestRatePct)),
+    [traditionalLoanAmount, percent.traditionalInterestRatePct]
+  );
+
+  // The complete month-by-month amortization schedule, generated once
+  // here so the on-page "View Estimated Amortization Schedule" section
+  // and its CSV download always show the exact same 360 rows.
+  const traditionalAmortization = useMemo(
+    () => buildAmortizationSchedule(traditionalLoanAmount, percent.traditionalInterestRatePct),
+    [traditionalLoanAmount, percent.traditionalInterestRatePct]
+  );
 
   // ---------------------------------------------------------------------
   // Monthly housing payment and the automatically calculated Holding
@@ -1001,6 +1186,18 @@ export default function SharedHousingCalculator() {
   // P&I-plus-taxes-and-insurance formula in two places.
   // ---------------------------------------------------------------------
   const monthlyHousingPayment = useMemo(() => {
+    // Traditional Financing always quotes principal and interest
+    // separately from taxes and insurance (never combined the way a
+    // manually entered PITI payment can be), so the complete monthly
+    // housing payment is always Monthly P&I + taxes/12 + insurance/12,
+    // regardless of the Monthly Loan Payment Type toggle below (which
+    // only applies to Seller Financing / Subject To's manually entered
+    // payment).
+    if (financingStructure.traditional) {
+      return round2(
+        traditionalMonthlyPI + financing.annualPropertyTaxes / 12 + financing.annualPropertyInsurance / 12
+      );
+    }
     // Prevents taxes/insurance from ever being counted twice: PITI
     // already includes them, so only Principal-and-Interest-Only adds
     // them separately.
@@ -1011,7 +1208,14 @@ export default function SharedHousingCalculator() {
             financing.annualPropertyTaxes / 12 +
             financing.annualPropertyInsurance / 12
         );
-  }, [paymentType, financing.monthlyPayment, financing.annualPropertyTaxes, financing.annualPropertyInsurance]);
+  }, [
+    financingStructure.traditional,
+    traditionalMonthlyPI,
+    paymentType,
+    financing.monthlyPayment,
+    financing.annualPropertyTaxes,
+    financing.annualPropertyInsurance,
+  ]);
 
   // Calculated Holding Costs = complete monthly housing payment x 3.
   const calculatedHoldingCosts = useMemo(
@@ -1079,10 +1283,17 @@ export default function SharedHousingCalculator() {
         pestControlMonthly
     );
 
-    // Estimated Equity = Purchase Price - Loan Balance. The Seller Down
-    // Payment is a separate cash requirement (used in Total Capital
-    // Required) and is not subtracted here.
-    const equityRaw = financing.purchasePrice - financing.loanBalance;
+    // Estimated Equity. For Traditional Financing: Purchase Price -
+    // Estimated Loan Amount (which, since Loan Amount = Purchase Price -
+    // Down Payment, ordinarily equals the Down Payment). For Seller
+    // Financing / Subject To, the existing calculation is preserved:
+    // Purchase Price - Loan Balance. The Seller Down Payment (or, for
+    // Traditional Financing, the Traditional Down Payment) is a separate
+    // cash requirement (used in Total Capital Required) and is not
+    // subtracted here.
+    const equityRaw = financingStructure.traditional
+      ? financing.purchasePrice - traditionalLoanAmount
+      : financing.purchasePrice - financing.loanBalance;
     const equity = Math.max(0, round2(equityRaw));
     const equityIsNegative = equityRaw < 0;
 
@@ -1095,8 +1306,16 @@ export default function SharedHousingCalculator() {
     // whatever Closing Cost Percentage the visitor has entered.
     const closingCosts = round2(financing.purchasePrice * (percent.closingCostPct / 100));
 
+    // The acquisition down payment included in Total Capital Required:
+    // the Traditional Financing Down Payment when Traditional Financing
+    // is selected, otherwise the existing Seller Down Payment. Only one
+    // of the two is ever included, never both.
+    const downPaymentForCapital = financingStructure.traditional
+      ? financing.traditionalDownPayment
+      : financing.sellerDownPayment;
+
     const totalCapitalRequired = round2(
-      financing.sellerDownPayment +
+      downPaymentForCapital +
         capital.arrears +
         capital.renovationCost +
         capital.furniture +
@@ -1141,6 +1360,7 @@ export default function SharedHousingCalculator() {
       calculatedHoldingCosts,
       holdingCostsIsManual,
       closingCosts,
+      downPaymentForCapital,
       totalCapitalRequired,
       monthlyCashFlow,
       annualCashFlow,
@@ -1159,33 +1379,57 @@ export default function SharedHousingCalculator() {
     effectiveHoldingCosts,
     calculatedHoldingCosts,
     holdingCostsIsManual,
+    financingStructure.traditional,
+    traditionalLoanAmount,
   ]);
 
-  const monthlyPaymentLabel =
-    paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Principal and Interest Payment";
+  // Traditional Financing always labels its calculated loan payment
+  // "Estimated Monthly Principal and Interest Payment" (never PITI,
+  // since taxes and insurance are always shown and added separately, not
+  // folded into the payment itself).
+  const monthlyPaymentLabel = financingStructure.traditional
+    ? "Estimated Monthly Principal and Interest Payment"
+    : paymentType === "piti"
+      ? "Monthly PITI Payment"
+      : "Monthly Principal and Interest Payment";
 
   // The complete monthly housing cost (loan payment, plus taxes and
-  // insurance when the payment type is Principal and Interest Only) is
-  // used as a single line item in several places (the Expenses/Operating
-  // Expenses breakdown, the on-screen expense summary, and the print
-  // report). It is never labeled with the generic term "Housing
-  // Payment": in PITI mode this figure literally is the PITI payment, so
-  // it is labeled "Monthly PITI Payment"; in Principal and Interest Only
-  // mode it is the P&I payment plus taxes and insurance combined, so it
-  // keeps the more precise "Monthly Housing Payment" label already used
-  // elsewhere in this report for that same combined figure (calling it
-  // "Monthly Principal & Interest Payment" would be inaccurate, since
-  // that label is reserved for the P&I-only amount shown separately).
-  const housingPaymentLabel =
-    paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Housing Payment";
+  // insurance when the payment type is Principal and Interest Only, or
+  // always for Traditional Financing) is used as a single line item in
+  // several places (the Expenses/Operating Expenses breakdown, the
+  // on-screen expense summary, and the print report). It is never
+  // labeled with the generic term "Housing Payment": in PITI mode this
+  // figure literally is the PITI payment, so it is labeled "Monthly PITI
+  // Payment"; in Principal and Interest Only mode it is the P&I payment
+  // plus taxes and insurance combined, so it keeps the more precise
+  // "Monthly Housing Payment" label already used elsewhere in this
+  // report for that same combined figure (calling it "Monthly Principal
+  // & Interest Payment" would be inaccurate, since that label is
+  // reserved for the P&I-only amount shown separately); for Traditional
+  // Financing that same combined figure is labeled "Total Monthly
+  // Housing Payment" to match the printable report exactly.
+  const housingPaymentLabel = financingStructure.traditional
+    ? "Total Monthly Housing Payment"
+    : paymentType === "piti"
+      ? "Monthly PITI Payment"
+      : "Monthly Housing Payment";
 
   // Financing Structure: Seller Financing and Subject To are independent
-  // checkboxes (see getFinancingStructureLabel above), computed once here
-  // so the breakdown, CSV, and print report all read the same label.
+  // toggles that may be combined; Traditional Financing is mutually
+  // exclusive with both (see getFinancingStructureLabel above), computed
+  // once here so the breakdown, CSV, and print report all read the same
+  // label.
   const financingStructureLabel = getFinancingStructureLabel(
     financingStructure.sellerFinancing,
-    financingStructure.subjectTo
+    financingStructure.subjectTo,
+    financingStructure.traditional
   );
+
+  // The down payment label shown alongside downPaymentForCapital
+  // (results.downPaymentForCapital): "Down Payment" for Traditional
+  // Financing (the Traditional Financing Down Payment), or "Seller Down
+  // Payment" otherwise, matching whichever field is actually in use.
+  const downPaymentLabel = financingStructure.traditional ? "Down Payment" : "Seller Down Payment";
 
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
@@ -1196,15 +1440,36 @@ export default function SharedHousingCalculator() {
     () => [
       {
         title: "Property and Financing",
-        rows: [
-          { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
-          { label: "Financing Structure", value: financingStructureLabel },
-          { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-          { label: "Loan Balance", value: formatCents(financing.loanBalance) },
-          { label: "Estimated Equity", value: formatCents(results.equity) },
-          { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-          { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
-        ],
+        rows: financingStructure.traditional
+          ? [
+              { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+              { label: "Financing Structure", value: financingStructureLabel },
+              { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+              { label: "Down Payment", value: formatCents(financing.traditionalDownPayment) },
+              { label: "Estimated Loan Amount", value: formatCents(traditionalLoanAmount) },
+              { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
+              { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
+              {
+                label: "Estimated Monthly Principal and Interest Payment",
+                value: formatCents(traditionalMonthlyPI),
+              },
+              { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
+              {
+                label: "Annual Property Insurance",
+                value: formatCents(financing.annualPropertyInsurance),
+              },
+              { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+              { label: "Estimated Equity", value: formatCents(results.equity) },
+            ]
+          : [
+              { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+              { label: "Financing Structure", value: financingStructureLabel },
+              { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+              { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+              { label: "Estimated Equity", value: formatCents(results.equity) },
+              { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+              { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
+            ],
       },
       {
         title: "Income",
@@ -1238,7 +1503,7 @@ export default function SharedHousingCalculator() {
       {
         title: "Capital Required",
         rows: [
-          { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+          { label: downPaymentLabel, value: formatCents(results.downPaymentForCapital) },
           { label: "Arrears", value: formatCents(capital.arrears) },
           { label: "Renovation Cost", value: formatCents(capital.renovationCost) },
           { label: "Furniture", value: formatCents(capital.furniture) },
@@ -1273,7 +1538,19 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing, capital, percent, propertyAddress, financingStructureLabel, housingPaymentLabel]
+    [
+      results,
+      financing,
+      capital,
+      percent,
+      propertyAddress,
+      financingStructureLabel,
+      housingPaymentLabel,
+      downPaymentLabel,
+      financingStructure.traditional,
+      traditionalLoanAmount,
+      traditionalMonthlyPI,
+    ]
   );
 
   const inputsSection: BreakdownSection = useMemo(
@@ -1283,11 +1560,28 @@ export default function SharedHousingCalculator() {
         { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
         { label: "Video Walkthrough Link", value: videoWalkthroughLink.trim() || "Not entered" },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
-        { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
-        { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
-        { label: "Estimated Equity", value: formatWhole(results.equity) },
-        { label: "Monthly Payment Type", value: paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
-        { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
+        ...(financingStructure.traditional
+          ? [
+              { label: "Down Payment", value: formatWhole(financing.traditionalDownPayment) },
+              { label: "Estimated Loan Amount", value: formatWhole(traditionalLoanAmount) },
+              { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
+              { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
+              { label: "Estimated Equity", value: formatWhole(results.equity) },
+              {
+                label: "Estimated Monthly Principal and Interest Payment",
+                value: formatCents(traditionalMonthlyPI),
+              },
+            ]
+          : [
+              { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
+              { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
+              { label: "Estimated Equity", value: formatWhole(results.equity) },
+              {
+                label: "Monthly Payment Type",
+                value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
+              },
+              { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
+            ]),
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
         { label: "Shared-Bath Bedrooms", value: String(sharedBathBedrooms) },
@@ -1308,7 +1602,23 @@ export default function SharedHousingCalculator() {
         },
       ],
     }),
-    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses, propertyAddress, videoWalkthroughLink]
+    [
+      financing,
+      results,
+      paymentType,
+      monthlyPaymentLabel,
+      sharedBathBedrooms,
+      weeklySharedBathRent,
+      ensuiteBedrooms,
+      weeklyEnsuiteRent,
+      percent,
+      maintenanceExpenses,
+      propertyAddress,
+      videoWalkthroughLink,
+      financingStructure.traditional,
+      traditionalLoanAmount,
+      traditionalMonthlyPI,
+    ]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
@@ -1335,14 +1645,14 @@ export default function SharedHousingCalculator() {
         capital.assignmentFee
     );
     return [
-      { label: "Seller Down Payment", value: financing.sellerDownPayment, color: "#12181C" },
+      { label: downPaymentLabel, value: results.downPaymentForCapital, color: "#12181C" },
       { label: "Acquisition Fee", value: capital.acquisitionFee, color: "#C08A3E" },
       { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
       { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
       { label: "Upfront Insurance", value: capital.upfrontInsurance, color: "#8B9795" },
       { label: "Other Costs", value: otherCosts, color: "#C9BFA6" },
     ].filter((segment) => segment.value > 0);
-  }, [financing.sellerDownPayment, capital, results.holdingCosts, results.closingCosts]);
+  }, [downPaymentLabel, results.downPaymentForCapital, capital, results.holdingCosts, results.closingCosts]);
 
   function downloadCsv() {
     const lines: string[] = ["Section,Field,Value"];
@@ -1358,6 +1668,37 @@ export default function SharedHousingCalculator() {
     const a = document.createElement("a");
     a.href = url;
     a.download = "shared-housing-underwriting-summary.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Downloads the complete 360-payment Traditional Financing
+  // amortization schedule as its own CSV, separate from the main
+  // underwriting summary CSV above.
+  function downloadAmortizationCsv() {
+    const lines: string[] = [
+      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Total Payment,Ending Balance",
+    ];
+    for (const row of traditionalAmortization.schedule) {
+      lines.push(
+        [
+          row.paymentNumber,
+          row.beginningBalance.toFixed(2),
+          row.principalPaid.toFixed(2),
+          row.interestPaid.toFixed(2),
+          row.totalPayment.toFixed(2),
+          row.endingBalance.toFixed(2),
+        ].join(",")
+      );
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "traditional-financing-amortization-schedule.csv";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -1644,143 +1985,336 @@ export default function SharedHousingCalculator() {
         {/* ---------------------------------------------------------- */}
         <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
           <p className="eyebrow text-brass mb-5">Property and Financing</p>
-          <div className="grid sm:grid-cols-2 gap-5">
-            <CurrencyField
-              id="purchasePrice"
-              label="Purchase Price"
-              draft={financingDraft.purchasePrice}
-              onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
-              onBlur={() => handleFinancingBlur("purchasePrice")}
-            />
-            <CurrencyField
-              id="loanBalance"
-              label="Loan Balance"
-              draft={financingDraft.loanBalance}
-              onChange={(raw) => handleFinancingChange("loanBalance", raw)}
-              onBlur={() => handleFinancingBlur("loanBalance")}
-            />
-            <CurrencyField
-              id="sellerDownPayment"
-              label="Seller Down Payment"
-              draft={financingDraft.sellerDownPayment}
-              onChange={(raw) => handleFinancingChange("sellerDownPayment", raw)}
-              onBlur={() => handleFinancingBlur("sellerDownPayment")}
-              helperText="Cash paid to the seller at closing."
-            />
 
-            <div>
-              <div className="mb-2">
-                <FieldLabel>Monthly Loan Payment Type</FieldLabel>
+          {/* Financing Structure: a three-way toggle. Seller Financing
+              and Subject To are independent and may be selected together;
+              Traditional Financing is a separate financing mode (it
+              requires different inputs and calculations, see below), so
+              selecting it deselects the other two, and selecting either
+              of the other two deselects it. */}
+          <div>
+            <p className="eyebrow text-brass mb-3">Financing Structure</p>
+            <div
+              className="grid grid-cols-1 sm:grid-cols-3 gap-2"
+              role="group"
+              aria-label="Financing Structure"
+            >
+              <button
+                type="button"
+                onClick={() => toggleFinancingStructure("sellerFinancing")}
+                aria-pressed={financingStructure.sellerFinancing}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  financingStructure.sellerFinancing
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Seller Financing
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleFinancingStructure("subjectTo")}
+                aria-pressed={financingStructure.subjectTo}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  financingStructure.subjectTo
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Subject To
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleFinancingStructure("traditional")}
+                aria-pressed={financingStructure.traditional}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  financingStructure.traditional
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Traditional Financing
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+              Select the financing structure that applies to the proposed acquisition.
+            </p>
+            <p className="mt-3 text-sm text-ink/70">
+              Selected: <span className="font-medium text-ink">{financingStructureLabel}</span>
+            </p>
+          </div>
+
+          {/* Purchase Price is shared by every financing structure (it
+              drives Estimated Equity, Closing Costs, and the printable
+              report regardless of mode), so outside of Traditional
+              Financing it lives here, at the top of this section. When
+              Traditional Financing is selected it moves into the
+              dedicated Traditional Financing section below instead,
+              alongside Down Payment, Interest Rate, and Amortization
+              Term -- it is still the exact same field either way. */}
+          {!financingStructure.traditional && (
+            <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
+              <CurrencyField
+                id="purchasePrice"
+                label="Purchase Price"
+                draft={financingDraft.purchasePrice}
+                onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
+                onBlur={() => handleFinancingBlur("purchasePrice")}
+              />
+              <CurrencyField
+                id="loanBalance"
+                label="Loan Balance"
+                draft={financingDraft.loanBalance}
+                onChange={(raw) => handleFinancingChange("loanBalance", raw)}
+                onBlur={() => handleFinancingBlur("loanBalance")}
+              />
+              <CurrencyField
+                id="sellerDownPayment"
+                label="Seller Down Payment"
+                draft={financingDraft.sellerDownPayment}
+                onChange={(raw) => handleFinancingChange("sellerDownPayment", raw)}
+                onBlur={() => handleFinancingBlur("sellerDownPayment")}
+                helperText="Cash paid to the seller at closing."
+              />
+
+              <div>
+                <div className="mb-2">
+                  <FieldLabel>Monthly Loan Payment Type</FieldLabel>
+                </div>
+                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Monthly Loan Payment Type">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentType("piti")}
+                    aria-pressed={paymentType === "piti"}
+                    className={`px-3 py-2.5 border text-sm transition-colors ${
+                      paymentType === "piti"
+                        ? "border-brass bg-brass/10 text-ink"
+                        : "border-line-dark text-ink/60 hover:border-brass/60"
+                    }`}
+                  >
+                    PITI
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentType("pi")}
+                    aria-pressed={paymentType === "pi"}
+                    className={`px-3 py-2.5 border text-sm transition-colors ${
+                      paymentType === "pi"
+                        ? "border-brass bg-brass/10 text-ink"
+                        : "border-line-dark text-ink/60 hover:border-brass/60"
+                    }`}
+                  >
+                    Principal and Interest Only
+                  </button>
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-2" role="group" aria-label="Monthly Loan Payment Type">
-                <button
-                  type="button"
-                  onClick={() => setPaymentType("piti")}
-                  aria-pressed={paymentType === "piti"}
-                  className={`px-3 py-2.5 border text-sm transition-colors ${
-                    paymentType === "piti"
-                      ? "border-brass bg-brass/10 text-ink"
-                      : "border-line-dark text-ink/60 hover:border-brass/60"
-                  }`}
-                >
-                  PITI
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentType("pi")}
-                  aria-pressed={paymentType === "pi"}
-                  className={`px-3 py-2.5 border text-sm transition-colors ${
-                    paymentType === "pi"
-                      ? "border-brass bg-brass/10 text-ink"
-                      : "border-line-dark text-ink/60 hover:border-brass/60"
-                  }`}
-                >
-                  Principal and Interest Only
-                </button>
+
+              <CurrencyField
+                id="monthlyPayment"
+                label={monthlyPaymentLabel}
+                draft={financingDraft.monthlyPayment}
+                onChange={(raw) => handleFinancingChange("monthlyPayment", raw)}
+                onBlur={() => handleFinancingBlur("monthlyPayment")}
+              />
+
+              <CurrencyField
+                id="annualPropertyTaxes"
+                label="Annual Property Taxes"
+                draft={financingDraft.annualPropertyTaxes}
+                onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
+                onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                disabled={paymentType === "piti"}
+                helperText={
+                  paymentType === "piti"
+                    ? "Already included in the PITI payment above, not counted separately."
+                    : "Added to the monthly housing payment."
+                }
+              />
+              <CurrencyField
+                id="annualPropertyInsurance"
+                label="Annual Property Insurance"
+                draft={financingDraft.annualPropertyInsurance}
+                onChange={(raw) => handleFinancingChange("annualPropertyInsurance", raw)}
+                onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
+                disabled={paymentType === "piti"}
+                helperText={
+                  paymentType === "piti"
+                    ? "Already included in the PITI payment above, not counted separately."
+                    : "Added to the monthly housing payment."
+                }
+              />
+            </div>
+          )}
+
+          {/* ------------------------------------------------------ */}
+          {/* Traditional Financing: a dedicated section with its own
+              inputs and calculations (Purchase Price, Down Payment,
+              Interest Rate, and a fixed 30-year/360-payment
+              amortization term), since a conventional mortgage is
+              structured very differently from Seller Financing or
+              Subject To above. */}
+          {/* ------------------------------------------------------ */}
+          {financingStructure.traditional && (
+            <div className="mt-8 pt-6 border-t border-line-dark">
+              <p className="eyebrow text-brass mb-1">Traditional Financing</p>
+              <p className="text-xs text-ink/50 leading-relaxed mb-5">
+                A conventional, fully amortizing 30-year mortgage. The
+                monthly principal and interest payment below is
+                calculated automatically from the purchase price, down
+                payment, and interest rate entered here.
+              </p>
+              <div className="grid sm:grid-cols-2 gap-5">
+                <CurrencyField
+                  id="purchasePriceTraditional"
+                  label="Purchase Price"
+                  draft={financingDraft.purchasePrice}
+                  onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
+                  onBlur={() => handleFinancingBlur("purchasePrice")}
+                />
+                <CurrencyField
+                  id="traditionalDownPayment"
+                  label="Down Payment"
+                  draft={financingDraft.traditionalDownPayment}
+                  onChange={(raw) => handleFinancingChange("traditionalDownPayment", raw)}
+                  onBlur={() => handleFinancingBlur("traditionalDownPayment")}
+                  helperText="Cash paid at closing. Cannot exceed the purchase price."
+                />
+                <PercentField
+                  id="traditionalInterestRatePct"
+                  label="Interest Rate"
+                  draft={percentDraft.traditionalInterestRatePct}
+                  onChange={(raw) => handlePercentChange("traditionalInterestRatePct", raw)}
+                  onBlur={() => handlePercentBlur("traditionalInterestRatePct")}
+                  info="Annual interest rate. Decimals are supported, e.g. 6.75%."
+                />
+                <ReadOnlyStat
+                  label="Amortization Term"
+                  value="30 Years (360 Monthly Payments)"
+                />
+                <CurrencyField
+                  id="annualPropertyTaxesTraditional"
+                  label="Annual Property Taxes"
+                  draft={financingDraft.annualPropertyTaxes}
+                  onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
+                  onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                  helperText="Added to the monthly principal and interest payment below."
+                />
+                <CurrencyField
+                  id="annualPropertyInsuranceTraditional"
+                  label="Annual Property Insurance"
+                  draft={financingDraft.annualPropertyInsurance}
+                  onChange={(raw) => handleFinancingChange("annualPropertyInsurance", raw)}
+                  onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
+                  helperText="Added to the monthly principal and interest payment below."
+                />
+              </div>
+
+              {financing.traditionalDownPayment > financing.purchasePrice && (
+                <p className="mt-4 text-sm text-red-700">
+                  The down payment exceeds the purchase price. The estimated loan amount is floored at $0.
+                </p>
+              )}
+
+              <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-4">
+                <ReadOnlyStat
+                  label="Estimated Loan Amount"
+                  value={formatWhole(traditionalLoanAmount)}
+                  helperText="Purchase Price minus Down Payment. Never falls below $0."
+                />
+                <div className="border border-brass bg-paper-2 p-6">
+                  <p className="eyebrow text-brass mb-1.5">
+                    Estimated Monthly Principal and Interest Payment
+                  </p>
+                  <p className="font-display text-3xl">{formatCents(traditionalMonthlyPI)}</p>
+                </div>
+              </div>
+
+              {/* Amortization schedule: a complete, internally generated
+                  360-payment schedule. The first 12 payments are shown
+                  by default; a visitor may expand to all 360, collapse
+                  back, or download the complete schedule as a CSV. */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setAmortizationOpen((v) => !v)}
+                    aria-expanded={amortizationOpen}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    {amortizationOpen ? "Hide" : "View"} Estimated Amortization Schedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadAmortizationCsv}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    Download Amortization Schedule as CSV
+                  </button>
+                </div>
+
+                {amortizationOpen && (
+                  <div className="mt-5">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs sm:text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-line-dark text-left text-ink/60">
+                            <th className="py-2 pr-3 font-medium">Payment #</th>
+                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                            <th className="py-2 pr-3 font-medium">Principal Paid</th>
+                            <th className="py-2 pr-3 font-medium">Interest Paid</th>
+                            <th className="py-2 pr-3 font-medium">Total Payment</th>
+                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(amortizationShowAll
+                            ? traditionalAmortization.schedule
+                            : traditionalAmortization.schedule.slice(0, 12)
+                          ).map((row) => (
+                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {traditionalAmortization.schedule.length > 12 && (
+                      <button
+                        type="button"
+                        onClick={() => setAmortizationShowAll((v) => !v)}
+                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        {amortizationShowAll
+                          ? "Show First 12 Payments"
+                          : `View All ${traditionalAmortization.schedule.length} Payments`}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
-
-            <CurrencyField
-              id="monthlyPayment"
-              label={monthlyPaymentLabel}
-              draft={financingDraft.monthlyPayment}
-              onChange={(raw) => handleFinancingChange("monthlyPayment", raw)}
-              onBlur={() => handleFinancingBlur("monthlyPayment")}
-            />
-
-            <CurrencyField
-              id="annualPropertyTaxes"
-              label="Annual Property Taxes"
-              draft={financingDraft.annualPropertyTaxes}
-              onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
-              onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
-              disabled={paymentType === "piti"}
-              helperText={
-                paymentType === "piti"
-                  ? "Already included in the PITI payment above, not counted separately."
-                  : "Added to the monthly housing payment."
-              }
-            />
-            <CurrencyField
-              id="annualPropertyInsurance"
-              label="Annual Property Insurance"
-              draft={financingDraft.annualPropertyInsurance}
-              onChange={(raw) => handleFinancingChange("annualPropertyInsurance", raw)}
-              onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
-              disabled={paymentType === "piti"}
-              helperText={
-                paymentType === "piti"
-                  ? "Already included in the PITI payment above, not counted separately."
-                  : "Added to the monthly housing payment."
-              }
-            />
-          </div>
+          )}
 
           <div className="mt-8 pt-6 border-t border-line-dark">
             <ReadOnlyStat
               label="Estimated Equity"
               value={formatWhole(results.equity)}
-              helperText="Estimated equity is calculated by subtracting the loan balance from the purchase price."
+              helperText={
+                financingStructure.traditional
+                  ? "Estimated equity is calculated by subtracting the estimated loan amount from the purchase price."
+                  : "Estimated equity is calculated by subtracting the loan balance from the purchase price."
+              }
             />
-            {results.equityIsNegative && (
+            {!financingStructure.traditional && results.equityIsNegative && (
               <p className="mt-3 text-sm text-red-700">
                 The loan balance exceeds the purchase price.
               </p>
             )}
-          </div>
-
-          <div className="mt-8 pt-6 border-t border-line-dark">
-            <p className="eyebrow text-brass mb-3">Financing Structure</p>
-            <div className="flex flex-wrap gap-6">
-              <label className="inline-flex items-center gap-2 text-sm text-ink/80 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={financingStructure.sellerFinancing}
-                  onChange={(e) =>
-                    setFinancingStructure((prev) => ({ ...prev, sellerFinancing: e.target.checked }))
-                  }
-                  className="h-4 w-4 accent-brass"
-                />
-                Seller Financing
-              </label>
-              <label className="inline-flex items-center gap-2 text-sm text-ink/80 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={financingStructure.subjectTo}
-                  onChange={(e) =>
-                    setFinancingStructure((prev) => ({ ...prev, subjectTo: e.target.checked }))
-                  }
-                  className="h-4 w-4 accent-brass"
-                />
-                Subject To
-              </label>
-            </div>
-            <p className="mt-3 text-xs text-ink/50 leading-relaxed">
-              Select all financing structures that apply to the proposed transaction.
-            </p>
-            <p className="mt-3 text-sm text-ink/70">
-              Selected: <span className="font-medium text-ink">{financingStructureLabel}</span>
-            </p>
           </div>
         </div>
 
@@ -1986,8 +2520,8 @@ export default function SharedHousingCalculator() {
           <p className="eyebrow text-brass mb-5">Upfront Capital Required</p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
             <ReadOnlyStat
-              label="Seller Down Payment"
-              value={formatWhole(financing.sellerDownPayment)}
+              label={downPaymentLabel}
+              value={formatWhole(results.downPaymentForCapital)}
               helperText="Reused from Property and Financing above."
             />
             <CurrencyField
@@ -2488,10 +3022,12 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink/60">Purchase Price</span>
                   <span className="font-medium text-ink">{formatCents(financing.purchasePrice)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Loan Balance</span>
-                  <span className="font-medium text-ink">{formatCents(financing.loanBalance)}</span>
-                </div>
+                {!financingStructure.traditional && (
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Loan Balance</span>
+                    <span className="font-medium text-ink">{formatCents(financing.loanBalance)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between pt-1.5 border-t border-ink/10">
                   <span className="font-semibold text-ink">Estimated Equity</span>
                   <span className="font-semibold text-ink">{formatCents(results.equity)}</span>
@@ -2508,20 +3044,31 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink/60">Financing Structure</span>
                   <span className="font-medium text-ink">{financingStructureLabel}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Seller Down Payment</span>
-                  <span className="font-medium text-ink">{formatCents(financing.sellerDownPayment)}</span>
-                </div>
-                {paymentType === "piti" ? (
-                  <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                    <span className="font-semibold text-ink">Monthly PITI Payment</span>
-                    <span className="font-semibold text-ink">{formatCents(financing.monthlyPayment)}</span>
-                  </div>
-                ) : (
+                {financingStructure.traditional ? (
                   <>
                     <div className="flex justify-between">
-                      <span className="text-ink/60">Monthly Principal and Interest</span>
-                      <span className="font-medium text-ink">{formatCents(financing.monthlyPayment)}</span>
+                      <span className="text-ink/60">Down Payment</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.traditionalDownPayment)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Estimated Loan Amount</span>
+                      <span className="font-medium text-ink">{formatCents(traditionalLoanAmount)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Interest Rate</span>
+                      <span className="font-medium text-ink">
+                        {formatPercent(percent.traditionalInterestRatePct)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Amortization Term</span>
+                      <span className="font-medium text-ink">30 Years</span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Monthly Principal and Interest Payment</span>
+                      <span className="font-semibold text-ink">{formatCents(traditionalMonthlyPI)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Annual Property Taxes</span>
@@ -2536,11 +3083,51 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
                       <span className="font-semibold text-ink">
                         {formatCents(results.monthlyHousingPayment)}
                       </span>
                     </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller Down Payment</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.sellerDownPayment)}
+                      </span>
+                    </div>
+                    {paymentType === "piti" ? (
+                      <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                        <span className="font-semibold text-ink">Monthly PITI Payment</span>
+                        <span className="font-semibold text-ink">{formatCents(financing.monthlyPayment)}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Monthly Principal and Interest</span>
+                          <span className="font-medium text-ink">{formatCents(financing.monthlyPayment)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Annual Property Taxes</span>
+                          <span className="font-medium text-ink">
+                            {formatCents(financing.annualPropertyTaxes)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Annual Property Insurance</span>
+                          <span className="font-medium text-ink">
+                            {formatCents(financing.annualPropertyInsurance)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                          <span className="font-semibold text-ink">Monthly Housing Payment</span>
+                          <span className="font-semibold text-ink">
+                            {formatCents(results.monthlyHousingPayment)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -2640,8 +3227,8 @@ export default function SharedHousingCalculator() {
             </div>
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[9.5pt]">
               <div className="flex justify-between">
-                <span className="text-ink/60">Seller Down Payment</span>
-                <span className="text-ink">{formatCents(financing.sellerDownPayment)}</span>
+                <span className="text-ink/60">{downPaymentLabel}</span>
+                <span className="text-ink">{formatCents(results.downPaymentForCapital)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-ink/60">Reserves</span>

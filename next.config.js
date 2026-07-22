@@ -12,6 +12,15 @@ const nextConfig = {
         destination: "/sellers#contact-form",
         permanent: true,
       },
+      {
+        // The Shared Housing Calculator page was renamed to Underwriting
+        // and moved to /underwriting. Any old, bookmarked, or
+        // previously-indexed link to the old path should land on the new
+        // page instead of hitting a 404.
+        source: "/shared-housing-calculator",
+        destination: "/underwriting",
+        permanent: true,
+      },
     ];
   },
 };

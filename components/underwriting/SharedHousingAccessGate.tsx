@@ -83,7 +83,7 @@ export default function SharedHousingAccessGate({ children }: { children: ReactN
               <Lock size={18} />
               <span className="eyebrow">Private Calculator</span>
             </div>
-            <h1 className="font-display text-3xl leading-tight">Shared Housing Calculator</h1>
+            <h1 className="font-display text-3xl leading-tight">Underwriting</h1>
             <p className="mt-4 text-ink/70 leading-relaxed">
               This calculator is private. Enter the password to continue.
             </p>
