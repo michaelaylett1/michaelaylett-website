@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export default function SharedHousingCalculatorPage() {
   return (
     <SharedHousingAccessGate>
-      <section className="relative overflow-hidden bg-ink bg-noise pt-32 pb-16 md:pt-40 md:pb-20">
+      <section className="print:hidden relative overflow-hidden bg-ink bg-noise pt-32 pb-16 md:pt-40 md:pb-20">
         <div
           className="pointer-events-none absolute inset-0 opacity-[0.06]"
           style={{

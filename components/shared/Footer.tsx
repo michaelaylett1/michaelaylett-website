@@ -33,7 +33,7 @@ const COLUMNS = [
 
 export default function Footer() {
   return (
-    <footer className="bg-ink border-t border-line pt-16 pb-10">
+    <footer className="print:hidden bg-ink border-t border-line pt-16 pb-10">
       <div className="mx-auto max-w-content px-6 md:px-10">
         <div className="grid md:grid-cols-[1.4fr_1fr_1fr] gap-10 md:gap-16">
           <div>

@@ -63,12 +63,12 @@ export default function SharedHousingAccessGate({ children }: { children: ReactN
   // Avoids a flash of the password screen (or the calculator) before the
   // sessionStorage check above has run on mount.
   if (status === "checking") {
-    return <section className="min-h-[60vh] bg-ink" aria-hidden="true" />;
+    return <section className="print:hidden min-h-[60vh] bg-ink" aria-hidden="true" />;
   }
 
   if (status === "locked") {
     return (
-      <section className="relative overflow-hidden bg-ink bg-noise min-h-[70vh] flex items-center pt-32 pb-16 md:pt-40 md:pb-20">
+      <section className="print:hidden relative overflow-hidden bg-ink bg-noise min-h-[70vh] flex items-center pt-32 pb-16 md:pt-40 md:pb-20">
         <div
           className="pointer-events-none absolute inset-0 opacity-[0.06]"
           style={{
@@ -130,7 +130,7 @@ export default function SharedHousingAccessGate({ children }: { children: ReactN
   return (
     <>
       {children}
-      <div className="bg-paper border-t border-line-dark py-6">
+      <div className="print:hidden bg-paper border-t border-line-dark py-6">
         <div className="mx-auto max-w-content px-6 md:px-10 flex justify-end">
           <button
             type="button"

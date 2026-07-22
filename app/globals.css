@@ -30,6 +30,25 @@ body {
   }
 }
 
+/* Print styles: used by the Shared Housing Calculator's printable
+   underwriting summary (and any future printable report). Sets a
+   standard letter-size page with reasonable margins and resets the
+   site's dark theme to plain black-on-white, since the printable
+   report itself (not this stylesheet) is responsible for hiding
+   everything that shouldn't print via Tailwind's print: variant. */
+@media print {
+  @page {
+    size: letter;
+    margin: 0.5in;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+}
+
 .bg-noise {
   position: relative;
 }

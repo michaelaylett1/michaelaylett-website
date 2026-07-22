@@ -32,7 +32,7 @@ export default function Header() {
 
   return (
     <header
-      className={`fixed top-0 inset-x-0 z-50 transition-colors duration-300 ${
+      className={`print:hidden fixed top-0 inset-x-0 z-50 transition-colors duration-300 ${
         scrolled ? "bg-ink/90 backdrop-blur-md" : "bg-transparent"
       }`}
     >

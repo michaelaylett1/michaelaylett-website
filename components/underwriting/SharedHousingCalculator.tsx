@@ -21,7 +21,9 @@
  * starting value shown on load and after "Reset to Defaults"):
  *   - Platform fees: defaults to 15% of effective rent after vacancy
  *     (estimated PadSplit-style platform fees; actual charges may vary)
- *   - Cleaning and lawn care: defaults to $205 per month
+ *   - Cleaning: defaults to $80 per month
+ *   - Lawn care: defaults to $125 per month
+ *   - Pest control: defaults to $0 per month
  *   - Closing costs: defaults to 1.5% of purchase price
  *   - Holding costs: defaults to 3 months of the full monthly housing
  *     payment, automatically recalculated whenever the payment type,
@@ -33,16 +35,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Info } from "lucide-react";
 
 // ---------------------------------------------------------------------
-// Fixed, non-editable amounts. Platform fees, cleaning and lawn care,
-// and the closing cost percentage used to be here too, but are now
-// editable defaults tracked in component state instead (see
-// PERCENT_DEFAULTS and CLEANING_LAWN_DEFAULT below).
+// Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
+// control, and the closing cost percentage used to be here too, but are
+// now editable defaults tracked in component state instead (see
+// PERCENT_DEFAULTS and MAINTENANCE_EXPENSE_DEFAULTS below).
 // ---------------------------------------------------------------------
 const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
 const RESERVES_AMOUNT = 10000;
 const HOLDING_MONTHS = 3;
-const CLEANING_LAWN_DEFAULT = 205;
 
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
@@ -162,6 +163,17 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   propertyManagementPct: 8,
   platformFeePct: 15,
   closingCostPct: 1.5,
+};
+
+// Cleaning, Lawn Care, and Pest Control replace the old combined
+// "Cleaning and Lawn Care" field: three separate, fully editable
+// monthly expenses, each with its own default.
+type MaintenanceExpenseKey = "cleaning" | "lawnCare" | "pestControl";
+
+const MAINTENANCE_EXPENSE_DEFAULTS: Record<MaintenanceExpenseKey, number> = {
+  cleaning: 80,
+  lawnCare: 125,
+  pestControl: 0,
 };
 
 const BEDROOM_DEFAULTS = {
@@ -420,13 +432,16 @@ export default function SharedHousingCalculator() {
     formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
   );
 
-  // Cleaning and Lawn Care: defaults to $205/month but stays editable,
-  // following the same draft-string + parsed-number pattern as every
-  // other currency field in this calculator (not a fixed assumption).
-  const [cleaningLawnCost, setCleaningLawnCost] = useState(CLEANING_LAWN_DEFAULT);
-  const [cleaningLawnCostDraft, setCleaningLawnCostDraft] = useState(
-    formatCents(CLEANING_LAWN_DEFAULT)
+  // Cleaning, Lawn Care, and Pest Control: three separate, fully
+  // editable monthly expenses (each with its own default), following
+  // the same keyed draft-string + parsed-number pattern used for
+  // capital and financing fields elsewhere in this calculator.
+  const [maintenanceExpenses, setMaintenanceExpenses] = useState<Record<MaintenanceExpenseKey, number>>(
+    MAINTENANCE_EXPENSE_DEFAULTS
   );
+  const [maintenanceExpensesDraft, setMaintenanceExpensesDraft] = useState<
+    Record<MaintenanceExpenseKey, string>
+  >(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
 
   // Holding Costs: initially and automatically calculated (3 months of
   // the complete monthly housing payment), but the field stays editable.
@@ -478,15 +493,15 @@ export default function SharedHousingCalculator() {
     });
   }
 
-  function handleCleaningLawnChange(raw: string) {
-    setCleaningLawnCostDraft(raw);
-    setCleaningLawnCost(parseTypedAmount(raw));
+  function handleMaintenanceExpenseChange(key: MaintenanceExpenseKey, raw: string) {
+    setMaintenanceExpensesDraft((prev) => ({ ...prev, [key]: raw }));
+    setMaintenanceExpenses((prev) => ({ ...prev, [key]: parseTypedAmount(raw) }));
   }
-  function handleCleaningLawnBlur() {
-    setCleaningLawnCost((prev) => {
-      const clamped = round2(Math.max(0, prev));
-      setCleaningLawnCostDraft(formatCents(clamped));
-      return clamped;
+  function handleMaintenanceExpenseBlur(key: MaintenanceExpenseKey) {
+    setMaintenanceExpenses((prev) => {
+      const clamped = round2(Math.max(0, prev[key]));
+      setMaintenanceExpensesDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
+      return { ...prev, [key]: clamped };
     });
   }
 
@@ -524,8 +539,8 @@ export default function SharedHousingCalculator() {
       platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
       closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
     });
-    setCleaningLawnCost(CLEANING_LAWN_DEFAULT);
-    setCleaningLawnCostDraft(formatCents(CLEANING_LAWN_DEFAULT));
+    setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
+    setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
     setSharedBathBedroomsDraft(String(BEDROOM_DEFAULTS.sharedBathBedrooms));
     setWeeklySharedBathRent(BEDROOM_DEFAULTS.weeklySharedBathRent);
@@ -609,9 +624,12 @@ export default function SharedHousingCalculator() {
     );
     const maintenanceMonthly = round2(MAINTENANCE_ANNUAL / 12);
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
-    // Cleaning and Lawn Care defaults to $205/month but is a fully
-    // editable field (cleaningLawnCost), not a fixed assumption.
-    const cleaningLawnMonthly = cleaningLawnCost;
+    // Cleaning, Lawn Care, and Pest Control are three separate, fully
+    // editable monthly expenses (each defaulting to its own starting
+    // value), not a combined or fixed assumption.
+    const cleaningMonthly = maintenanceExpenses.cleaning;
+    const lawnCareMonthly = maintenanceExpenses.lawnCare;
+    const pestControlMonthly = maintenanceExpenses.pestControl;
 
     const totalMonthlyOperatingExpenses = round2(
       monthlyHousingPayment +
@@ -620,7 +638,9 @@ export default function SharedHousingCalculator() {
         propertyManagementFee +
         maintenanceMonthly +
         utilitiesMonthly +
-        cleaningLawnMonthly
+        cleaningMonthly +
+        lawnCareMonthly +
+        pestControlMonthly
     );
 
     // Estimated Equity = Purchase Price - Loan Balance. The Seller Down
@@ -674,7 +694,9 @@ export default function SharedHousingCalculator() {
       propertyManagementFee,
       maintenanceMonthly,
       utilitiesMonthly,
-      cleaningLawnMonthly,
+      cleaningMonthly,
+      lawnCareMonthly,
+      pestControlMonthly,
       monthlyHousingPayment,
       totalMonthlyOperatingExpenses,
       equity,
@@ -696,7 +718,7 @@ export default function SharedHousingCalculator() {
     weeklySharedBathRent,
     ensuiteBedrooms,
     weeklyEnsuiteRent,
-    cleaningLawnCost,
+    maintenanceExpenses,
     monthlyHousingPayment,
     effectiveHoldingCosts,
     calculatedHoldingCosts,
@@ -742,7 +764,9 @@ export default function SharedHousingCalculator() {
           { label: "Property Management", value: formatCents(results.propertyManagementFee) },
           { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
           { label: "Utilities", value: formatCents(results.utilitiesMonthly) },
-          { label: "Cleaning and Lawn Care", value: formatCents(results.cleaningLawnMonthly) },
+          { label: "Cleaning", value: formatCents(results.cleaningMonthly) },
+          { label: "Lawn Care", value: formatCents(results.lawnCareMonthly) },
+          { label: "Pest Control", value: formatCents(results.pestControlMonthly) },
           {
             label: "Total Monthly Expenses",
             value: formatCents(results.totalMonthlyOperatingExpenses),
@@ -811,7 +835,9 @@ export default function SharedHousingCalculator() {
         { label: "Vacancy", value: formatPercent(percent.vacancyPct) },
         { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
         { label: "Local Property Manager", value: formatPercent(percent.propertyManagementPct) },
-        { label: "Cleaning and Lawn Care", value: formatCents(cleaningLawnCost) },
+        { label: "Cleaning", value: formatCents(maintenanceExpenses.cleaning) },
+        { label: "Lawn Care", value: formatCents(maintenanceExpenses.lawnCare) },
+        { label: "Pest Control", value: formatCents(maintenanceExpenses.pestControl) },
         { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
         {
           label: "Holding Costs Source",
@@ -819,10 +845,110 @@ export default function SharedHousingCalculator() {
         },
       ],
     }),
-    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, cleaningLawnCost]
+    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
+
+  // ---------------------------------------------------------------------
+  // Dedicated print-report data: a self-contained set of sections built
+  // specifically for the printed/PDF underwriting summary rendered near
+  // the end of this component. Deliberately separate from
+  // breakdownSections/inputsSection (which drive the on-page breakdown
+  // toggle and the CSV export): the printed report only shows
+  // calculated figures, never input controls, and Annual Property Taxes
+  // and Annual Property Insurance appear only when the payment type is
+  // Principal and Interest Only. PITI already includes taxes and
+  // insurance in the single monthly payment, so the report shows just
+  // the Monthly PITI Payment in that case, with no separate tax/
+  // insurance lines and no note about them being included.
+  // ---------------------------------------------------------------------
+  const printSections: BreakdownSection[] = useMemo(() => {
+    const propertyAndFinancingRows: BreakdownRow[] = [
+      { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+      { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+      { label: "Estimated Equity", value: formatCents(results.equity) },
+      { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+      ...(paymentType === "piti"
+        ? [{ label: "Monthly PITI Payment", value: formatCents(financing.monthlyPayment) }]
+        : [
+            { label: "Monthly Principal and Interest Payment", value: formatCents(financing.monthlyPayment) },
+            { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
+            { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
+            { label: "Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+          ]),
+    ];
+
+    return [
+      { title: "Property and Financing", rows: propertyAndFinancingRows },
+      {
+        title: "Rental Income",
+        rows: [
+          { label: "Shared-Bath Bedroom Income", value: formatCents(results.monthlySharedBathRent) },
+          { label: "Ensuite Bedroom Income", value: formatCents(results.monthlyEnsuiteRent) },
+          { label: "Gross Monthly Rent", value: formatCents(results.grossMonthlyRent) },
+          { label: "Vacancy", value: formatCents(results.vacancyExpense) },
+          { label: "Effective Monthly Rent", value: formatCents(results.effectiveRentAfterVacancy) },
+        ],
+      },
+      {
+        title: "Monthly Operating Expenses",
+        rows: [
+          { label: "Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+          { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
+          { label: "Platform Fees", value: formatCents(results.platformFees) },
+          { label: "Property Management", value: formatCents(results.propertyManagementFee) },
+          { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
+          { label: "Utilities", value: formatCents(results.utilitiesMonthly) },
+          { label: "Cleaning", value: formatCents(results.cleaningMonthly) },
+          { label: "Lawn Care", value: formatCents(results.lawnCareMonthly) },
+          { label: "Pest Control", value: formatCents(results.pestControlMonthly) },
+          {
+            label: "Total Monthly Operating Expenses",
+            value: formatCents(results.totalMonthlyOperatingExpenses),
+            isTotal: true,
+          },
+        ],
+      },
+      {
+        title: "Upfront Capital Required",
+        rows: [
+          { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+          { label: "Arrears", value: formatCents(capital.arrears) },
+          { label: "Renovation Cost", value: formatCents(capital.renovationCost) },
+          { label: "Furniture", value: formatCents(capital.furniture) },
+          { label: "Appliances", value: formatCents(capital.appliances) },
+          { label: "Photos", value: formatCents(capital.photos) },
+          { label: "Holding Costs", value: formatCents(results.holdingCosts) },
+          { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
+          { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
+          { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
+          { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
+          { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+          { label: "Closing Costs", value: formatCents(results.closingCosts) },
+          { label: "Agent Fee", value: formatCents(capital.agentFee) },
+          { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
+          {
+            label: "Total Capital Required",
+            value: formatCents(results.totalCapitalRequired),
+            isTotal: true,
+          },
+        ],
+      },
+      {
+        title: "Estimated Returns",
+        rows: [
+          { label: "Estimated Monthly Cash Flow", value: formatCents(results.monthlyCashFlow) },
+          { label: "Estimated Annual Cash Flow", value: formatCents(results.annualCashFlow) },
+          {
+            label: "Estimated Cash-on-Cash Return",
+            value: results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn),
+            isTotal: true,
+          },
+        ],
+      },
+    ];
+  }, [paymentType, financing, capital, percent, results]);
 
   function downloadCsv() {
     const lines: string[] = ["Section,Field,Value"];
@@ -849,8 +975,8 @@ export default function SharedHousingCalculator() {
   }
 
   return (
-    <section className="bg-ink text-bone py-16 md:py-20">
-      <div className="mx-auto max-w-content px-6 md:px-10">
+    <section className="bg-ink text-bone py-16 md:py-20 print:bg-white print:text-black print:py-0">
+      <div className="mx-auto max-w-content px-6 md:px-10 print:max-w-none print:px-0">
         {/* Key results band: the four headline figures, always visible,
             always up to date, before any of the input sections. */}
         <div className="print:hidden grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1129,12 +1255,28 @@ export default function SharedHousingCalculator() {
               info="Applied to effective rent after vacancy."
             />
             <CurrencyField
-              id="cleaningLawnCost"
-              label="Cleaning and Lawn Care"
-              draft={cleaningLawnCostDraft}
-              onChange={handleCleaningLawnChange}
-              onBlur={handleCleaningLawnBlur}
-              helperText="Defaults to $205 per month and may be adjusted as needed."
+              id="cleaning"
+              label="Cleaning"
+              draft={maintenanceExpensesDraft.cleaning}
+              onChange={(raw) => handleMaintenanceExpenseChange("cleaning", raw)}
+              onBlur={() => handleMaintenanceExpenseBlur("cleaning")}
+              helperText="Estimated monthly cleaning expense."
+            />
+            <CurrencyField
+              id="lawnCare"
+              label="Lawn Care"
+              draft={maintenanceExpensesDraft.lawnCare}
+              onChange={(raw) => handleMaintenanceExpenseChange("lawnCare", raw)}
+              onBlur={() => handleMaintenanceExpenseBlur("lawnCare")}
+              helperText="Estimated monthly lawn care expense."
+            />
+            <CurrencyField
+              id="pestControl"
+              label="Pest Control"
+              draft={maintenanceExpensesDraft.pestControl}
+              onChange={(raw) => handleMaintenanceExpenseChange("pestControl", raw)}
+              onBlur={() => handleMaintenanceExpenseBlur("pestControl")}
+              helperText="Estimated monthly pest control expense."
             />
           </div>
 
@@ -1179,8 +1321,16 @@ export default function SharedHousingCalculator() {
                 <span className="font-display">{formatCents(results.utilitiesMonthly)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
-                <span className="text-ink/70">Cleaning and Lawn Care</span>
-                <span className="font-display">{formatCents(results.cleaningLawnMonthly)}</span>
+                <span className="text-ink/70">Cleaning</span>
+                <span className="font-display">{formatCents(results.cleaningMonthly)}</span>
+              </div>
+              <div className="flex items-center justify-between py-3">
+                <span className="text-ink/70">Lawn Care</span>
+                <span className="font-display">{formatCents(results.lawnCareMonthly)}</span>
+              </div>
+              <div className="flex items-center justify-between py-3">
+                <span className="text-ink/70">Pest Control</span>
+                <span className="font-display">{formatCents(results.pestControlMonthly)}</span>
               </div>
               <div className="flex items-center justify-between py-4">
                 <span className="eyebrow text-ink">Total Monthly Operating Expenses</span>
@@ -1428,23 +1578,89 @@ export default function SharedHousingCalculator() {
           professionals before making an investment decision.
         </p>
 
-        {/* Printable summary: hidden on screen, shown only when printing
-            (or saving as PDF from the print dialog), since the
-            interactive form controls above aren't meaningful on paper. */}
-        <div className="hidden print:block text-ink">
-          <h2 className="font-display text-2xl mb-6">Shared Housing Underwriting Summary</h2>
-          {csvSections.map((section) => (
-            <div key={section.title} className="mb-6">
-              <p className="font-medium mb-2">{section.title}</p>
+        {/* Printable underwriting summary: hidden on screen, shown only
+            when printing or saving as PDF from the print dialog. Built
+            from printSections (defined above) rather than the on-page
+            breakdown or CSV data, since this report has its own rules:
+            only calculated figures, no input controls, tooltips, or
+            buttons, and Annual Property Taxes/Insurance appear only for
+            Principal and Interest Only (see printSections). */}
+        <div className="hidden print:block bg-white text-black text-[10.5pt] leading-snug">
+          <div className="mb-5 print:break-inside-avoid-page">
+            <h1 className="text-[18pt] font-display font-semibold leading-tight">
+              Shared Housing Underwriting Summary
+            </h1>
+            <p className="mt-1 text-[9pt] text-black/70">Source: michaelaylett.com</p>
+            <p className="text-[9pt] text-black/70">
+              Generated{" "}
+              {new Date().toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })}
+            </p>
+          </div>
+
+          {/* Top summary: the five headline figures, with Total Capital
+              Required and Cash-on-Cash Return made the most visually
+              prominent (larger type, bolder border). */}
+          <div className="mb-6 print:break-inside-avoid-page">
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              <div className="border border-black/30 px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-black/60">Purchase Price</p>
+                <p className="text-[13pt] font-semibold">{formatCents(financing.purchasePrice)}</p>
+              </div>
+              <div className="border border-black/30 px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+                  Estimated Monthly Cash Flow
+                </p>
+                <p className="text-[13pt] font-semibold">{formatCents(results.monthlyCashFlow)}</p>
+              </div>
+              <div className="border border-black/30 px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+                  Estimated Annual Cash Flow
+                </p>
+                <p className="text-[13pt] font-semibold">{formatCents(results.annualCashFlow)}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="border-2 border-black px-3 py-3">
+                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+                  Total Capital Required
+                </p>
+                <p className="text-[20pt] font-bold">{formatCents(results.totalCapitalRequired)}</p>
+              </div>
+              <div className="border-2 border-black px-3 py-3">
+                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+                  Estimated Cash-on-Cash Return
+                </p>
+                <p className="text-[20pt] font-bold">
+                  {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {printSections.map((section) => (
+            <div key={section.title} className="mb-4 print:break-inside-avoid-page">
+              <p className="text-[10pt] font-semibold uppercase tracking-wide border-b border-black/40 pb-1 mb-1.5 print:break-after-avoid-page">
+                {section.title}
+              </p>
               {section.rows.map((row) => (
-                <div key={row.label} className="flex justify-between text-sm py-1">
+                <div
+                  key={row.label}
+                  className={`flex justify-between gap-4 text-[10pt] py-0.5 print:break-inside-avoid ${
+                    row.isTotal ? "font-semibold border-t border-black/30 mt-1 pt-1" : ""
+                  }`}
+                >
                   <span>{row.label}</span>
                   <span>{row.value}</span>
                 </div>
               ))}
             </div>
           ))}
-          <p className="mt-6 text-xs leading-relaxed">
+
+          <p className="mt-6 text-[7.5pt] leading-relaxed text-black/60 print:break-inside-avoid-page">
             This calculator is provided for illustrative and educational
             purposes only. Results are estimates based on the information
             entered and the assumptions displayed. Actual rents,
