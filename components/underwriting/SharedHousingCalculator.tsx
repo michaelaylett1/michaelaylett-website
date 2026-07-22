@@ -53,6 +53,11 @@ const MAX_PROPERTY_IMAGES = 6;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const MAX_IMAGE_DIMENSION = 1600;
 
+// Floor Plan: a single optional file, processed and stored entirely
+// client-side like Property Images. Accepts image formats plus PDF,
+// since floor plans are commonly distributed as PDFs.
+const ACCEPTED_FLOOR_PLAN_TYPES = [...ACCEPTED_IMAGE_TYPES, "application/pdf"];
+
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
 // ---------------------------------------------------------------------
@@ -166,6 +171,34 @@ function getGalleryLayout(count: number): { gridClass: string; imgHeightClass: s
   if (count === 2) return { gridClass: "grid-cols-2", imgHeightClass: "h-[2.4in]" };
   if (count <= 4) return { gridClass: "grid-cols-2", imgHeightClass: "h-[1.8in]" };
   return { gridClass: "grid-cols-3", imgHeightClass: "h-[1.3in]" };
+}
+
+// Floor Plan file: either a processed image data URL or a PDF read
+// directly as a data URL (PDFs are not resized/compressed, only images
+// are, since canvas-based processing cannot rasterize a PDF).
+type FloorPlanFile = { dataUrl: string; name: string; isImage: boolean };
+
+// A lightweight, non-blocking check that the Video Walkthrough Link
+// looks like a real web address. Empty is treated as valid since the
+// field is optional.
+function isLikelyValidUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Financing Structure: Seller Financing and Subject To are independent
+// checkboxes, so all four combinations are possible.
+function getFinancingStructureLabel(sellerFinancing: boolean, subjectTo: boolean): string {
+  if (sellerFinancing && subjectTo) return "Subject To and Seller Financing";
+  if (subjectTo) return "Subject To";
+  if (sellerFinancing) return "Seller Financing";
+  return "Not Specified";
 }
 
 // ---------------------------------------------------------------------
@@ -521,6 +554,14 @@ export default function SharedHousingCalculator() {
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
   const [processingImages, setProcessingImages] = useState(false);
+  const [videoWalkthroughLink, setVideoWalkthroughLink] = useState("");
+  const [floorPlan, setFloorPlan] = useState<FloorPlanFile | null>(null);
+  const [floorPlanError, setFloorPlanError] = useState("");
+  const [processingFloorPlan, setProcessingFloorPlan] = useState(false);
+  const [financingStructure, setFinancingStructure] = useState({
+    sellerFinancing: false,
+    subjectTo: false,
+  });
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
@@ -666,6 +707,43 @@ export default function SharedHousingCalculator() {
     }
   }
 
+  // Floor Plan handler: a single optional file, processed entirely
+  // client-side. Images are resized/compressed like Property Images;
+  // PDFs are read directly as a data URL (no canvas processing, since a
+  // PDF cannot be rasterized that way). Uploading a new file always
+  // replaces whatever floor plan was there before.
+  async function handleFloorPlanFile(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file) return;
+    if (!ACCEPTED_FLOOR_PLAN_TYPES.includes(file.type)) {
+      setFloorPlanError("That file is not supported. Please choose a JPG, PNG, WEBP, or PDF file.");
+      return;
+    }
+    setFloorPlanError("");
+    setProcessingFloorPlan(true);
+    try {
+      const isImage = ACCEPTED_IMAGE_TYPES.includes(file.type);
+      const dataUrl = isImage
+        ? await processImageFile(file)
+        : await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(new Error("Could not read the selected file."));
+            reader.readAsDataURL(file);
+          });
+      setFloorPlan({ dataUrl, name: file.name, isImage });
+    } catch {
+      setFloorPlanError("That file could not be processed. Please try a different file.");
+    } finally {
+      setProcessingFloorPlan(false);
+    }
+  }
+
+  function handleRemoveFloorPlan() {
+    setFloorPlan(null);
+    setFloorPlanError("");
+  }
+
   function resetToDefaults() {
     setPaymentType(PAYMENT_TYPE_DEFAULT);
     setFinancing(FINANCING_DEFAULTS);
@@ -695,11 +773,16 @@ export default function SharedHousingCalculator() {
     // manually entered amount.
     setHoldingCostsOverride(null);
     setHoldingCostsDraft(formatCents(0));
-    // Property Address and Property Images are cleared on reset, same
-    // as every other field.
+    // Property Address, Property Images, Video Walkthrough Link, Floor
+    // Plan, and Financing Structure are all cleared on reset, same as
+    // every other field.
     setPropertyAddress("");
     setPropertyImages([]);
     setImageError("");
+    setVideoWalkthroughLink("");
+    setFloorPlan(null);
+    setFloorPlanError("");
+    setFinancingStructure({ sellerFinancing: false, subjectTo: false });
   }
 
   // ---------------------------------------------------------------------
@@ -873,6 +956,14 @@ export default function SharedHousingCalculator() {
   const monthlyPaymentLabel =
     paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Principal and Interest Payment";
 
+  // Financing Structure: Seller Financing and Subject To are independent
+  // checkboxes (see getFinancingStructureLabel above), computed once here
+  // so the breakdown, CSV, and print report all read the same label.
+  const financingStructureLabel = getFinancingStructureLabel(
+    financingStructure.sellerFinancing,
+    financingStructure.subjectTo
+  );
+
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
   // table uses these five sections directly. The CSV/print summary uses
@@ -884,6 +975,7 @@ export default function SharedHousingCalculator() {
         title: "Property and Financing",
         rows: [
           { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+          { label: "Financing Structure", value: financingStructureLabel },
           { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
           { label: "Loan Balance", value: formatCents(financing.loanBalance) },
           { label: "Estimated Equity", value: formatCents(results.equity) },
@@ -958,7 +1050,7 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing, capital, percent, propertyAddress]
+    [results, financing, capital, percent, propertyAddress, financingStructureLabel]
   );
 
   const inputsSection: BreakdownSection = useMemo(
@@ -966,6 +1058,7 @@ export default function SharedHousingCalculator() {
       title: "Inputs",
       rows: [
         { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+        { label: "Video Walkthrough Link", value: videoWalkthroughLink.trim() || "Not entered" },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
         { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
@@ -992,7 +1085,7 @@ export default function SharedHousingCalculator() {
         },
       ],
     }),
-    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses, propertyAddress]
+    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses, propertyAddress, videoWalkthroughLink]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
@@ -1012,6 +1105,7 @@ export default function SharedHousingCalculator() {
   // ---------------------------------------------------------------------
   const printSections: BreakdownSection[] = useMemo(() => {
     const propertyAndFinancingRows: BreakdownRow[] = [
+      { label: "Financing Structure", value: financingStructureLabel },
       { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
       { label: "Loan Balance", value: formatCents(financing.loanBalance) },
       { label: "Estimated Equity", value: formatCents(results.equity) },
@@ -1095,7 +1189,7 @@ export default function SharedHousingCalculator() {
         ],
       },
     ];
-  }, [paymentType, financing, capital, percent, results]);
+  }, [paymentType, financing, capital, percent, results, financingStructureLabel]);
 
   function downloadCsv() {
     const lines: string[] = ["Section,Field,Value"];
@@ -1288,6 +1382,116 @@ export default function SharedHousingCalculator() {
         </div>
 
         {/* ---------------------------------------------------------- */}
+        {/* Video Walkthrough Link                                      */}
+        {/* ---------------------------------------------------------- */}
+        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+          <p className="eyebrow text-brass mb-5">Video Walkthrough Link</p>
+          <div>
+            <label htmlFor="videoWalkthroughLink" className="block mb-2">
+              <FieldLabel>Video Walkthrough Link</FieldLabel>
+            </label>
+            <input
+              id="videoWalkthroughLink"
+              type="url"
+              value={videoWalkthroughLink}
+              onChange={(e) => setVideoWalkthroughLink(e.target.value)}
+              placeholder="https://"
+              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+            />
+            <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
+              Add a link to a property walkthrough video. Optional. Links
+              from YouTube, Vimeo, Google Drive, Dropbox, Loom, and similar
+              services are all supported.
+            </p>
+            {videoWalkthroughLink.trim() !== "" && !isLikelyValidUrl(videoWalkthroughLink) && (
+              <p className="mt-1.5 text-xs text-red-700">
+                Enter a complete web address starting with http:// or https://.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* ---------------------------------------------------------- */}
+        {/* Floor Plan                                                   */}
+        {/* ---------------------------------------------------------- */}
+        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+          <p className="eyebrow text-brass mb-2">Floor Plan</p>
+          <p className="text-sm text-ink/60 leading-relaxed mb-5">
+            Upload a floor plan to include at the bottom of the printable underwriting summary.
+          </p>
+
+          {floorPlan ? (
+            <div className="border border-line-dark bg-white p-3 max-w-sm">
+              {floorPlan.isImage ? (
+                <img
+                  src={floorPlan.dataUrl}
+                  alt={floorPlan.name || "Floor plan"}
+                  className="w-full h-40 object-contain"
+                />
+              ) : (
+                <div className="py-6 px-2">
+                  <span className="text-sm text-ink/70 break-all">{floorPlan.name}</span>
+                  <p className="mt-1 text-xs text-ink/50">PDF floor plan</p>
+                </div>
+              )}
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
+                  Replace
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                    className="hidden"
+                    onChange={(e) => {
+                      handleFloorPlanFile(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={handleRemoveFloorPlan}
+                  className="text-xs text-ink/50 hover:text-red-700 transition-colors"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : (
+            <label
+              htmlFor="floorPlanInput"
+              className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 min-h-[128px] max-w-sm p-4 text-center cursor-pointer hover:border-brass transition-colors"
+            >
+              <Upload size={18} className="text-ink/40" aria-hidden="true" />
+              <span className="text-xs text-ink/60">
+                {processingFloorPlan ? "Processing..." : "Add Floor Plan"}
+              </span>
+              <input
+                id="floorPlanInput"
+                type="file"
+                accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                className="hidden"
+                disabled={processingFloorPlan}
+                onChange={(e) => {
+                  handleFloorPlanFile(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          )}
+
+          {floorPlanError && (
+            <p role="alert" className="mt-4 text-sm text-red-700">
+              {floorPlanError}
+            </p>
+          )}
+
+          <p className="mt-4 text-xs text-ink/50 leading-relaxed">
+            Supported formats: JPG, PNG, WEBP, and PDF. One floor plan.
+            Appears at the bottom of the printable underwriting summary.
+          </p>
+        </div>
+
+        {/* ---------------------------------------------------------- */}
         {/* Section 1: Property and financing                          */}
         {/* ---------------------------------------------------------- */}
         <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
@@ -1395,6 +1599,40 @@ export default function SharedHousingCalculator() {
                 The loan balance exceeds the purchase price.
               </p>
             )}
+          </div>
+
+          <div className="mt-8 pt-6 border-t border-line-dark">
+            <p className="eyebrow text-brass mb-3">Financing Structure</p>
+            <div className="flex flex-wrap gap-6">
+              <label className="inline-flex items-center gap-2 text-sm text-ink/80 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={financingStructure.sellerFinancing}
+                  onChange={(e) =>
+                    setFinancingStructure((prev) => ({ ...prev, sellerFinancing: e.target.checked }))
+                  }
+                  className="h-4 w-4 accent-brass"
+                />
+                Seller Financing
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-ink/80 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={financingStructure.subjectTo}
+                  onChange={(e) =>
+                    setFinancingStructure((prev) => ({ ...prev, subjectTo: e.target.checked }))
+                  }
+                  className="h-4 w-4 accent-brass"
+                />
+                Subject To
+              </label>
+            </div>
+            <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+              Select all financing structures that apply to the proposed transaction.
+            </p>
+            <p className="mt-3 text-sm text-ink/70">
+              Selected: <span className="font-medium text-ink">{financingStructureLabel}</span>
+            </p>
           </div>
         </div>
 
@@ -1830,22 +2068,26 @@ export default function SharedHousingCalculator() {
         </p>
 
         {/* Printable underwriting summary: hidden on screen, shown only
-            when printing or saving as PDF from the print dialog. Renamed
-            "Co-Living Underwriting Summary" per current branding, redesigned
-            with the site's cream/charcoal/brass identity, and reordered into
-            the exact section order required: header (title, optional
-            address, source, generated date), property photo gallery (only
-            if images were uploaded), investment and return summary cards,
-            then the five printSections (Property and Financing, Rental
-            Income, Monthly Operating Expenses, Upfront Capital Required,
-            Estimated Returns), and finally the disclaimer. Built from
-            printSections (defined above) rather than the on-page breakdown
-            or CSV data, since this report has its own rules: only
-            calculated figures, no input controls, tooltips, or buttons, and
-            Annual Property Taxes/Insurance appear only for Principal and
-            Interest Only (see printSections). */}
+            when printing or saving as PDF from the print dialog. Titled
+            "Co-Living Underwriting Summary", styled with the site's
+            cream/charcoal/brass identity, and ordered exactly as required:
+            title, property address (if entered), financing structure,
+            source, generated date, video walkthrough (if entered), property
+            photo gallery (if uploaded), investment and return summary
+            cards, then the five printSections (Property and Financing,
+            Rental Income, Monthly Operating Expenses, Upfront Capital
+            Required, Estimated Returns), and finally the floor plan (if
+            uploaded) at the very bottom. The illustrative-use disclaimer is
+            intentionally not printed here; it still appears on the
+            interactive calculator page above. Built from printSections
+            (defined above) rather than the on-page breakdown or CSV data,
+            since this report has its own rules: only calculated figures,
+            no input controls, tooltips, or buttons, and Annual Property
+            Taxes/Insurance appear only for Principal and Interest Only
+            (see printSections). */}
         <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6">
-          {/* 1. Report header */}
+          {/* 1-5. Report header: title, property address (if entered),
+              financing structure, source, generated date */}
           <div className="mb-6 print:break-inside-avoid-page border-b-4 border-brass pb-4">
             <h1 className="text-[20pt] font-display font-semibold leading-tight text-ink">
               Co-Living Underwriting Summary
@@ -1855,6 +2097,9 @@ export default function SharedHousingCalculator() {
                 Property Address: {propertyAddress.trim()}
               </p>
             )}
+            <p className="mt-1 text-[9pt] text-ink/80">
+              Financing Structure: {financingStructureLabel}
+            </p>
             <p className="mt-1 text-[9pt] text-ink/60">Source: michaelaylett.com</p>
             <p className="text-[9pt] text-ink/60">
               Generated:{" "}
@@ -1866,7 +2111,23 @@ export default function SharedHousingCalculator() {
             </p>
           </div>
 
-          {/* 2. Property photo gallery, only if images were uploaded */}
+          {/* 6. Video Walkthrough, only if a link was entered. No video
+              player is embedded; the label is a clickable hyperlink in
+              saved PDF versions, with the full URL printed beneath it so
+              the link is still usable from a physical printed copy. */}
+          {videoWalkthroughLink.trim() !== "" && (
+            <div className="mb-6 print:break-inside-avoid-page">
+              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
+                Video Walkthrough
+              </p>
+              <a href={videoWalkthroughLink.trim()} className="text-[11pt] font-semibold text-brass underline">
+                View Property Walkthrough
+              </a>
+              <p className="mt-1 text-[9pt] text-ink/60 break-all">{videoWalkthroughLink.trim()}</p>
+            </div>
+          )}
+
+          {/* 7. Property photo gallery, only if images were uploaded */}
           {propertyImages.length > 0 && (
             <div className="mb-6 print:break-inside-avoid-page">
               <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
@@ -1891,12 +2152,13 @@ export default function SharedHousingCalculator() {
             </div>
           )}
 
-          {/* 3. Investment and return summary: the five headline figures,
+          {/* 8. Investment and return summary: the five headline figures,
               with Total Capital Required and Estimated Cash-on-Cash Return
               made the most visually prominent. The Cash-on-Cash Return card
-              always uses the same green treatment regardless of the value,
-              with a bold border and very dark text so the figure stays
-              readable even if the printer omits background colors. */}
+              always uses the same bright-green treatment regardless of the
+              value, with a bold dark border and bold, very dark text so the
+              figure stays readable even if the printer omits background
+              colors. */}
           <div className="mb-6 print:break-inside-avoid-page">
             <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
               Investment and Return Summary
@@ -1929,8 +2191,8 @@ export default function SharedHousingCalculator() {
                 </p>
               </div>
               <div
-                className="border-4 border-emerald-900 rounded px-3 py-3"
-                style={{ backgroundColor: "#4E9C6C" }}
+                className="border-4 border-ink rounded px-3 py-3"
+                style={{ backgroundColor: "#00FF00" }}
               >
                 <p className="text-[8pt] uppercase tracking-wide text-ink font-bold">
                   Estimated Cash-on-Cash Return
@@ -1942,8 +2204,9 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
-          {/* 4-8. Property and Financing, Rental Income, Monthly Operating
-              Expenses, Upfront Capital Required, Estimated Returns */}
+          {/* 9-13. Property and Financing, Rental Income, Monthly
+              Operating Expenses, Upfront Capital Required, Estimated
+              Returns */}
           {printSections.map((section) => (
             <div key={section.title} className="mb-4 print:break-inside-avoid-page">
               <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-1.5 print:break-after-avoid-page">
@@ -1963,19 +2226,35 @@ export default function SharedHousingCalculator() {
             </div>
           ))}
 
-          {/* 9. Disclaimer */}
-          <p className="mt-6 text-[7.5pt] leading-relaxed text-ink/60 print:break-inside-avoid-page border-t border-ink/15 pt-3">
-            This calculator is provided for illustrative and educational
-            purposes only. Results are estimates based on the information
-            entered and the assumptions displayed. Actual rents,
-            occupancy, expenses, financing costs, renovation costs,
-            operating performance, and investment returns may vary. This
-            calculator does not constitute an offer, appraisal,
-            projection, guarantee, legal advice, tax advice, or
-            investment advice. Users should independently verify all
-            assumptions and consult qualified professionals before
-            making an investment decision.
-          </p>
+          {/* 14. Floor Plan, only if one was uploaded. Uses object-contain
+              (not object-cover, unlike the photo gallery) so the plan is
+              never cropped or stretched, and print:break-inside-avoid-page
+              keeps it from splitting across two pages, which naturally
+              pushes it onto a new page if it does not fit on the current
+              one. PDF floor plans cannot be reliably embedded inline
+              across browsers, so they are shown as a clearly labeled,
+              clickable file link instead. */}
+          {floorPlan && (
+            <div className="mt-6 print:break-inside-avoid-page">
+              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
+                Floor Plan
+              </p>
+              {floorPlan.isImage ? (
+                <img
+                  src={floorPlan.dataUrl}
+                  alt={floorPlan.name || "Floor plan"}
+                  className="w-full h-auto max-h-[8.5in] object-contain rounded border border-ink/15"
+                />
+              ) : (
+                <div className="border border-ink/25 bg-paper-2 rounded px-4 py-4">
+                  <p className="text-[10pt] text-ink break-all">{floorPlan.name}</p>
+                  <a href={floorPlan.dataUrl} className="mt-1 inline-block text-[9pt] text-brass underline">
+                    Open Floor Plan PDF
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </section>
