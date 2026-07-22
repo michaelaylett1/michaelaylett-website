@@ -1211,7 +1211,11 @@ function PrintKpiCard({
 }
 
 // One row of the Investment Highlights card: an icon badge, a bold
-// headline, and a short supporting detail line.
+// headline, and a short supporting detail line. `detail` accepts a
+// ReactNode (not just a string) so callers that need a stacked,
+// multi-line breakdown -- like the bedroom/room-rate bullet below --
+// can pass structured block content instead of a single sentence, while
+// every other caller continues to just pass a plain string as before.
 function HighlightBullet({
   icon,
   label,
@@ -1220,7 +1224,7 @@ function HighlightBullet({
 }: {
   icon: React.ReactNode;
   label: string;
-  detail: string;
+  detail: React.ReactNode;
   accent?: "brass" | "green";
 }) {
   const badgeClass = accent === "brass" ? "bg-brass" : "bg-ink";
@@ -1237,7 +1241,7 @@ function HighlightBullet({
       </div>
       <div>
         <p className="text-[9.5pt] font-semibold text-ink leading-snug">{label}</p>
-        <p className="text-[8.5pt] text-ink/60 leading-snug">{detail}</p>
+        <div className="text-[8.5pt] text-ink/60 leading-snug">{detail}</div>
       </div>
     </div>
   );
@@ -1325,13 +1329,16 @@ type CapitalKey =
   | "photos"
   | "upfrontInsurance"
   | "acquisitionFee"
-  | "tcAndLlc"
   | "stackTcFee"
   | "stackLlcFee"
   | "traditionalTcFee"
   | "traditionalLlcFee"
   | "subjectToTcFee"
   | "subjectToLlcFee"
+  | "hybridTcFee"
+  | "hybridLlcFee"
+  | "sellerFinancingTcFee"
+  | "sellerFinancingLlcFee"
   | "agentFee"
   | "assignmentFee";
 
@@ -1348,27 +1355,23 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   photos: 300,
   upfrontInsurance: 3000,
   acquisitionFee: 10000,
-  // "TC and LLC" (Seller Financing and Subject To & Seller Finance
-  // Hybrid only): a single combined field, unchanged. No longer used by
-  // Traditional Financing or Subject To -- see their own separate fee
-  // pairs below.
-  tcAndLlc: 2000,
-  // Stack Method only: TC and LLC are two separate, independently
-  // editable fees instead of the combined field above. Never used by
-  // any other financing structure, and the combined tcAndLlc field above
-  // is never used by Stack Method -- each fee is included exactly once.
+  // Every financing structure has its own fully independent TC Fee /
+  // LLC Entity Formation Cost pair, so editing one structure's fees
+  // never affects another's, and each fee is included exactly once in
+  // that structure's Total Capital Required. Stack Method is the only
+  // structure with a $2,500 TC Fee default; every other structure
+  // defaults to $1,500. LLC Entity Formation Cost defaults to $1,000
+  // everywhere.
   stackTcFee: 2500,
   stackLlcFee: 1000,
-  // Traditional Financing only: its own independent TC Fee / LLC Entity
-  // Formation Cost pair, separate from every other financing structure's
-  // fields, so editing one structure's fees never affects another's.
   traditionalTcFee: 1500,
   traditionalLlcFee: 1000,
-  // Subject To only: its own independent TC Fee / LLC Entity Formation
-  // Cost pair, same defaults as Traditional Financing but tracked
-  // completely separately.
   subjectToTcFee: 1500,
   subjectToLlcFee: 1000,
+  hybridTcFee: 1500,
+  hybridLlcFee: 1000,
+  sellerFinancingTcFee: 1500,
+  sellerFinancingLlcFee: 1000,
   agentFee: 0,
   assignmentFee: 0,
 };
@@ -1865,6 +1868,12 @@ export default function SharedHousingCalculator() {
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
   const [processingImages, setProcessingImages] = useState(false);
+  // Tracks whether a drag is currently over the property photo drop
+  // zone, purely for the highlighted border/background treatment below
+  // -- it never affects which files are actually accepted (that is
+  // still handleAddImageFiles's job, reused identically for both
+  // click-to-upload and drag-and-drop).
+  const [isDraggingPhotos, setIsDraggingPhotos] = useState(false);
   const [videoWalkthroughLink, setVideoWalkthroughLink] = useState("");
   const [floorPlan, setFloorPlan] = useState<FloorPlanFile | null>(null);
   const [floorPlanError, setFloorPlanError] = useState("");
@@ -2128,6 +2137,41 @@ export default function SharedHousingCalculator() {
 
   function handleRemoveImage(id: string) {
     setPropertyImages((prev) => prev.filter((img) => img.id !== id));
+  }
+
+  // Drag-and-drop for property photos: reuses handleAddImageFiles
+  // exactly, so dropped files go through the identical type-checking,
+  // 5-photo cap, and append-not-replace logic as files chosen through
+  // the click-to-upload input. Dragging is purely a second way to reach
+  // the same handler; nothing about file validation or storage differs.
+  function handlePhotoDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (propertyImages.length >= MAX_PROPERTY_PHOTOS) return;
+    setIsDraggingPhotos(true);
+  }
+  function handlePhotoDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (propertyImages.length >= MAX_PROPERTY_PHOTOS) return;
+    setIsDraggingPhotos(true);
+  }
+  function handlePhotoDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only clear the highlight once the drag has actually left the
+    // drop zone's own bounds, not when it moves over a child element
+    // inside it (which also fires dragleave on the parent).
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingPhotos(false);
+  }
+  function handlePhotoDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingPhotos(false);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      handleAddImageFiles(e.dataTransfer.files);
+    }
   }
 
   // Reorders property photos by swapping the photo at `id` with its
@@ -3290,9 +3334,10 @@ export default function SharedHousingCalculator() {
     // Required (the seller-financed proceeds offset some or all of the
     // buyer's other cash needs); a negative result (cash required)
     // increases it. Never allowed to fall below $0.
-    // Stack Method uses two separate fees (stackTcFee, stackLlcFee)
-    // instead of the combined tcAndLlc field used by every other
-    // financing structure, and never includes Upfront Insurance as a
+    // Stack Method uses its own two separate fees (stackTcFee,
+    // stackLlcFee), just like every other financing structure uses its
+    // own independent TC Fee / LLC Entity Formation Cost pair, and never
+    // includes Upfront Insurance as a
     // separate capital item (Annual Property Insurance is still fully
     // accounted for inside Estimated Monthly Bank PITI above -- this
     // only removes the separate upfront capital line item). Traditional
@@ -3318,18 +3363,18 @@ export default function SharedHousingCalculator() {
       round2(stackBaseCapitalRequired + stackClosingCashAdjustment)
     );
 
-    // TC Fee + LLC Entity Formation Cost: Traditional Financing and
-    // Subject To each use their own independent fee pair; Seller
-    // Financing and Hybrid still use the single combined tcAndLlc field.
-    // Stack Method never reaches this branch (it uses
-    // stackTcFee/stackLlcFee above instead). Each fee is included
-    // exactly once.
+    // TC Fee + LLC Entity Formation Cost: every financing structure uses
+    // its own fully independent fee pair. Stack Method never reaches
+    // this branch (it uses stackTcFee/stackLlcFee above instead). Each
+    // fee is included exactly once.
     const tcAndLlcTotal =
       financingMode === "traditional"
         ? capital.traditionalTcFee + capital.traditionalLlcFee
         : financingMode === "subjectTo"
           ? capital.subjectToTcFee + capital.subjectToLlcFee
-          : capital.tcAndLlc;
+          : financingMode === "hybrid"
+            ? capital.hybridTcFee + capital.hybridLlcFee
+            : capital.sellerFinancingTcFee + capital.sellerFinancingLlcFee;
 
     const totalCapitalRequired =
       financingMode === "stackMethod"
@@ -3724,7 +3769,18 @@ export default function SharedHousingCalculator() {
                         { label: "TC Fee", value: formatCents(capital.subjectToTcFee) },
                         { label: "LLC Entity Formation Cost", value: formatCents(capital.subjectToLlcFee) },
                       ]
-                    : [{ label: "TC and LLC", value: formatCents(capital.tcAndLlc) }]),
+                    : financingMode === "hybrid"
+                      ? [
+                          { label: "TC Fee", value: formatCents(capital.hybridTcFee) },
+                          { label: "LLC Entity Formation Cost", value: formatCents(capital.hybridLlcFee) },
+                        ]
+                      : [
+                          { label: "TC Fee", value: formatCents(capital.sellerFinancingTcFee) },
+                          {
+                            label: "LLC Entity Formation Cost",
+                            value: formatCents(capital.sellerFinancingLlcFee),
+                          },
+                        ]),
                 ...(financingMode === "traditional"
                   ? [
                       {
@@ -4199,7 +4255,15 @@ export default function SharedHousingCalculator() {
               { label: "TC Fee", value: capital.subjectToTcFee, color: "#C08A3E" },
               { label: "LLC Entity Formation Cost", value: capital.subjectToLlcFee, color: "#C08A3E" },
             ]
-          : [{ label: "TC and LLC", value: capital.tcAndLlc, color: "#C08A3E" }];
+          : financingMode === "hybrid"
+            ? [
+                { label: "TC Fee", value: capital.hybridTcFee, color: "#C08A3E" },
+                { label: "LLC Entity Formation Cost", value: capital.hybridLlcFee, color: "#C08A3E" },
+              ]
+            : [
+                { label: "TC Fee", value: capital.sellerFinancingTcFee, color: "#C08A3E" },
+                { label: "LLC Entity Formation Cost", value: capital.sellerFinancingLlcFee, color: "#C08A3E" },
+              ];
     return [
       { label: downPaymentLabel, value: results.downPaymentForCapital, color: "#12181C" },
       { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
@@ -4486,10 +4550,19 @@ export default function SharedHousingCalculator() {
         {/* ---------------------------------------------------------- */}
         {/* Property Images                                             */}
         {/* ---------------------------------------------------------- */}
-        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+        <div
+          className={`print:hidden mt-6 p-6 sm:p-8 md:p-10 text-ink transition-colors ${
+            isDraggingPhotos ? "bg-brass/10 border-2 border-dashed border-brass" : "bg-paper"
+          }`}
+          onDragEnter={handlePhotoDragEnter}
+          onDragOver={handlePhotoDragOver}
+          onDragLeave={handlePhotoDragLeave}
+          onDrop={handlePhotoDrop}
+        >
           <p className="eyebrow text-brass mb-2">Property Images</p>
           <p className="text-sm text-ink/60 leading-relaxed mb-5">
-            Upload property photos to include in the printable underwriting summary.
+            Upload property photos to include in the printable underwriting summary. Click to
+            browse, or drag and drop up to 5 photos at once.
           </p>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -4554,12 +4627,28 @@ export default function SharedHousingCalculator() {
             {propertyImages.length < MAX_PROPERTY_PHOTOS && (
               <label
                 htmlFor="propertyImagesInput"
-                className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 h-full min-h-[128px] p-4 text-center cursor-pointer hover:border-brass transition-colors"
+                className={`flex flex-col items-center justify-center gap-2 border border-dashed h-full min-h-[128px] p-4 text-center cursor-pointer transition-colors ${
+                  isDraggingPhotos
+                    ? "border-brass bg-brass/10"
+                    : "border-line-dark bg-white/60 hover:border-brass"
+                }`}
               >
-                <Upload size={18} className="text-ink/40" aria-hidden="true" />
+                <Upload size={18} className={isDraggingPhotos ? "text-brass" : "text-ink/40"} aria-hidden="true" />
                 <span className="text-xs text-ink/60">
-                  {processingImages ? "Processing..." : "Add Photos"}
+                  {processingImages
+                    ? "Processing..."
+                    : isDraggingPhotos
+                      ? "Drop property photos here"
+                      : "Add Photos"}
                 </span>
+                {!isDraggingPhotos && !processingImages && (
+                  <span className="text-[10px] text-ink/40 sm:hidden">Tap to upload</span>
+                )}
+                {!isDraggingPhotos && !processingImages && (
+                  <span className="hidden sm:block text-[10px] text-ink/40">
+                    Or drag & drop up to {MAX_PROPERTY_PHOTOS} property photos
+                  </span>
+                )}
                 <input
                   id="propertyImagesInput"
                   type="file"
@@ -4585,7 +4674,7 @@ export default function SharedHousingCalculator() {
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
             {propertyImages.length >= MAX_PROPERTY_PHOTOS
               ? `Maximum of ${MAX_PROPERTY_PHOTOS} property photos reached.`
-              : `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Supported formats: JPG, PNG, and WEBP.`}{" "}
+              : `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Click to browse or drag and drop. Supported formats: JPG, PNG, and WEBP.`}{" "}
             Images are used only to personalize the underwriting summary
             generated from this calculator.
           </p>
@@ -6766,15 +6855,44 @@ export default function SharedHousingCalculator() {
                   helperText="Entity formation cost."
                 />
               </>
+            ) : financingMode === "hybrid" ? (
+              <>
+                <CurrencyField
+                  id="hybridTcFee"
+                  label="TC Fee"
+                  draft={capitalDraft.hybridTcFee}
+                  onChange={(raw) => handleCapitalChange("hybridTcFee", raw)}
+                  onBlur={() => handleCapitalBlur("hybridTcFee")}
+                  helperText="Transaction coordination cost."
+                />
+                <CurrencyField
+                  id="hybridLlcFee"
+                  label="LLC Entity Formation Cost"
+                  draft={capitalDraft.hybridLlcFee}
+                  onChange={(raw) => handleCapitalChange("hybridLlcFee", raw)}
+                  onBlur={() => handleCapitalBlur("hybridLlcFee")}
+                  helperText="Entity formation cost."
+                />
+              </>
             ) : (
-              <CurrencyField
-                id="tcAndLlc"
-                label="TC and LLC"
-                draft={capitalDraft.tcAndLlc}
-                onChange={(raw) => handleCapitalChange("tcAndLlc", raw)}
-                onBlur={() => handleCapitalBlur("tcAndLlc")}
-                helperText="Transaction coordination and entity formation costs."
-              />
+              <>
+                <CurrencyField
+                  id="sellerFinancingTcFee"
+                  label="TC Fee"
+                  draft={capitalDraft.sellerFinancingTcFee}
+                  onChange={(raw) => handleCapitalChange("sellerFinancingTcFee", raw)}
+                  onBlur={() => handleCapitalBlur("sellerFinancingTcFee")}
+                  helperText="Transaction coordination cost."
+                />
+                <CurrencyField
+                  id="sellerFinancingLlcFee"
+                  label="LLC Entity Formation Cost"
+                  draft={capitalDraft.sellerFinancingLlcFee}
+                  onChange={(raw) => handleCapitalChange("sellerFinancingLlcFee", raw)}
+                  onBlur={() => handleCapitalBlur("sellerFinancingLlcFee")}
+                  helperText="Entity formation cost."
+                />
+              </>
             )}
             {financingMode === "traditional" ? (
               <>
@@ -7228,11 +7346,18 @@ export default function SharedHousingCalculator() {
               <HighlightBullet
                 icon={<Users size={13} />}
                 label={`${results.totalBedrooms} Total Bedrooms`}
-                detail={`Shared-Bath Bedrooms: ${sharedBathBedrooms} · Shared-Bath Weekly Room Rate: ${formatCents(
-                  weeklySharedBathRent
-                )} per week · Ensuite Bedrooms: ${ensuiteBedrooms} · Ensuite Weekly Room Rate: ${formatCents(
-                  weeklyEnsuiteRent
-                )} per week`}
+                detail={
+                  <>
+                    <div>Shared-Bath Bedrooms: {sharedBathBedrooms}</div>
+                    <div className="pl-3 text-ink/45">
+                      • Shared-Bath Weekly Room Rate: {formatCents(weeklySharedBathRent)}
+                    </div>
+                    <div className="mt-1.5">Ensuite Bedrooms: {ensuiteBedrooms}</div>
+                    <div className="pl-3 text-ink/45">
+                      • Ensuite Weekly Room Rate: {formatCents(weeklyEnsuiteRent)}
+                    </div>
+                  </>
+                }
               />
               <HighlightBullet
                 icon={<Landmark size={13} />}
@@ -7967,11 +8092,28 @@ export default function SharedHousingCalculator() {
                     <span className="text-ink">{formatCents(capital.subjectToLlcFee)}</span>
                   </div>
                 </>
+              ) : financingMode === "hybrid" ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">TC Fee</span>
+                    <span className="text-ink">{formatCents(capital.hybridTcFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">LLC Entity Formation Cost</span>
+                    <span className="text-ink">{formatCents(capital.hybridLlcFee)}</span>
+                  </div>
+                </>
               ) : (
-                <div className="flex justify-between">
-                  <span className="text-ink/60">TC and LLC</span>
-                  <span className="text-ink">{formatCents(capital.tcAndLlc)}</span>
-                </div>
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">TC Fee</span>
+                    <span className="text-ink">{formatCents(capital.sellerFinancingTcFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">LLC Entity Formation Cost</span>
+                    <span className="text-ink">{formatCents(capital.sellerFinancingLlcFee)}</span>
+                  </div>
+                </>
               )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Appliances</span>

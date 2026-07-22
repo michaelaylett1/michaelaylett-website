@@ -10,7 +10,7 @@ export const runtime = "nodejs";
 // can still see it, and the check itself is a simple string comparison.
 // An env var override is supported so the value can be rotated without a
 // code change, but it falls back to the project's specified password.
-const SHARED_HOUSING_PASSWORD = process.env.SHARED_HOUSING_CALCULATOR_PASSWORD || "padsplit";
+const SHARED_HOUSING_PASSWORD = process.env.SHARED_HOUSING_CALCULATOR_PASSWORD || "9590";
 
 export async function POST(request: Request) {
   try {
