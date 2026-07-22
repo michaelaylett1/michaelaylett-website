@@ -224,6 +224,23 @@ function getFinancingStructureLabel(sellerFinancing: boolean, subjectTo: boolean
 // which always renders with the same bright-green (#00FF00) treatment,
 // a bold dark border, and bold dark text so the figure stays readable
 // even if a printer omits background colors.
+// KPI cards are laid out five across a single print row, which leaves
+// each card only around an inch of width -- not enough room for a
+// long formatted dollar figure (e.g. "$2,845,750.00") at a large fixed
+// font size without it spilling past the card's edges. To guarantee no
+// overflow regardless of how large the underlying numbers are:
+//   - the value's font size responds to how long the formatted string
+//     actually is (a lighter-weight, print-safe stand-in for a CSS
+//     container query, which Tailwind 3.4 does not support), so a
+//     seven-figure purchase price automatically renders smaller than a
+//     five-figure one instead of overflowing;
+//   - `break-words` plus a percentage-based width let the value wrap
+//     onto a second line as an explicit last resort if it still does
+//     not fit, rather than ever escaping the card's borders;
+//   - the card is a flex column stretched to the full height of the
+//     tallest card in the row (CSS Grid's default `align-items:
+//     stretch`) with `justify-center`, so short and wrapped values both
+//     stay vertically centered and every card in the row lines up.
 function PrintKpiCard({
   icon,
   label,
@@ -235,27 +252,40 @@ function PrintKpiCard({
   value: string;
   highlight?: boolean;
 }) {
+  const isLongValue = value.length > 10;
   if (highlight) {
+    const valueSize = isLongValue ? "text-[15pt]" : "text-[19pt]";
     return (
       <div
-        className="rounded-xl border-4 border-ink p-4 flex flex-col items-center text-center"
+        className="h-full rounded-xl border-4 border-ink px-2 py-4 flex flex-col items-center justify-center text-center"
         style={{ backgroundColor: "#00FF00" }}
       >
-        <div className="h-9 w-9 rounded-full bg-ink text-white flex items-center justify-center mb-2">
+        <div className="h-8 w-8 rounded-full bg-ink text-white flex items-center justify-center mb-2 flex-shrink-0">
           {icon}
         </div>
-        <p className="text-[7.5pt] font-bold uppercase tracking-wide text-ink">{label}</p>
-        <p className="mt-1 text-[22pt] font-bold text-ink leading-none">{value}</p>
+        <p className="text-[7pt] font-bold uppercase tracking-wide text-ink">{label}</p>
+        <p
+          className={`mt-1 w-full font-bold text-ink leading-tight tracking-tight break-words ${valueSize}`}
+          style={{ fontVariantNumeric: "tabular-nums" }}
+        >
+          {value}
+        </p>
       </div>
     );
   }
+  const valueSize = isLongValue ? "text-[10.5pt]" : "text-[13pt]";
   return (
-    <div className="rounded-xl border border-ink/15 bg-white p-4 flex flex-col items-center text-center">
-      <div className="h-9 w-9 rounded-full bg-ink text-white flex items-center justify-center mb-2">
+    <div className="h-full rounded-xl border border-ink/15 bg-white px-2 py-4 flex flex-col items-center justify-center text-center">
+      <div className="h-8 w-8 rounded-full bg-ink text-white flex items-center justify-center mb-2 flex-shrink-0">
         {icon}
       </div>
-      <p className="text-[7.5pt] font-semibold uppercase tracking-wide text-ink/60">{label}</p>
-      <p className="mt-1 text-[15pt] font-bold text-ink leading-none">{value}</p>
+      <p className="text-[7pt] font-semibold uppercase tracking-wide text-ink/60">{label}</p>
+      <p
+        className={`mt-1 w-full font-bold text-ink leading-tight tracking-tight break-words ${valueSize}`}
+        style={{ fontVariantNumeric: "tabular-nums" }}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -1134,6 +1164,21 @@ export default function SharedHousingCalculator() {
   const monthlyPaymentLabel =
     paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Principal and Interest Payment";
 
+  // The complete monthly housing cost (loan payment, plus taxes and
+  // insurance when the payment type is Principal and Interest Only) is
+  // used as a single line item in several places (the Expenses/Operating
+  // Expenses breakdown, the on-screen expense summary, and the print
+  // report). It is never labeled with the generic term "Housing
+  // Payment": in PITI mode this figure literally is the PITI payment, so
+  // it is labeled "Monthly PITI Payment"; in Principal and Interest Only
+  // mode it is the P&I payment plus taxes and insurance combined, so it
+  // keeps the more precise "Monthly Housing Payment" label already used
+  // elsewhere in this report for that same combined figure (calling it
+  // "Monthly Principal & Interest Payment" would be inaccurate, since
+  // that label is reserved for the P&I-only amount shown separately).
+  const housingPaymentLabel =
+    paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Housing Payment";
+
   // Financing Structure: Seller Financing and Subject To are independent
   // checkboxes (see getFinancingStructureLabel above), computed once here
   // so the breakdown, CSV, and print report all read the same label.
@@ -1158,7 +1203,7 @@ export default function SharedHousingCalculator() {
           { label: "Loan Balance", value: formatCents(financing.loanBalance) },
           { label: "Estimated Equity", value: formatCents(results.equity) },
           { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-          { label: "Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+          { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
         ],
       },
       {
@@ -1174,7 +1219,7 @@ export default function SharedHousingCalculator() {
       {
         title: "Expenses",
         rows: [
-          { label: "Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+          { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
           { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
           { label: "Platform Fees", value: formatCents(results.platformFees) },
           { label: "Property Management", value: formatCents(results.propertyManagementFee) },
@@ -1228,7 +1273,7 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing, capital, percent, propertyAddress, financingStructureLabel]
+    [results, financing, capital, percent, propertyAddress, financingStructureLabel, housingPaymentLabel]
   );
 
   const inputsSection: BreakdownSection = useMemo(
@@ -1876,7 +1921,7 @@ export default function SharedHousingCalculator() {
             <p className="eyebrow text-ink/50 mb-4">Monthly Expense Summary</p>
             <div className="divide-y divide-line-dark border-t border-b border-line-dark">
               <div className="flex items-center justify-between py-3">
-                <span className="text-ink/70">Monthly Housing Payment</span>
+                <span className="text-ink/70">{housingPaymentLabel}</span>
                 <span className="font-display">{formatCents(results.monthlyHousingPayment)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
@@ -2184,14 +2229,19 @@ export default function SharedHousingCalculator() {
             not printed here; it still appears on the interactive
             calculator page above. PITI vs. Principal and Interest Only
             handling is preserved exactly: Annual Property Taxes/Insurance
-            appear only for Principal and Interest Only. The Floor Plan (if uploaded) is pushed onto its own page
-            with print:break-before-page. A repeating branded footer uses
-            position:fixed so it appears on every printed page in Chrome;
-            Chrome's print engine has no supported way to render a dynamic
-            "page X of Y" total outside of a paged-media polyfill, so the
-            footer intentionally omits a page counter rather than showing
-            an inaccurate one. */}
-        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6 pb-14">
+            appear only for Principal and Interest Only. The Floor Plan (if
+            uploaded) is pushed onto its own page with
+            print:break-before-page, sized to reliably fit under its
+            heading on that single page. A branded footer appears once,
+            in normal document flow, at the very end of the report (see
+            the note near the Floor Plan section below for why this is
+            not a page-repeating position:fixed footer): Chrome's print
+            engine has no supported way to render a dynamic "page X of Y"
+            total outside of a paged-media polyfill, and reserves/
+            duplicates space for fixed-position elements unpredictably
+            during print pagination, so a single static footer is the
+            reliable choice here. */}
+        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6">
           {/* Report header: brand lockup, title, and a meta row with
               property address (if entered), bedroom count, financing
               structure, generated date, and source. */}
@@ -2302,7 +2352,7 @@ export default function SharedHousingCalculator() {
               Required and Estimated Cash-on-Cash Return are the strongest
               visual elements, with the COCR card always using the same
               bright-green (#00FF00) treatment regardless of the value. */}
-          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-5 gap-2.5">
+          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-5 gap-2 items-stretch">
             <PrintKpiCard
               icon={<Home size={16} />}
               label="Purchase Price"
@@ -2545,7 +2595,7 @@ export default function SharedHousingCalculator() {
             </div>
             <div className="text-[9.5pt]">
               {[
-                { label: "Housing Payment", value: results.monthlyHousingPayment },
+                { label: housingPaymentLabel, value: results.monthlyHousingPayment },
                 {
                   label: `Platform Fees (${formatPercent(percent.platformFeePct)})`,
                   value: results.platformFees,
@@ -2694,31 +2744,44 @@ export default function SharedHousingCalculator() {
           </div>
 
           {/* Floor Plan, only if one was uploaded, on its own page. Shown
-              as an actual image (never a filename or file link), centered
-              with generous margins, using object-contain so the plan's
-              full aspect ratio is preserved and nothing is cropped or
-              stretched. print:break-before-page starts it on a fresh page
-              every time, and print:break-inside-avoid-page keeps it from
-              splitting if it is taller than a single page. */}
+              as an actual image (never a filename or file link), centered,
+              using object-contain so the plan's full aspect ratio is
+              preserved and nothing is cropped or stretched.
+              print:break-before-page starts it on a fresh page every
+              time, and print:break-inside-avoid-page keeps it from
+              splitting if it is taller than a single page. No top padding
+              and a tight ~24px heading-to-image gap keep the image
+              directly beneath the heading instead of drifting toward the
+              bottom of the page; the image's own max-height is kept
+              comfortably under a full page's usable height (after the
+              heading and this container's padding) so the whole block
+              reliably fits on one page rather than being bumped, nearly
+              in its entirety, onto the next one. */}
           {floorPlan && (
-            <div className="print:break-before-page print:break-inside-avoid-page pt-6">
-              <p className="text-[16pt] font-display font-bold text-ink mb-4 pb-2 border-b-4 border-brass">
+            <div className="print:break-before-page print:break-inside-avoid-page">
+              <p className="text-[16pt] font-display font-bold text-ink mb-6 pb-2 border-b-4 border-brass">
                 Floor Plan
               </p>
-              <div className="flex justify-center items-center bg-paper-2 rounded-xl border border-ink/15 p-6">
+              <div className="flex justify-center bg-paper-2 rounded-xl border border-ink/15 p-4">
                 <img
                   src={floorPlan.dataUrl}
                   alt={floorPlan.name || "Floor plan"}
-                  className="w-full h-auto max-h-[8.5in] object-contain"
+                  className="w-full h-auto max-h-[8.2in] object-contain"
                 />
               </div>
             </div>
           )}
 
-          {/* Repeating branded footer. position:fixed causes it to appear
-              on every printed page in Chrome; see the note at the top of
-              this block regarding the page-count limitation. */}
-          <div className="hidden print:flex fixed bottom-0 inset-x-0 items-center justify-between px-6 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60">
+          {/* Branded footer. Rendered once, in normal document flow, at
+              the very end of the report. An earlier version used
+              position:fixed to try to repeat this on every printed page,
+              but Chrome's print engine reserves/duplicates space for
+              fixed-position elements unpredictably, which was throwing
+              off pagination throughout the report (including pushing the
+              Floor Plan image onto a stray extra page). A single static
+              footer here is reliable and does not affect layout above
+              it. */}
+          <div className="hidden print:flex mt-8 items-center justify-between px-4 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60 print:break-inside-avoid-page">
             <span className="font-semibold text-ink">Michael Aylett</span>
             <span>Co-Living Investment Analysis</span>
             <span>michaelaylett.com</span>
