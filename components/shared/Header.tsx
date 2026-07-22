@@ -8,7 +8,7 @@ import { Menu, X } from "lucide-react";
 const LINKS = [
   { href: "/", label: "Home" },
   { href: "/sellers", label: "Sellers" },
-  { href: "/seller-calculators", label: "Seller Calculators" },
+  { href: "/seller-calculators", label: "How Much Will I Be Paid If I Sell?" },
   { href: "/rv-parks", label: "RV Parks" },
   { href: "/capital-partners", label: "Capital Partners" },
   { href: "/ecomranx", label: "EcomRanx" },

@@ -3,9 +3,9 @@ import Link from "next/link";
 import SellerCalculatorSelector from "@/components/sellers/SellerCalculatorSelector";
 
 export const metadata: Metadata = {
-  title: "Seller Financing & Subject-To Calculators | Michael Aylett",
+  title: "How Much Will I Be Paid If I Sell? | Michael Aylett",
   description:
-    "Estimate seller financing and subject-to payments using free interactive calculators. Explore hypothetical creative financing scenarios for your property.",
+    "Estimate how much you could receive from a seller financing or subject-to sale using free interactive calculators. Explore hypothetical creative financing scenarios for your property.",
 };
 
 export default function SellerCalculatorsPage() {
@@ -27,20 +27,15 @@ export default function SellerCalculatorsPage() {
           <div className="max-w-2xl">
             <p className="eyebrow text-brass-light mb-6">Seller Calculators</p>
             <h1 className="font-display text-bone leading-[1.05] text-[2.4rem] sm:text-5xl md:text-6xl">
-              Seller Calculators
+              How Much Will I Be Paid If I Sell?
             </h1>
             <p className="mt-8 text-slate text-base md:text-lg leading-relaxed">
-              Estimate how different creative financing structures could
-              work for your property.
-            </p>
-            <p className="mt-6 text-slate/90 leading-relaxed max-w-xl">
-              Whether your property is free and clear or still has an
-              existing mortgage, these calculators provide illustrative
-              examples of how a creative finance purchase could be
-              structured. They are educational tools only and are
-              designed to help you better understand common seller
-              financing and subject-to scenarios before reaching out to
-              discuss your property.
+              Curious what you could receive from a creative financing
+              sale? Use the calculators below to estimate your cash at
+              closing and future payments under hypothetical seller
+              financing or subject-to scenarios. These tools are designed
+              to help you better understand your options before reaching
+              out.
             </p>
           </div>
         </div>
