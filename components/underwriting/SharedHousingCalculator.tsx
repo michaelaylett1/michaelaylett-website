@@ -94,6 +94,16 @@ function formatPercent(n: number) {
   return `${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+// Stack Method's Current Leverage Ratio is displayed as both a decimal
+// (the standard metric lenders use, e.g. 1.15x) and a percentage
+// (e.g. 115.00%), decimal shown first. `decimal` is Total Debt at
+// Acquisition / Purchase Price (never multiplied by 100); null (from a
+// $0 Purchase Price) renders as "N/A".
+function formatLeverageRatio(decimal: number | null): string {
+  if (decimal === null || !Number.isFinite(decimal)) return "N/A";
+  return `${decimal.toFixed(2)}x (${formatPercent(decimal * 100)})`;
+}
+
 function round2(n: number) {
   if (!Number.isFinite(n)) return 0;
   return Math.round(n * 100) / 100;
@@ -749,7 +759,7 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   traditionalClosingCostPct: 5,
   hybridSellerFinanceRatePct: 2,
   stackBankLtvPct: 80,
-  stackClosingCostPct: 5.128205,
+  stackClosingCostPct: 6,
   stackAgentCommissionPct: 0,
   stackTransactionalFundingFeePct: 2.5,
   stackBankInterestRatePct: 7,
@@ -1040,6 +1050,16 @@ export default function SharedHousingCalculator() {
   // no monthly seller-finance payment is ever automatically assumed.
   const [stackSellerFinancePaymentsRequired, setStackSellerFinancePaymentsRequired] = useState(false);
 
+  // Estimated Monthly Long-Term Rent: optional, left blank (null) by
+  // default rather than defaulting to $0, so a blank field can be told
+  // apart from a deliberately entered $0. While blank, the manually
+  // selected Bank Loan-to-Value Percentage is used unchanged; once a
+  // value is entered, it is compared against the Bank PITI at an 80%
+  // LTV assumption to automatically select 80% or 75% (see
+  // stackLtvAutoSelected below).
+  const [stackLongTermRent, setStackLongTermRent] = useState<number | null>(null);
+  const [stackLongTermRentDraft, setStackLongTermRentDraft] = useState("");
+
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
     String(BEDROOM_DEFAULTS.sharedBathBedrooms)
@@ -1170,6 +1190,25 @@ export default function SharedHousingCalculator() {
       setPercentDraft((d) => ({ ...d, [key]: clamped.toFixed(2) }));
       return { ...prev, [key]: clamped };
     });
+  }
+
+  // Estimated Monthly Long-Term Rent: unlike every other currency field,
+  // an empty input must be tracked as "not entered" (null), not
+  // silently coerced to $0, since blank vs. $0 changes the DSCR
+  // qualification behavior (see stackLtvAutoSelected below).
+  function handleStackLongTermRentChange(raw: string) {
+    setStackLongTermRentDraft(raw);
+    setStackLongTermRent(raw.trim() === "" ? null : parseTypedAmount(raw));
+  }
+  function handleStackLongTermRentBlur() {
+    if (stackLongTermRentDraft.trim() === "") {
+      setStackLongTermRent(null);
+      setStackLongTermRentDraft("");
+      return;
+    }
+    const clamped = round2(Math.max(0, parseTypedAmount(stackLongTermRentDraft)));
+    setStackLongTermRent(clamped);
+    setStackLongTermRentDraft(formatCents(clamped));
   }
 
   function handleMaintenanceExpenseChange(key: MaintenanceExpenseKey, raw: string) {
@@ -1342,6 +1381,10 @@ export default function SharedHousingCalculator() {
     // default, so no monthly seller-finance payment is assumed after a
     // reset.
     setStackSellerFinancePaymentsRequired(false);
+    // Long-Term Rent Qualification: blank/null is the default, meaning
+    // Bank Loan-to-Value Percentage goes back to being manually selected.
+    setStackLongTermRent(null);
+    setStackLongTermRentDraft("");
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -1544,10 +1587,44 @@ export default function SharedHousingCalculator() {
   // structure, generalized to an editable number of payments.
   // ---------------------------------------------------------------------
 
-  // First-Position Bank Loan = Purchase Price x Bank Loan-to-Value %.
+  // Long-Term Rent DSCR qualification check: compares the optional
+  // Estimated Monthly Long-Term Rent against the Bank PITI evaluated
+  // hypothetically at an 80% LTV (the standard DSCR-style test) to
+  // decide whether an 80% or a more conservative 75% Bank Loan-to-Value
+  // assumption should be used. Always uses the fixed 30-year/360-payment
+  // amortization, since Bank Amortization is no longer editable. Only
+  // takes effect once a Long-Term Rent has been entered; while the field
+  // is blank (null), the manually entered percent.stackBankLtvPct is
+  // used unchanged instead.
+  const stackBankLoanAmountAt80 = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice * 0.8)),
+    [financing.purchasePrice]
+  );
+  const stackBankPITIAt80 = useMemo(() => {
+    const monthlyPI = calculateMonthlyPaymentForTerm(stackBankLoanAmountAt80, percent.stackBankInterestRatePct, 360);
+    return round2(monthlyPI + financing.annualPropertyTaxes / 12 + financing.annualPropertyInsurance / 12);
+  }, [
+    stackBankLoanAmountAt80,
+    percent.stackBankInterestRatePct,
+    financing.annualPropertyTaxes,
+    financing.annualPropertyInsurance,
+  ]);
+  // null while Long-Term Rent is blank (no automatic adjustment); 80 or
+  // 75 once a value has been entered.
+  const stackLtvAutoSelected: 75 | 80 | null = useMemo(() => {
+    if (stackLongTermRent === null) return null;
+    return stackLongTermRent >= stackBankPITIAt80 ? 80 : 75;
+  }, [stackLongTermRent, stackBankPITIAt80]);
+  // The Bank Loan-to-Value % actually used for every calculation below:
+  // the auto-selected value once a Long-Term Rent has been entered,
+  // otherwise the manually entered percent.stackBankLtvPct, unchanged.
+  const stackEffectiveBankLtvPct = stackLtvAutoSelected !== null ? stackLtvAutoSelected : percent.stackBankLtvPct;
+
+  // First-Position Bank Loan = Purchase Price x effective Bank
+  // Loan-to-Value %.
   const stackBankLoanAmount = useMemo(
-    () => Math.max(0, round2(financing.purchasePrice * (percent.stackBankLtvPct / 100))),
-    [financing.purchasePrice, percent.stackBankLtvPct]
+    () => Math.max(0, round2(financing.purchasePrice * (stackEffectiveBankLtvPct / 100))),
+    [financing.purchasePrice, stackEffectiveBankLtvPct]
   );
 
   // Estimated Seller-Financed Balance (workbook: "Proposed Seller
@@ -1582,10 +1659,19 @@ export default function SharedHousingCalculator() {
   // x 100. Intentionally never capped at 100%, matching the workbook.
   // null (displayed as "N/A") when the Purchase Price is $0, matching
   // the workbook's IFERROR(...,"") behavior.
-  const stackLeverageRatio = useMemo(() => {
+  // Leverage Ratio (Decimal) = Total Debt at Acquisition / Purchase
+  // Price -- the standard metric lenders use (e.g. 1.15x). Leverage
+  // Ratio (%) is simply that decimal x 100. Both are derived from the
+  // same underlying null-when-$0-Purchase-Price value so the two
+  // displayed figures can never disagree with each other.
+  const stackLeverageRatioDecimal = useMemo(() => {
     if (financing.purchasePrice <= 0) return null;
-    return (stackTotalDebtAtAcquisition / financing.purchasePrice) * 100;
+    return stackTotalDebtAtAcquisition / financing.purchasePrice;
   }, [stackTotalDebtAtAcquisition, financing.purchasePrice]);
+  const stackLeverageRatio = useMemo(
+    () => (stackLeverageRatioDecimal === null ? null : stackLeverageRatioDecimal * 100),
+    [stackLeverageRatioDecimal]
+  );
 
   // Bank Loan Down Payment (workbook: "DSCR Down Payment") = Purchase
   // Price - First-Position Bank Loan.
@@ -1950,8 +2036,7 @@ export default function SharedHousingCalculator() {
     // buyer's other cash needs); a negative result (cash required)
     // increases it. Never allowed to fall below $0.
     const stackBaseCapitalRequired = round2(
-      capital.arrears +
-        capital.renovationCost +
+      capital.renovationCost +
         capital.furniture +
         capital.appliances +
         capital.photos +
@@ -2171,17 +2256,17 @@ export default function SharedHousingCalculator() {
                     { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
                     { label: "Financing Structure", value: financingStructureLabel },
                     { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-                    { label: "Bank Loan-to-Value Percentage", value: formatPercent(percent.stackBankLtvPct) },
+                    { label: "Bank Loan-to-Value Percentage", value: formatPercent(stackEffectiveBankLtvPct) },
                     { label: "Estimated First-Position Bank Loan", value: formatCents(stackBankLoanAmount) },
                     { label: "Estimated Seller-Financed Balance", value: formatCents(stackSellerFinancedBalance) },
                     { label: "Total Debt at Acquisition", value: formatCents(stackTotalDebtAtAcquisition) },
                     {
                       label: "Current Leverage Ratio",
-                      value: stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio),
+                      value: formatLeverageRatio(stackLeverageRatioDecimal),
                     },
                     { label: "Bank Interest Rate", value: formatPercent(percent.stackBankInterestRatePct) },
                     {
-                      label: "Bank Amortization Term",
+                      label: "Bank Amortization",
                       value: `${stackBankAmortizationYears} Years (${stackBankAmortMonths} Monthly Payments)`,
                     },
                     { label: "Monthly Bank Principal and Interest", value: formatCents(stackBankMonthlyPI) },
@@ -2200,7 +2285,7 @@ export default function SharedHousingCalculator() {
                             value: formatPercent(percent.stackSellerFinanceRatePct),
                           },
                           {
-                            label: "Seller Finance Amortization Term",
+                            label: "Seller Finance Amortization",
                             value: `${stackSellerFinanceAmortizationYears} Years (${stackSellerAmortMonths} Monthly Payments)`,
                           },
                           ...(stackSellerFinanceBalloonYears > 0
@@ -2294,7 +2379,6 @@ export default function SharedHousingCalculator() {
         rows:
           financingMode === "stackMethod"
             ? [
-                { label: "Arrears", value: formatCents(capital.arrears) },
                 { label: "Renovation Cost", value: formatCents(capital.renovationCost) },
                 { label: "Furniture", value: formatCents(capital.furniture) },
                 { label: "Appliances", value: formatCents(capital.appliances) },
@@ -2398,6 +2482,7 @@ export default function SharedHousingCalculator() {
       stackSellerFinancedBalance,
       stackTotalDebtAtAcquisition,
       stackLeverageRatio,
+      stackLeverageRatioDecimal,
       stackBankAmortizationYears,
       stackBankAmortMonths,
       stackBankMonthlyPI,
@@ -2412,6 +2497,7 @@ export default function SharedHousingCalculator() {
       stackEstimatedBuyerCashAtClosing,
       stackSellerFinancePaymentsRequired,
       stackZeroOutOfPocket,
+      stackEffectiveBankLtvPct,
     ]
   );
 
@@ -2465,7 +2551,7 @@ export default function SharedHousingCalculator() {
               ]
             : financingMode === "stackMethod"
               ? [
-                  { label: "Bank Loan-to-Value Percentage", value: formatPercent(percent.stackBankLtvPct) },
+                  { label: "Bank Loan-to-Value Percentage", value: formatPercent(stackEffectiveBankLtvPct) },
                   {
                     label: "Stack Method Closing Cost Percentage",
                     value: formatPercent(percent.stackClosingCostPct),
@@ -2494,10 +2580,10 @@ export default function SharedHousingCalculator() {
                   { label: "Total Debt at Acquisition", value: formatWhole(stackTotalDebtAtAcquisition) },
                   {
                     label: "Current Leverage Ratio",
-                    value: stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio),
+                    value: formatLeverageRatio(stackLeverageRatioDecimal),
                   },
                   { label: "Bank Interest Rate", value: formatPercent(percent.stackBankInterestRatePct) },
-                  { label: "Bank Amortization Term", value: `${stackBankAmortizationYears} Years` },
+                  { label: "Bank Amortization", value: `${stackBankAmortizationYears} Years` },
                   {
                     label: "Are Monthly Seller Finance Payments Required?",
                     value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
@@ -2509,7 +2595,7 @@ export default function SharedHousingCalculator() {
                           value: formatPercent(percent.stackSellerFinanceRatePct),
                         },
                         {
-                          label: "Seller Finance Amortization Term",
+                          label: "Seller Finance Amortization",
                           value: `${stackSellerFinanceAmortizationYears} Years`,
                         },
                         {
@@ -2604,6 +2690,7 @@ export default function SharedHousingCalculator() {
       stackSellerFinancedBalance,
       stackTotalDebtAtAcquisition,
       stackLeverageRatio,
+      stackLeverageRatioDecimal,
       stackBankAmortizationYears,
       stackSellerFinanceAmortizationYears,
       stackSellerFinanceBalloonYears,
@@ -2611,6 +2698,7 @@ export default function SharedHousingCalculator() {
       stackMonthlySellerFinancePayment,
       stackEstimatedBuyerCashAtClosing,
       stackZeroOutOfPocket,
+      stackEffectiveBankLtvPct,
     ]
   );
 
@@ -2639,7 +2727,7 @@ export default function SharedHousingCalculator() {
     // Reconciliation.
     if (financingMode === "stackMethod") {
       const otherCosts = round2(
-        capital.arrears + capital.furniture + capital.appliances + capital.photos + results.holdingCosts + capital.tcAndLlc
+        capital.furniture + capital.appliances + capital.photos + results.holdingCosts + capital.tcAndLlc
       );
       return [
         { label: "Acquisition Fee", value: capital.acquisitionFee, color: "#C08A3E" },
@@ -3741,14 +3829,23 @@ export default function SharedHousingCalculator() {
                   onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
                   onBlur={() => handleFinancingBlur("purchasePrice")}
                 />
-                <PercentField
-                  id="stackBankLtvPct"
-                  label="Bank Loan-to-Value Percentage"
-                  draft={percentDraft.stackBankLtvPct}
-                  onChange={(raw) => handlePercentChange("stackBankLtvPct", raw)}
-                  onBlur={() => handlePercentBlur("stackBankLtvPct")}
-                  info="The share of the purchase price a bank or DSCR lender is estimated to finance in first position. A higher percentage means a larger first-position loan and a smaller cash-to-close requirement."
-                />
+                {stackLtvAutoSelected !== null ? (
+                  <ReadOnlyStat
+                    label="Bank Loan-to-Value Percentage"
+                    value={formatPercent(stackEffectiveBankLtvPct)}
+                    helperText="Automatically set by the Long-Term Rent Qualification check below. Clear the Estimated Monthly Long-Term Rent field to select a percentage manually again."
+                    info="The share of the purchase price a bank or DSCR lender is estimated to finance in first position. A higher percentage means a larger first-position loan and a smaller cash-to-close requirement."
+                  />
+                ) : (
+                  <PercentField
+                    id="stackBankLtvPct"
+                    label="Bank Loan-to-Value Percentage"
+                    draft={percentDraft.stackBankLtvPct}
+                    onChange={(raw) => handlePercentChange("stackBankLtvPct", raw)}
+                    onBlur={() => handlePercentBlur("stackBankLtvPct")}
+                    info="The share of the purchase price a bank or DSCR lender is estimated to finance in first position. A higher percentage means a larger first-position loan and a smaller cash-to-close requirement."
+                  />
+                )}
                 <PercentField
                   id="stackClosingCostPct"
                   label="Closing Cost Percentage"
@@ -3781,6 +3878,49 @@ export default function SharedHousingCalculator() {
                   onBlur={() => handlePercentBlur("stackTransactionalFundingFeePct")}
                   info="A short-term funding fee sometimes used to help cover the cash-to-close gap for a brief period. This is an estimate only, not a lending commitment, and not legal, lending, or tax advice."
                 />
+              </div>
+
+              {/* Long-Term Rent Qualification: an optional check comparing
+                  what the property could rent for on a traditional
+                  long-term lease against the Bank PITI at an 80% LTV
+                  assumption, to decide whether an 80% or a more
+                  conservative 75% Bank Loan-to-Value Percentage should be
+                  used. Only takes effect once a Long-Term Rent has been
+                  entered; leaving it blank keeps the manually selected
+                  percentage above unchanged. */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Long-Term Rent Qualification</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <CurrencyField
+                    id="stackLongTermRent"
+                    label="Estimated Monthly Long-Term Rent"
+                    draft={stackLongTermRentDraft}
+                    onChange={handleStackLongTermRentChange}
+                    onBlur={handleStackLongTermRentBlur}
+                    helperText="Optional. The property's projected monthly rent on a traditional long-term lease (not co-living). Leave blank to select the Bank Loan-to-Value Percentage above manually instead."
+                  />
+                  <ReadOnlyStat label="Selected LTV" value={formatPercent(stackEffectiveBankLtvPct)} />
+                </div>
+
+                {stackLongTermRent === null ? (
+                  <p className="mt-4 text-sm text-ink/50 leading-relaxed">
+                    Enter an estimated long-term monthly rent to evaluate DSCR loan leverage.
+                  </p>
+                ) : stackLongTermRent >= stackBankPITIAt80 ? (
+                  <div className="mt-4 rounded border border-green-700 bg-green-50 p-4">
+                    <p className="text-sm text-green-800 leading-relaxed">
+                      Estimated long-term rent supports the bank payment. Proceeding with an 80% LTV
+                      assumption.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded border border-red-700 bg-red-50 p-4">
+                    <p className="text-sm text-red-800 leading-relaxed">
+                      Estimated long-term rent does not fully support the bank payment. Using a more
+                      conservative 75% LTV assumption.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -3848,7 +3988,7 @@ export default function SharedHousingCalculator() {
                   <ReadOnlyStat label="Total Debt at Acquisition" value={formatWhole(stackTotalDebtAtAcquisition)} />
                   <ReadOnlyStat
                     label="Current Leverage Ratio"
-                    value={stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                    value={formatLeverageRatio(stackLeverageRatioDecimal)}
                     helperText="Total Debt at Acquisition divided by Purchase Price. May exceed 100%."
                     info="Total debt (bank loan plus seller financing) as a percentage of the purchase price. A ratio above 100% means the total financing exceeds the purchase price."
                   />
@@ -3959,18 +4099,10 @@ export default function SharedHousingCalculator() {
                     onChange={(raw) => handlePercentChange("stackBankInterestRatePct", raw)}
                     onBlur={() => handlePercentBlur("stackBankInterestRatePct")}
                   />
-                  <IntegerField
-                    id="stackBankAmortizationYears"
-                    label="Bank Amortization Term (Years)"
-                    draft={stackBankAmortizationYearsDraft}
-                    onChange={(raw) => {
-                      setStackBankAmortizationYearsDraft(raw);
-                      setStackBankAmortizationYears(Math.max(1, parseTypedInt(raw)));
-                    }}
-                    onBlur={() =>
-                      setStackBankAmortizationYearsDraft(String(Math.max(1, stackBankAmortizationYears)))
-                    }
-                    info={`${stackBankAmortMonths} monthly payments.`}
+                  <ReadOnlyStat
+                    label="Bank Amortization"
+                    value="30 Years"
+                    helperText="Fixed at a standard 30-year (360 monthly payment) amortization; not editable."
                   />
                   <CurrencyField
                     id="annualPropertyTaxesStack"
@@ -4063,20 +4195,10 @@ export default function SharedHousingCalculator() {
                         onBlur={() => handlePercentBlur("stackSellerFinanceRatePct")}
                         info="Decimals and 0% are both allowed."
                       />
-                      <IntegerField
-                        id="stackSellerFinanceAmortizationYears"
-                        label="Seller Finance Amortization Term (Years)"
-                        draft={stackSellerFinanceAmortizationYearsDraft}
-                        onChange={(raw) => {
-                          setStackSellerFinanceAmortizationYearsDraft(raw);
-                          setStackSellerFinanceAmortizationYears(Math.max(1, parseTypedInt(raw)));
-                        }}
-                        onBlur={() =>
-                          setStackSellerFinanceAmortizationYearsDraft(
-                            String(Math.max(1, stackSellerFinanceAmortizationYears))
-                          )
-                        }
-                        info={`${stackSellerAmortMonths} monthly payments.`}
+                      <ReadOnlyStat
+                        label="Seller Finance Amortization"
+                        value="30 Years"
+                        helperText="Fixed at a standard 30-year (360 monthly payment) amortization; not editable."
                       />
                       <IntegerField
                         id="stackSellerFinanceBalloonYears"
@@ -4582,13 +4704,15 @@ export default function SharedHousingCalculator() {
                 helperText="Reused from Property and Financing above."
               />
             )}
-            <CurrencyField
-              id="arrears"
-              label="Arrears"
-              draft={capitalDraft.arrears}
-              onChange={(raw) => handleCapitalChange("arrears", raw)}
-              onBlur={() => handleCapitalBlur("arrears")}
-            />
+            {financingMode !== "stackMethod" && (
+              <CurrencyField
+                id="arrears"
+                label="Arrears"
+                draft={capitalDraft.arrears}
+                onChange={(raw) => handleCapitalChange("arrears", raw)}
+                onBlur={() => handleCapitalBlur("arrears")}
+              />
+            )}
             <CurrencyField
               id="renovationCost"
               label="Renovation Cost"
@@ -5270,7 +5394,7 @@ export default function SharedHousingCalculator() {
                   <>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Bank Loan-to-Value Percentage</span>
-                      <span className="font-medium text-ink">{formatPercent(percent.stackBankLtvPct)}</span>
+                      <span className="font-medium text-ink">{formatPercent(stackEffectiveBankLtvPct)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Seller-Financed Balance</span>
@@ -5283,7 +5407,7 @@ export default function SharedHousingCalculator() {
                     <div className="flex justify-between">
                       <span className="text-ink/60">Current Leverage Ratio</span>
                       <span className="font-medium text-ink">
-                        {stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                        {formatLeverageRatio(stackLeverageRatioDecimal)}
                       </span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
@@ -5357,7 +5481,7 @@ export default function SharedHousingCalculator() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-ink/60">Bank Loan-to-Value Percentage</span>
-                  <span className="text-ink">{formatPercent(percent.stackBankLtvPct)}</span>
+                  <span className="text-ink">{formatPercent(stackEffectiveBankLtvPct)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-ink/60">First-Position Bank Loan</span>
@@ -5453,7 +5577,7 @@ export default function SharedHousingCalculator() {
                 <div className="flex justify-between">
                   <span className="text-ink/60">Current Leverage Ratio</span>
                   <span className="text-ink">
-                    {stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                    {formatLeverageRatio(stackLeverageRatioDecimal)}
                   </span>
                 </div>
               </div>
@@ -5602,10 +5726,12 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/60">Reserves</span>
                 <span className="text-ink">{formatCents(RESERVES_AMOUNT)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-ink/60">Arrears</span>
-                <span className="text-ink">{formatCents(capital.arrears)}</span>
-              </div>
+              {financingMode !== "stackMethod" && (
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Arrears</span>
+                  <span className="text-ink">{formatCents(capital.arrears)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Upfront Insurance</span>
                 <span className="text-ink">{formatCents(capital.upfrontInsurance)}</span>
