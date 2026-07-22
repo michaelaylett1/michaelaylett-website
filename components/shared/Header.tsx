@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/seller-calculators", label: "How Much Will I Be Paid If I Sell?" },
   { href: "/rv-parks", label: "RV Parks" },
   { href: "/capital-partners", label: "Capital Partners" },
+  { href: "/shared-housing-calculator", label: "Shared Housing Calculator" },
   { href: "/ecomranx", label: "EcomRanx" },
   { href: "/about", label: "About" },
   { href: "/contact", label: "Contact" },
