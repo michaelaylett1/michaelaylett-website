@@ -67,7 +67,7 @@ const HOLDING_MONTHS = 3;
 // uploaded anywhere) as compressed, orientation-corrected data URLs so
 // they can be previewed on screen and embedded directly in the
 // printable report.
-const MAX_PROPERTY_IMAGES = 5;
+const MAX_PROPERTY_PHOTOS = 5;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const MAX_IMAGE_DIMENSION = 1600;
 
@@ -548,9 +548,11 @@ function BalloonRefinanceAnalysisPanel({
 function BalloonRefinancePrintCard({
   analysis,
   loanBalanceRows,
+  extraTextRows = [],
 }: {
   analysis: BalloonAnalysis;
   loanBalanceRows: { label: string; value: number }[];
+  extraTextRows?: { label: string; value: string }[];
 }) {
   const statusPass = analysis.has70LtvContingency && analysis.meets70Ltv === true;
   const statusFail = analysis.has70LtvContingency && analysis.meets70Ltv === false;
@@ -591,6 +593,12 @@ function BalloonRefinancePrintCard({
           <div className="flex justify-between gap-3" key={row.label}>
             <span className="text-ink/60 min-w-0">{row.label}</span>
             <span className="text-ink flex-shrink-0 text-right">{formatCents(row.value)}</span>
+          </div>
+        ))}
+        {extraTextRows.map((row) => (
+          <div className="flex justify-between gap-3" key={row.label}>
+            <span className="text-ink/60 min-w-0">{row.label}</span>
+            <span className="text-ink flex-shrink-0 text-right">{row.value}</span>
           </div>
         ))}
         <div className="flex justify-between gap-3">
@@ -1714,6 +1722,25 @@ export default function SharedHousingCalculator() {
   // no monthly seller-finance payment is ever automatically assumed.
   const [stackSellerFinancePaymentsRequired, setStackSellerFinancePaymentsRequired] = useState(false);
 
+  // Are Monthly Seller Finance Payments Required? (Hybrid): the same
+  // optional-payment pattern as Stack Method above, applied to the
+  // Hybrid structure's seller-financed balance. Defaults to No/false --
+  // no monthly seller-finance payment is assumed until the user
+  // explicitly selects Yes. While No, the balance is assumed to carry
+  // in full, unamortized, until the balloon date.
+  const [hybridSellerFinancePaymentsRequired, setHybridSellerFinancePaymentsRequired] = useState(false);
+
+  // Hybrid Seller-Financed Balance override: null while the field is
+  // following the automatically calculated Suggested Seller-Financed
+  // Balance (Purchase Price - Existing Mortgage Balance - Seller Down
+  // Payment); once the user types into the field, it holds their
+  // entered amount instead and stops following the suggestion, exactly
+  // like holdingCostsOverride above.
+  const [hybridSellerFinancedBalanceOverride, setHybridSellerFinancedBalanceOverride] = useState<
+    number | null
+  >(null);
+  const [hybridSellerFinancedBalanceDraft, setHybridSellerFinancedBalanceDraft] = useState("");
+
   // Estimated Monthly Long-Term Rent: optional, left blank (null) by
   // default rather than defaulting to $0, so a blank field can be told
   // apart from a deliberately entered $0. While blank, the manually
@@ -2029,10 +2056,31 @@ export default function SharedHousingCalculator() {
     setHoldingCostsDraft(formatCents(calculatedHoldingCosts));
   }
 
+  // Hybrid Seller-Financed Balance Used: typing into the field marks it
+  // as a manual override immediately, exactly like Holding Costs above.
+  // The suggested amount resumes being followed only via
+  // resetHybridSellerFinancedBalanceToSuggested or resetToDefaults.
+  // Never allowed to go negative.
+  function handleHybridSellerFinancedBalanceChange(raw: string) {
+    setHybridSellerFinancedBalanceDraft(raw);
+    setHybridSellerFinancedBalanceOverride(Math.max(0, parseTypedAmount(raw)));
+  }
+  function handleHybridSellerFinancedBalanceBlur() {
+    setHybridSellerFinancedBalanceOverride((prev) => {
+      const clamped = round2(Math.max(0, prev ?? 0));
+      setHybridSellerFinancedBalanceDraft(formatCents(clamped));
+      return clamped;
+    });
+  }
+  function resetHybridSellerFinancedBalanceToSuggested() {
+    setHybridSellerFinancedBalanceOverride(null);
+    setHybridSellerFinancedBalanceDraft(formatCents(hybridSuggestedSellerFinancedBalance));
+  }
+
   // Property Images handlers: adding, removing, and replacing all run
   // entirely client-side (see processImageFile above). Unsupported file
   // types are rejected with a clear error message instead of breaking
-  // the calculator, and selection is capped at MAX_PROPERTY_IMAGES.
+  // the calculator, and selection is capped at MAX_PROPERTY_PHOTOS.
   async function handleAddImageFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
     const files = Array.from(fileList);
@@ -2046,10 +2094,10 @@ export default function SharedHousingCalculator() {
     }
     if (valid.length === 0) return;
 
-    const remainingSlots = MAX_PROPERTY_IMAGES - propertyImages.length;
+    const remainingSlots = MAX_PROPERTY_PHOTOS - propertyImages.length;
     if (remainingSlots <= 0) {
       setImageError(
-        `Maximum of ${MAX_PROPERTY_IMAGES} property photos reached. Remove a photo before adding another.`
+        `Maximum of ${MAX_PROPERTY_PHOTOS} property photos reached. Remove a photo before adding another.`
       );
       return;
     }
@@ -2057,7 +2105,7 @@ export default function SharedHousingCalculator() {
     const toProcess = valid.slice(0, remainingSlots);
     if (valid.length > toProcess.length) {
       setImageError(
-        `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Only the first ${toProcess.length} of the selected images were added.`
+        `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Only the first ${toProcess.length} of the selected images were added.`
       );
     }
 
@@ -2197,6 +2245,15 @@ export default function SharedHousingCalculator() {
     // default, so no monthly seller-finance payment is assumed after a
     // reset.
     setStackSellerFinancePaymentsRequired(false);
+    // Are Monthly Seller Finance Payments Required? (Hybrid) resets to
+    // No, its default, so the seller-financed balance is once again
+    // assumed to carry unamortized until the balloon date after a reset.
+    setHybridSellerFinancePaymentsRequired(false);
+    // Seller-Financed Balance Used (Hybrid): clearing the override lets
+    // the field follow the Suggested Seller-Financed Balance calculation
+    // again instead of keeping a stale manually entered amount.
+    setHybridSellerFinancedBalanceOverride(null);
+    setHybridSellerFinancedBalanceDraft(formatCents(0));
     // Long-Term Rent Qualification: blank/null is the default, meaning
     // Bank Loan-to-Value Percentage goes back to being manually selected.
     setStackLongTermRent(null);
@@ -2414,9 +2471,14 @@ export default function SharedHousingCalculator() {
   );
   const hybridEquity = Math.max(0, round2(hybridEquityRaw));
 
-  // Seller-Financed Balance = Purchase Price - Existing Mortgage Balance
-  // - Seller Down Payment, never allowed below $0.
-  const hybridSellerFinancedBalance = useMemo(
+  // Suggested Seller-Financed Balance = Purchase Price - Existing
+  // Mortgage Balance - Seller Down Payment, never allowed below $0. This
+  // is only a suggestion -- see hybridSellerFinancedBalanceUsed below
+  // for the value actually used everywhere in Hybrid's calculations,
+  // which may be manually overridden when the actual transaction terms
+  // differ (arrears, seller concessions, extra cash at closing,
+  // negotiated equity adjustments, or other transaction credits).
+  const hybridSuggestedSellerFinancedBalance = useMemo(
     () =>
       Math.max(
         0,
@@ -2425,29 +2487,55 @@ export default function SharedHousingCalculator() {
     [financing.purchasePrice, financing.hybridExistingMortgageBalance, financing.sellerDownPayment]
   );
 
-  // Estimated Monthly Seller Finance Payment: a true fixed-rate, fully
-  // amortizing 30-year (360-payment) loan on the Seller-Financed
-  // Balance, at the entered Seller Finance Interest Rate.
-  const hybridMonthlySellerFinancePayment = useMemo(
-    () =>
-      round2(
-        calculateMonthlyPrincipalAndInterest(hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct)
-      ),
-    [hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct]
-  );
+  // Seller-Financed Balance Used: the suggested amount above, unless the
+  // user has manually overridden it (hybridSellerFinancedBalanceOverride
+  // stops being null), in which case their entered amount is used
+  // instead and is never silently overwritten by later changes to
+  // Purchase Price, Existing Mortgage Balance, or Seller Down Payment.
+  const hybridSellerFinancedBalanceIsManual = hybridSellerFinancedBalanceOverride !== null;
+  const hybridSellerFinancedBalanceUsed = hybridSellerFinancedBalanceIsManual
+    ? hybridSellerFinancedBalanceOverride!
+    : hybridSuggestedSellerFinancedBalance;
+
+  // Keeps the Seller-Financed Balance Used field showing (and using) the
+  // live suggested calculation as long as the field hasn't been
+  // manually overridden, exactly like the Holding Costs pattern above.
+  useEffect(() => {
+    if (!hybridSellerFinancedBalanceIsManual) {
+      setHybridSellerFinancedBalanceDraft(formatCents(hybridSuggestedSellerFinancedBalance));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hybridSuggestedSellerFinancedBalance, hybridSellerFinancedBalanceIsManual]);
+
+  // Estimated Monthly Seller Finance Payment: $0 whenever monthly
+  // seller-finance payments are not required (the default, No) -- the
+  // Seller-Financed Balance Used then simply carries, unamortized, until
+  // the balloon date instead. When required (Yes), a true fixed-rate,
+  // fully amortizing 30-year (360-payment) loan on the Seller-Financed
+  // Balance Used, at the entered Seller Finance Interest Rate.
+  const hybridMonthlySellerFinancePayment = useMemo(() => {
+    if (!hybridSellerFinancePaymentsRequired) return 0;
+    return round2(
+      calculateMonthlyPrincipalAndInterest(hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct)
+    );
+  }, [hybridSellerFinancePaymentsRequired, hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct]);
 
   // The full month-by-month amortization schedule for the seller-financed
-  // balance only. The existing subject-to mortgage is deliberately never
-  // part of this schedule, since its original loan terms may differ.
+  // balance only (used only when monthly payments are required). The
+  // existing subject-to mortgage is deliberately never part of this
+  // schedule, since its original loan terms may differ.
   const hybridAmortization = useMemo(
-    () => buildAmortizationSchedule(hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct),
-    [hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct]
+    () => buildAmortizationSchedule(hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct),
+    [hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct]
   );
 
-  // Total Monthly Housing Payment = Monthly Subject-To PITI Payment +
-  // Estimated Monthly Seller Finance Payment. The entered Subject-To
-  // payment is already a complete PITI figure for the existing mortgage,
-  // so taxes and insurance are never added again on top of it.
+  // Total Monthly Housing Payment (Total PITI) = Monthly Subject-To PITI
+  // Payment + Included Monthly Seller Finance Payment. The entered
+  // Subject-To payment is already a complete PITI figure for the
+  // existing mortgage, so taxes and insurance are never added again on
+  // top of it. hybridMonthlySellerFinancePayment above is already $0
+  // whenever monthly payments are not required, so this formula never
+  // needs its own separate Yes/No branch.
   const hybridTotalMonthlyHousingPayment = useMemo(
     () => round2(financing.hybridSubjectToPITI + hybridMonthlySellerFinancePayment),
     [financing.hybridSubjectToPITI, hybridMonthlySellerFinancePayment]
@@ -2889,14 +2977,22 @@ export default function SharedHousingCalculator() {
     financing.purchasePrice,
   ]);
 
+  // Seller-Finance Repayment Structure: a short label describing how the
+  // Seller-Financed Balance Used behaves between now and the balloon
+  // date, printed and exported wherever the balloon analysis appears.
+  const hybridSellerFinanceRepaymentStructure = hybridSellerFinancePaymentsRequired
+    ? "Monthly Amortizing Payments"
+    : "Carried to Balloon";
+
   // Hybrid Balloon Refinance Analysis: combines the projected existing
   // subject-to first mortgage balance (financing.hybridExistingMortgageBalance
   // as starting principal, its own dedicated rate/amortization fields)
-  // with the projected seller-finance balance (hybridSellerFinancedBalance,
-  // percent.hybridSellerFinanceRatePct, fixed 30-year amortization --
-  // Hybrid always assumes monthly seller-finance payments are made, so
-  // this always uses the amortized balance, never the full original
-  // balance).
+  // with the projected seller-finance balance. When monthly seller-finance
+  // payments are required, the seller-finance balance amortizes down using
+  // the standard fixed 30-year schedule against hybridSellerFinancedBalanceUsed.
+  // When they are not required (the default), no principal reduction is
+  // assumed before the balloon -- the full hybridSellerFinancedBalanceUsed
+  // is carried and is still due in full at the balloon date.
   const hybridBalloonAnalysis = useMemo(() => {
     if (!hybridBalloonExists) return null;
     const mortgageTotalMonths = Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12));
@@ -2907,12 +3003,14 @@ export default function SharedHousingCalculator() {
       mortgageTotalMonths,
       balloonMonths
     );
-    const sellerFinanceBalanceAtBalloon = remainingBalanceAfterMonths(
-      hybridSellerFinancedBalance,
-      percent.hybridSellerFinanceRatePct,
-      TRADITIONAL_NUM_PAYMENTS,
-      balloonMonths
-    );
+    const sellerFinanceBalanceAtBalloon = hybridSellerFinancePaymentsRequired
+      ? remainingBalanceAfterMonths(
+          hybridSellerFinancedBalanceUsed,
+          percent.hybridSellerFinanceRatePct,
+          TRADITIONAL_NUM_PAYMENTS,
+          balloonMonths
+        )
+      : hybridSellerFinancedBalanceUsed;
     const projectedDebtAtBalloon = mortgageBalanceAtBalloon + sellerFinanceBalanceAtBalloon;
     const debtAtYear = (year: number) => {
       const months = Math.max(0, Math.round(year * 12));
@@ -2922,12 +3020,14 @@ export default function SharedHousingCalculator() {
         mortgageTotalMonths,
         months
       );
-      const sellerFinance = remainingBalanceAfterMonths(
-        hybridSellerFinancedBalance,
-        percent.hybridSellerFinanceRatePct,
-        TRADITIONAL_NUM_PAYMENTS,
-        months
-      );
+      const sellerFinance = hybridSellerFinancePaymentsRequired
+        ? remainingBalanceAfterMonths(
+            hybridSellerFinancedBalanceUsed,
+            percent.hybridSellerFinanceRatePct,
+            TRADITIONAL_NUM_PAYMENTS,
+            months
+          )
+        : hybridSellerFinancedBalanceUsed;
       return mortgage + sellerFinance;
     };
     return {
@@ -2954,7 +3054,8 @@ export default function SharedHousingCalculator() {
     financing.hybridExistingMortgageBalance,
     percent.hybridExistingMortgageRatePct,
     hybridExistingMortgageAmortizationYears,
-    hybridSellerFinancedBalance,
+    hybridSellerFinancedBalanceUsed,
+    hybridSellerFinancePaymentsRequired,
     percent.hybridSellerFinanceRatePct,
     financing.purchasePrice,
   ]);
@@ -3408,23 +3509,37 @@ export default function SharedHousingCalculator() {
                   { label: "Estimated Equity", value: formatCents(results.equity) },
                   { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
                   {
-                    label: "Seller-Financed Balance",
-                    value: formatCents(hybridSellerFinancedBalance),
+                    label: "Suggested Seller-Financed Balance",
+                    value: formatCents(hybridSuggestedSellerFinancedBalance),
+                  },
+                  {
+                    label: "Seller-Financed Balance Used",
+                    value: formatCents(hybridSellerFinancedBalanceUsed),
                   },
                   {
                     label: "Monthly Subject-To PITI Payment",
                     value: formatCents(financing.hybridSubjectToPITI),
                   },
                   {
-                    label: "Seller Finance Interest Rate",
-                    value: formatPercent(percent.hybridSellerFinanceRatePct),
+                    label: "Are Monthly Seller Finance Payments Required?",
+                    value: hybridSellerFinancePaymentsRequired ? "Yes" : "No",
                   },
-                  { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                  ...(hybridSellerFinancePaymentsRequired
+                    ? [
+                        {
+                          label: "Seller Finance Interest Rate",
+                          value: formatPercent(percent.hybridSellerFinanceRatePct),
+                        },
+                        { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                      ]
+                    : []),
                   {
-                    label: "Estimated Monthly Seller Finance Payment",
-                    value: formatCents(hybridMonthlySellerFinancePayment),
+                    label: "Monthly Seller Finance Payment",
+                    value: hybridSellerFinancePaymentsRequired
+                      ? formatCents(hybridMonthlySellerFinancePayment)
+                      : "Not Included",
                   },
-                  { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+                  { label: "Total PITI", value: formatCents(results.monthlyHousingPayment) },
                 ]
               : financingMode === "stackMethod"
                 ? [
@@ -3651,7 +3766,9 @@ export default function SharedHousingCalculator() {
       traditionalDownPaymentAmount,
       traditionalLoanBalance,
       traditionalMonthlyPI,
-      hybridSellerFinancedBalance,
+      hybridSuggestedSellerFinancedBalance,
+      hybridSellerFinancedBalanceUsed,
+      hybridSellerFinancePaymentsRequired,
       hybridMonthlySellerFinancePayment,
       stackBankLoanAmount,
       stackSellerFinancedBalance,
@@ -3735,19 +3852,44 @@ export default function SharedHousingCalculator() {
                 },
                 { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
                 { label: "Estimated Equity", value: formatWhole(results.equity) },
-                { label: "Seller-Financed Balance", value: formatWhole(hybridSellerFinancedBalance) },
+                {
+                  label: "Suggested Seller-Financed Balance",
+                  value: formatWhole(hybridSuggestedSellerFinancedBalance),
+                },
+                {
+                  label: "Seller-Financed Balance Used",
+                  value: formatWhole(hybridSellerFinancedBalanceUsed),
+                },
+                {
+                  label: "Manual Seller-Financed Balance Override",
+                  value: hybridSellerFinancedBalanceIsManual ? "Yes" : "No",
+                },
                 {
                   label: "Monthly Subject-To PITI Payment",
                   value: formatCents(financing.hybridSubjectToPITI),
                 },
                 {
-                  label: "Seller Finance Interest Rate",
-                  value: formatPercent(percent.hybridSellerFinanceRatePct),
+                  label: "Are Monthly Seller Finance Payments Required?",
+                  value: hybridSellerFinancePaymentsRequired ? "Yes" : "No",
                 },
-                { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
                 {
-                  label: "Estimated Monthly Seller Finance Payment",
-                  value: formatCents(hybridMonthlySellerFinancePayment),
+                  label: "Seller-Finance Repayment Structure",
+                  value: hybridSellerFinanceRepaymentStructure,
+                },
+                ...(hybridSellerFinancePaymentsRequired
+                  ? [
+                      {
+                        label: "Seller Finance Interest Rate",
+                        value: formatPercent(percent.hybridSellerFinanceRatePct),
+                      },
+                      { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                    ]
+                  : []),
+                {
+                  label: "Monthly Seller Finance Payment",
+                  value: hybridSellerFinancePaymentsRequired
+                    ? formatCents(hybridMonthlySellerFinancePayment)
+                    : formatCents(0),
                 },
                 { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
                 ...(hybridBalloonAnalysis
@@ -3928,7 +4070,11 @@ export default function SharedHousingCalculator() {
       traditionalDownPaymentAmount,
       traditionalLoanBalance,
       traditionalMonthlyPI,
-      hybridSellerFinancedBalance,
+      hybridSuggestedSellerFinancedBalance,
+      hybridSellerFinancedBalanceUsed,
+      hybridSellerFinancedBalanceIsManual,
+      hybridSellerFinancePaymentsRequired,
+      hybridSellerFinanceRepaymentStructure,
       hybridMonthlySellerFinancePayment,
       capital,
       stackBankLoanAmount,
@@ -4391,7 +4537,7 @@ export default function SharedHousingCalculator() {
               </div>
             ))}
 
-            {propertyImages.length < MAX_PROPERTY_IMAGES && (
+            {propertyImages.length < MAX_PROPERTY_PHOTOS && (
               <label
                 htmlFor="propertyImagesInput"
                 className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 h-full min-h-[128px] p-4 text-center cursor-pointer hover:border-brass transition-colors"
@@ -4423,9 +4569,9 @@ export default function SharedHousingCalculator() {
           )}
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-            {propertyImages.length >= MAX_PROPERTY_IMAGES
-              ? `Maximum of ${MAX_PROPERTY_IMAGES} property photos reached.`
-              : `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Supported formats: JPG, PNG, and WEBP.`}{" "}
+            {propertyImages.length >= MAX_PROPERTY_PHOTOS
+              ? `Maximum of ${MAX_PROPERTY_PHOTOS} property photos reached.`
+              : `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Supported formats: JPG, PNG, and WEBP.`}{" "}
             Images are used only to personalize the underwriting summary
             generated from this calculator.
           </p>
@@ -5147,11 +5293,13 @@ export default function SharedHousingCalculator() {
                 />
               </div>
 
-              {financing.hybridExistingMortgageBalance + financing.sellerDownPayment >
+              {financing.hybridExistingMortgageBalance +
+                financing.sellerDownPayment +
+                hybridSellerFinancedBalanceUsed >
                 financing.purchasePrice && (
                 <p className="mt-4 text-sm text-red-700">
-                  The existing mortgage balance plus the seller down payment exceeds the purchase
-                  price. The seller-financed balance is floored at $0.
+                  The entered mortgage balance, seller down payment, and seller-financed balance
+                  exceed the purchase price. Please review the transaction amounts.
                 </p>
               )}
 
@@ -5200,39 +5348,114 @@ export default function SharedHousingCalculator() {
                 <p className="eyebrow text-ink/50 mb-3">Seller Financing</p>
                 <div className="grid sm:grid-cols-2 gap-5">
                   <ReadOnlyStat
-                    label="Seller-Financed Balance"
-                    value={formatWhole(hybridSellerFinancedBalance)}
+                    label="Suggested Seller-Financed Balance"
+                    value={formatWhole(hybridSuggestedSellerFinancedBalance)}
                     helperText="Purchase Price minus Existing Mortgage Balance minus Seller Down Payment. Never falls below $0."
                   />
-                  <PercentField
-                    id="hybridSellerFinanceRatePct"
-                    label="Seller Finance Interest Rate"
-                    draft={percentDraft.hybridSellerFinanceRatePct}
-                    onChange={(raw) => handlePercentChange("hybridSellerFinanceRatePct", raw)}
-                    onBlur={() => handlePercentBlur("hybridSellerFinanceRatePct")}
-                    info="Allows decimals, e.g. 2.5%."
-                  />
-                  <ReadOnlyStat
-                    label="Seller Finance Amortization Term"
-                    value="30 Years (360 Monthly Payments)"
-                  />
+                  <div>
+                    <CurrencyField
+                      id="hybridSellerFinancedBalanceUsed"
+                      label="Seller-Financed Balance Used"
+                      draft={hybridSellerFinancedBalanceDraft}
+                      onChange={handleHybridSellerFinancedBalanceChange}
+                      onBlur={handleHybridSellerFinancedBalanceBlur}
+                      helperText="Defaults to the Suggested Seller-Financed Balance above. Edit if the actual transaction terms differ (arrears, seller concessions, extra cash at closing, negotiated equity adjustments, or other transaction credits)."
+                    />
+                    {hybridSellerFinancedBalanceIsManual && (
+                      <button
+                        type="button"
+                        onClick={resetHybridSellerFinancedBalanceToSuggested}
+                        className="mt-2 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        Reset to Suggested Balance
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
 
-              <div className="mt-8 pt-6 border-t border-line-dark">
-                <div className="border border-brass bg-paper-2 p-6">
-                  <p className="eyebrow text-brass mb-1.5">Estimated Monthly Seller Finance Payment</p>
-                  <p className="font-display text-3xl">{formatCents(hybridMonthlySellerFinancePayment)}</p>
+                {/* Are Monthly Seller Finance Payments Required?: mirrors
+                    Stack Method's toggle exactly. No (the default) means
+                    the Seller-Financed Balance Used carries in full,
+                    unamortized, until the balloon date -- no monthly
+                    payment is added to Total PITI. Yes calculates a
+                    monthly payment using the rate and amortization
+                    entered below. */}
+                <div className="mt-6">
+                  <p className="eyebrow text-ink/50 mb-3 inline-flex items-center">
+                    Are Monthly Seller Finance Payments Required?
+                    <InfoTip text="No means the seller-financed balance is not amortized with a monthly payment here -- it carries in full until the balloon date. Yes calculates a monthly payment using the terms below." />
+                  </p>
+                  <div
+                    className="inline-flex border border-line-dark"
+                    role="group"
+                    aria-label="Are Monthly Seller Finance Payments Required?"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setHybridSellerFinancePaymentsRequired(false)}
+                      aria-pressed={!hybridSellerFinancePaymentsRequired}
+                      className={`px-4 py-2 text-sm transition-colors ${
+                        !hybridSellerFinancePaymentsRequired
+                          ? "bg-brass/10 text-ink border-r border-line-dark"
+                          : "text-ink/60 hover:text-ink border-r border-line-dark"
+                      }`}
+                    >
+                      No
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHybridSellerFinancePaymentsRequired(true)}
+                      aria-pressed={hybridSellerFinancePaymentsRequired}
+                      className={`px-4 py-2 text-sm transition-colors ${
+                        hybridSellerFinancePaymentsRequired
+                          ? "bg-brass/10 text-ink"
+                          : "text-ink/60 hover:text-ink"
+                      }`}
+                    >
+                      Yes
+                    </button>
+                  </div>
                 </div>
+
+                {hybridSellerFinancePaymentsRequired ? (
+                  <>
+                    <div className="mt-6 grid sm:grid-cols-2 gap-5">
+                      <PercentField
+                        id="hybridSellerFinanceRatePct"
+                        label="Seller Finance Interest Rate"
+                        draft={percentDraft.hybridSellerFinanceRatePct}
+                        onChange={(raw) => handlePercentChange("hybridSellerFinanceRatePct", raw)}
+                        onBlur={() => handlePercentBlur("hybridSellerFinanceRatePct")}
+                        info="Allows decimals, e.g. 2.5%."
+                      />
+                      <ReadOnlyStat
+                        label="Seller Finance Amortization Term"
+                        value="30 Years (360 Monthly Payments)"
+                      />
+                    </div>
+                    <div className="mt-6 rounded border border-brass bg-paper-2 p-6">
+                      <p className="eyebrow text-brass mb-1.5">Estimated Monthly Seller Finance Payment</p>
+                      <p className="font-display text-3xl">
+                        {formatCents(hybridMonthlySellerFinancePayment)}
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-4 text-xs text-ink/50 leading-relaxed">
+                    No monthly seller-finance payments are included. The seller-financed balance is
+                    carried until the balloon is due.
+                  </p>
+                )}
               </div>
 
               {/* Total Monthly Housing Payment: the Subject-To PITI
-                  payment plus the seller finance payment, combined into
-                  a single, visually prominent figure. This is the
-                  housing expense used everywhere else in this
-                  calculator -- monthly operating expenses, cash flow,
-                  holding costs, cash-on-cash return, the full breakdown,
-                  the printed report, and the CSV export. */}
+                  payment plus the included seller finance payment
+                  ($0 when payments are not required), combined into a
+                  single, visually prominent figure. This is the housing
+                  expense used everywhere else in this calculator --
+                  monthly operating expenses, cash flow, holding costs,
+                  cash-on-cash return, the full breakdown, the printed
+                  report, and the CSV export. */}
               <div className="mt-6 rounded border border-line-dark bg-white p-6">
                 <p className="eyebrow text-brass mb-4">Total Monthly Housing Payment</p>
                 <div className="divide-y divide-line-dark border-t border-b border-line-dark">
@@ -5241,8 +5464,12 @@ export default function SharedHousingCalculator() {
                     <span>{formatCents(financing.hybridSubjectToPITI)}</span>
                   </div>
                   <div className="flex items-center justify-between py-2.5 text-sm">
-                    <span className="text-ink/70">Estimated Monthly Seller Finance Payment</span>
-                    <span>{formatCents(hybridMonthlySellerFinancePayment)}</span>
+                    <span className="text-ink/70">Monthly Seller Finance Payment</span>
+                    <span>
+                      {hybridSellerFinancePaymentsRequired
+                        ? formatCents(hybridMonthlySellerFinancePayment)
+                        : "Not Included"}
+                    </span>
                   </div>
                 </div>
                 <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
@@ -5285,73 +5512,76 @@ export default function SharedHousingCalculator() {
               />
 
               {/* Seller Finance Amortization Schedule: covers only the
-                  seller-financed balance. The existing subject-to
-                  mortgage is deliberately never part of this schedule,
-                  since its original loan terms may differ. */}
-              <div className="mt-8 pt-6 border-t border-line-dark">
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setHybridAmortizationOpen((v) => !v)}
-                    aria-expanded={hybridAmortizationOpen}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    {hybridAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
-                  </button>
-                  <button
-                    type="button"
-                    onClick={downloadHybridAmortizationCsv}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    Download Seller Finance Amortization Schedule as CSV
-                  </button>
-                </div>
-
-                {hybridAmortizationOpen && (
-                  <div className="mt-5">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs sm:text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b border-line-dark text-left text-ink/60">
-                            <th className="py-2 pr-3 font-medium">Payment #</th>
-                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
-                            <th className="py-2 pr-3 font-medium">Principal Paid</th>
-                            <th className="py-2 pr-3 font-medium">Interest Paid</th>
-                            <th className="py-2 pr-3 font-medium">Total Payment</th>
-                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(hybridAmortizationShowAll
-                            ? hybridAmortization.schedule
-                            : hybridAmortization.schedule.slice(0, 12)
-                          ).map((row) => (
-                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
-                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {hybridAmortization.schedule.length > 12 && (
-                      <button
-                        type="button"
-                        onClick={() => setHybridAmortizationShowAll((v) => !v)}
-                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
-                      >
-                        {hybridAmortizationShowAll
-                          ? "Show First 12 Payments"
-                          : `View All ${hybridAmortization.schedule.length} Payments`}
-                      </button>
-                    )}
+                  seller-financed balance, and only appears when monthly
+                  seller-finance payments are required -- when they are
+                  not required, the balance simply carries unamortized
+                  to the balloon date, so there is no schedule to show. */}
+              {hybridSellerFinancePaymentsRequired && (
+                <div className="mt-8 pt-6 border-t border-line-dark">
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setHybridAmortizationOpen((v) => !v)}
+                      aria-expanded={hybridAmortizationOpen}
+                      className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                    >
+                      {hybridAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadHybridAmortizationCsv}
+                      className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                    >
+                      Download Seller Finance Amortization Schedule as CSV
+                    </button>
                   </div>
-                )}
-              </div>
+
+                  {hybridAmortizationOpen && (
+                    <div className="mt-5">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs sm:text-sm border-collapse">
+                          <thead>
+                            <tr className="border-b border-line-dark text-left text-ink/60">
+                              <th className="py-2 pr-3 font-medium">Payment #</th>
+                              <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                              <th className="py-2 pr-3 font-medium">Principal Paid</th>
+                              <th className="py-2 pr-3 font-medium">Interest Paid</th>
+                              <th className="py-2 pr-3 font-medium">Total Payment</th>
+                              <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(hybridAmortizationShowAll
+                              ? hybridAmortization.schedule
+                              : hybridAmortization.schedule.slice(0, 12)
+                            ).map((row) => (
+                              <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                                <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                                <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                                <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                                <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                                <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                                <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {hybridAmortization.schedule.length > 12 && (
+                        <button
+                          type="button"
+                          onClick={() => setHybridAmortizationShowAll((v) => !v)}
+                          className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                        >
+                          {hybridAmortizationShowAll
+                            ? "Show First 12 Payments"
+                            : `View All ${hybridAmortization.schedule.length} Payments`}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -6904,7 +7134,7 @@ export default function SharedHousingCalculator() {
                   </div>
                   {propertyImages.length > 1 && (
                     <div className="mt-2 grid grid-cols-4 gap-2">
-                      {propertyImages.slice(1, 5).map((img) => (
+                      {propertyImages.slice(1, MAX_PROPERTY_PHOTOS).map((img) => (
                         <div
                           key={img.id}
                           className="rounded-lg overflow-hidden border border-ink/15 h-[0.75in]"
@@ -7164,9 +7394,15 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-ink/60">Seller-Financed Balance</span>
+                      <span className="text-ink/60">Suggested Seller-Financed Balance</span>
                       <span className="font-medium text-ink">
-                        {formatCents(hybridSellerFinancedBalance)}
+                        {formatCents(hybridSuggestedSellerFinancedBalance)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller-Financed Balance Used</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(hybridSellerFinancedBalanceUsed)}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -7176,21 +7412,31 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-ink/60">Seller Finance Interest Rate</span>
+                      <span className="text-ink/60">Are Monthly Seller Finance Payments Required?</span>
                       <span className="font-medium text-ink">
-                        {formatPercent(percent.hybridSellerFinanceRatePct)}
+                        {hybridSellerFinancePaymentsRequired ? "Yes" : "No"}
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-ink/60">Seller Finance Amortization Term</span>
-                      <span className="font-medium text-ink">30 Years (360 Monthly Payments)</span>
-                    </div>
-                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Estimated Monthly Seller Finance Payment</span>
-                      <span className="font-semibold text-ink">
-                        {formatCents(hybridMonthlySellerFinancePayment)}
-                      </span>
-                    </div>
+                    {hybridSellerFinancePaymentsRequired && (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Seller Finance Interest Rate</span>
+                          <span className="font-medium text-ink">
+                            {formatPercent(percent.hybridSellerFinanceRatePct)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Seller Finance Amortization Term</span>
+                          <span className="font-medium text-ink">30 Years (360 Monthly Payments)</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-ink/60">Monthly Seller Finance Payment</span>
+                          <span className="font-medium text-ink">
+                            {formatCents(hybridMonthlySellerFinancePayment)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
                       <span className="font-semibold text-ink">Total PITI</span>
                       <span className="font-semibold text-ink">
@@ -7315,6 +7561,12 @@ export default function SharedHousingCalculator() {
                 {
                   label: "Seller-Finance Balance at Balloon",
                   value: hybridBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                },
+              ]}
+              extraTextRows={[
+                {
+                  label: "Seller-Finance Repayment Structure",
+                  value: hybridSellerFinanceRepaymentStructure,
                 },
               ]}
             />
