@@ -527,8 +527,7 @@ type FinancingKey =
   | "sellerDownPayment"
   | "monthlyPayment"
   | "annualPropertyTaxes"
-  | "annualPropertyInsurance"
-  | "traditionalDownPayment";
+  | "annualPropertyInsurance";
 
 const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   purchasePrice: 0,
@@ -537,7 +536,6 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   monthlyPayment: 0,
   annualPropertyTaxes: 0,
   annualPropertyInsurance: 0,
-  traditionalDownPayment: 0,
 };
 
 type CapitalKey =
@@ -570,14 +568,18 @@ type PercentKey =
   | "propertyManagementPct"
   | "platformFeePct"
   | "closingCostPct"
-  | "traditionalInterestRatePct";
+  | "traditionalDownPaymentPct"
+  | "traditionalInterestRatePct"
+  | "traditionalClosingCostPct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
   propertyManagementPct: 8,
   platformFeePct: 15,
   closingCostPct: 1.5,
-  traditionalInterestRatePct: 0,
+  traditionalDownPaymentPct: 20,
+  traditionalInterestRatePct: 7,
+  traditionalClosingCostPct: 5,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -826,7 +828,9 @@ export default function SharedHousingCalculator() {
     propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
     platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
     closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
+    traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
     traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
+    traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
   });
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -923,13 +927,7 @@ export default function SharedHousingCalculator() {
   }
   function handleFinancingBlur(key: FinancingKey) {
     setFinancing((prev) => {
-      let clamped = round2(Math.max(0, prev[key]));
-      // The Traditional Financing Down Payment cannot exceed the
-      // Purchase Price (see Estimated Loan Amount / Estimated Equity
-      // below, which would otherwise go negative before being floored).
-      if (key === "traditionalDownPayment") {
-        clamped = Math.min(clamped, prev.purchasePrice);
-      }
+      const clamped = round2(Math.max(0, prev[key]));
       setFinancingDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
       return { ...prev, [key]: clamped };
     });
@@ -1108,7 +1106,9 @@ export default function SharedHousingCalculator() {
       propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
       platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
       closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
+      traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
       traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
+      traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
     });
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
@@ -1137,45 +1137,81 @@ export default function SharedHousingCalculator() {
     setFloorPlanError("");
     // Financing Structure resets to its default of no selection (all
     // three unselected), which also clears the Traditional Financing
-    // inputs (Purchase Price and Seller Down Payment are already reset
-    // above; the Traditional-specific Down Payment and Interest Rate are
-    // part of `financing`/`percent`, reset above too), and the
-    // amortization schedule -- being derived entirely from that state --
-    // resets automatically along with it.
+    // inputs (Purchase Price is reset above via `financing`; Down
+    // Payment Percentage 20%, Interest Rate 7%, and Closing Cost
+    // Percentage 5% are reset above via `percent`), and the amortization
+    // schedule -- being derived entirely from that state -- resets
+    // automatically along with it.
     setFinancingStructure({ sellerFinancing: false, subjectTo: false, traditional: false });
     setAmortizationOpen(false);
     setAmortizationShowAll(false);
   }
 
   // ---------------------------------------------------------------------
-  // Traditional Financing: Estimated Loan Amount, Estimated Monthly
-  // Principal and Interest Payment, and the full 360-payment
-  // amortization schedule. All three are computed here (rather than
-  // inline) so they can feed both the Property and Financing section and
-  // the dedicated Traditional Financing section below, always in sync.
+  // Traditional Financing: Estimated Down Payment, Estimated Loan
+  // Balance, Estimated Monthly Principal and Interest Payment, Estimated
+  // Monthly PITI, Traditional Financing Closing Costs, and the full
+  // 360-payment amortization schedule. All are computed here (rather
+  // than inline) so they can feed both the Property and Financing
+  // section and the dedicated Traditional Financing section below,
+  // always in sync.
   // ---------------------------------------------------------------------
 
-  // Loan Amount = Purchase Price - Down Payment, never allowed below $0.
-  const traditionalLoanAmount = useMemo(
-    () => Math.max(0, round2(financing.purchasePrice - financing.traditionalDownPayment)),
-    [financing.purchasePrice, financing.traditionalDownPayment]
+  // Down Payment is entered as a percentage of the Purchase Price
+  // (Down Payment Percentage), not a dollar amount. Estimated Down
+  // Payment = Purchase Price x Down Payment Percentage.
+  const traditionalDownPaymentAmount = useMemo(
+    () => round2(financing.purchasePrice * (percent.traditionalDownPaymentPct / 100)),
+    [financing.purchasePrice, percent.traditionalDownPaymentPct]
+  );
+
+  // Loan Balance = Purchase Price - Estimated Down Payment, never
+  // allowed below $0.
+  const traditionalLoanBalance = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice - traditionalDownPaymentAmount)),
+    [financing.purchasePrice, traditionalDownPaymentAmount]
   );
 
   // Estimated Monthly Principal and Interest Payment: a true fixed-rate,
   // fully amortizing 30-year (360-payment) loan, principal and interest
   // only, no balloon payment. Handles a 0% interest rate as a special
-  // case (Loan Amount / 360) and a $0 loan amount as a $0 payment.
+  // case (Loan Balance / 360) and a $0 loan balance as a $0 payment.
   const traditionalMonthlyPI = useMemo(
-    () => round2(calculateMonthlyPrincipalAndInterest(traditionalLoanAmount, percent.traditionalInterestRatePct)),
-    [traditionalLoanAmount, percent.traditionalInterestRatePct]
+    () => round2(calculateMonthlyPrincipalAndInterest(traditionalLoanBalance, percent.traditionalInterestRatePct)),
+    [traditionalLoanBalance, percent.traditionalInterestRatePct]
+  );
+
+  // Monthly Property Taxes and Monthly Property Insurance: the entered
+  // annual figures divided by 12. Estimated Monthly PITI = Monthly
+  // Principal and Interest + Monthly Property Taxes + Monthly Property
+  // Insurance, computed once here (see monthlyHousingPayment below) so
+  // taxes and insurance are never counted twice anywhere downstream.
+  const traditionalMonthlyTaxes = useMemo(
+    () => round2(financing.annualPropertyTaxes / 12),
+    [financing.annualPropertyTaxes]
+  );
+  const traditionalMonthlyInsurance = useMemo(
+    () => round2(financing.annualPropertyInsurance / 12),
+    [financing.annualPropertyInsurance]
+  );
+
+  // Traditional Financing Closing Costs = Estimated Loan Balance x
+  // Closing Cost Percentage -- calculated from the loan balance, not
+  // the purchase price, and used instead of the general purchase-price-
+  // based Closing Costs whenever Traditional Financing is selected.
+  const traditionalClosingCosts = useMemo(
+    () => round2(traditionalLoanBalance * (percent.traditionalClosingCostPct / 100)),
+    [traditionalLoanBalance, percent.traditionalClosingCostPct]
   );
 
   // The complete month-by-month amortization schedule, generated once
   // here so the on-page "View Estimated Amortization Schedule" section
-  // and its CSV download always show the exact same 360 rows.
+  // and its CSV download always show the exact same 360 rows. Taxes and
+  // insurance are never part of this schedule -- they do not reduce the
+  // principal balance.
   const traditionalAmortization = useMemo(
-    () => buildAmortizationSchedule(traditionalLoanAmount, percent.traditionalInterestRatePct),
-    [traditionalLoanAmount, percent.traditionalInterestRatePct]
+    () => buildAmortizationSchedule(traditionalLoanBalance, percent.traditionalInterestRatePct),
+    [traditionalLoanBalance, percent.traditionalInterestRatePct]
   );
 
   // ---------------------------------------------------------------------
@@ -1284,15 +1320,16 @@ export default function SharedHousingCalculator() {
     );
 
     // Estimated Equity. For Traditional Financing: Purchase Price -
-    // Estimated Loan Amount (which, since Loan Amount = Purchase Price -
-    // Down Payment, ordinarily equals the Down Payment). For Seller
-    // Financing / Subject To, the existing calculation is preserved:
-    // Purchase Price - Loan Balance. The Seller Down Payment (or, for
-    // Traditional Financing, the Traditional Down Payment) is a separate
-    // cash requirement (used in Total Capital Required) and is not
-    // subtracted here.
+    // Estimated Loan Balance (which, since Loan Balance = Purchase Price
+    // - Estimated Down Payment, ordinarily equals the calculated Down
+    // Payment amount). For Seller Financing / Subject To, the existing
+    // calculation is preserved: Purchase Price - Loan Balance. The
+    // Seller Down Payment (or, for Traditional Financing, the Estimated
+    // Down Payment) is a separate cash requirement (used in Total
+    // Capital Required) and is not subtracted here, and is never added
+    // to Total Capital Required a second time as part of equity.
     const equityRaw = financingStructure.traditional
-      ? financing.purchasePrice - traditionalLoanAmount
+      ? financing.purchasePrice - traditionalLoanBalance
       : financing.purchasePrice - financing.loanBalance;
     const equity = Math.max(0, round2(equityRaw));
     const equityIsNegative = equityRaw < 0;
@@ -1302,16 +1339,25 @@ export default function SharedHousingCalculator() {
     // the visitor's manually entered value once the field is overridden.
     const holdingCosts = effectiveHoldingCosts;
 
-    // Closing Costs default to 1.5% of the purchase price but use
-    // whatever Closing Cost Percentage the visitor has entered.
-    const closingCosts = round2(financing.purchasePrice * (percent.closingCostPct / 100));
+    // Closing Costs. Traditional Financing uses its own Traditional
+    // Financing Closing Costs (Estimated Loan Balance x Traditional
+    // Closing Cost Percentage, computed above), never the general
+    // purchase-price-based calculation, so only one closing-cost amount
+    // is ever included anywhere. Seller Financing / Subject To (or no
+    // structure selected) keep the existing calculation: 1.5% of the
+    // purchase price by default, or whatever Closing Cost Percentage the
+    // visitor has entered.
+    const closingCosts = financingStructure.traditional
+      ? traditionalClosingCosts
+      : round2(financing.purchasePrice * (percent.closingCostPct / 100));
 
     // The acquisition down payment included in Total Capital Required:
-    // the Traditional Financing Down Payment when Traditional Financing
-    // is selected, otherwise the existing Seller Down Payment. Only one
-    // of the two is ever included, never both.
+    // the calculated Estimated Down Payment (Purchase Price x Down
+    // Payment Percentage) when Traditional Financing is selected,
+    // otherwise the existing Seller Down Payment. Only one of the two is
+    // ever included, never both.
     const downPaymentForCapital = financingStructure.traditional
-      ? financing.traditionalDownPayment
+      ? traditionalDownPaymentAmount
       : financing.sellerDownPayment;
 
     const totalCapitalRequired = round2(
@@ -1380,7 +1426,9 @@ export default function SharedHousingCalculator() {
     calculatedHoldingCosts,
     holdingCostsIsManual,
     financingStructure.traditional,
-    traditionalLoanAmount,
+    traditionalLoanBalance,
+    traditionalClosingCosts,
+    traditionalDownPaymentAmount,
   ]);
 
   // Traditional Financing always labels its calculated loan payment
@@ -1406,10 +1454,10 @@ export default function SharedHousingCalculator() {
   // report for that same combined figure (calling it "Monthly Principal
   // & Interest Payment" would be inaccurate, since that label is
   // reserved for the P&I-only amount shown separately); for Traditional
-  // Financing that same combined figure is labeled "Total Monthly
-  // Housing Payment" to match the printable report exactly.
+  // Financing that same combined figure is principal, interest, taxes,
+  // and insurance together, so it is labeled "Estimated Monthly PITI".
   const housingPaymentLabel = financingStructure.traditional
-    ? "Total Monthly Housing Payment"
+    ? "Estimated Monthly PITI"
     : paymentType === "piti"
       ? "Monthly PITI Payment"
       : "Monthly Housing Payment";
@@ -1426,10 +1474,11 @@ export default function SharedHousingCalculator() {
   );
 
   // The down payment label shown alongside downPaymentForCapital
-  // (results.downPaymentForCapital): "Down Payment" for Traditional
-  // Financing (the Traditional Financing Down Payment), or "Seller Down
-  // Payment" otherwise, matching whichever field is actually in use.
-  const downPaymentLabel = financingStructure.traditional ? "Down Payment" : "Seller Down Payment";
+  // (results.downPaymentForCapital): "Estimated Down Payment" for
+  // Traditional Financing (the calculated Purchase Price x Down Payment
+  // Percentage amount), or "Seller Down Payment" otherwise, matching
+  // whichever field is actually in use.
+  const downPaymentLabel = financingStructure.traditional ? "Estimated Down Payment" : "Seller Down Payment";
 
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
@@ -1445,12 +1494,13 @@ export default function SharedHousingCalculator() {
               { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
               { label: "Financing Structure", value: financingStructureLabel },
               { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-              { label: "Down Payment", value: formatCents(financing.traditionalDownPayment) },
-              { label: "Estimated Loan Amount", value: formatCents(traditionalLoanAmount) },
+              { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
+              { label: "Estimated Down Payment", value: formatCents(traditionalDownPaymentAmount) },
+              { label: "Estimated Loan Balance", value: formatCents(traditionalLoanBalance) },
               { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
               { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
               {
-                label: "Estimated Monthly Principal and Interest Payment",
+                label: "Monthly Principal and Interest",
                 value: formatCents(traditionalMonthlyPI),
               },
               { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
@@ -1458,7 +1508,7 @@ export default function SharedHousingCalculator() {
                 label: "Annual Property Insurance",
                 value: formatCents(financing.annualPropertyInsurance),
               },
-              { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+              { label: "Estimated Monthly PITI", value: formatCents(results.monthlyHousingPayment) },
               { label: "Estimated Equity", value: formatCents(results.equity) },
             ]
           : [
@@ -1514,8 +1564,18 @@ export default function SharedHousingCalculator() {
           { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
           { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
           { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
-          { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
-          { label: "Closing Costs", value: formatCents(results.closingCosts) },
+          ...(financingStructure.traditional
+            ? [
+                {
+                  label: "Traditional Closing Cost Percentage",
+                  value: formatPercent(percent.traditionalClosingCostPct),
+                },
+                { label: "Traditional Financing Closing Costs", value: formatCents(results.closingCosts) },
+              ]
+            : [
+                { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+                { label: "Closing Costs", value: formatCents(results.closingCosts) },
+              ]),
           { label: "Agent Fee", value: formatCents(capital.agentFee) },
           { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
           {
@@ -1548,7 +1608,8 @@ export default function SharedHousingCalculator() {
       housingPaymentLabel,
       downPaymentLabel,
       financingStructure.traditional,
-      traditionalLoanAmount,
+      traditionalDownPaymentAmount,
+      traditionalLoanBalance,
       traditionalMonthlyPI,
     ]
   );
@@ -1562,14 +1623,19 @@ export default function SharedHousingCalculator() {
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         ...(financingStructure.traditional
           ? [
-              { label: "Down Payment", value: formatWhole(financing.traditionalDownPayment) },
-              { label: "Estimated Loan Amount", value: formatWhole(traditionalLoanAmount) },
+              { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
+              { label: "Estimated Down Payment", value: formatWhole(traditionalDownPaymentAmount) },
+              { label: "Estimated Loan Balance", value: formatWhole(traditionalLoanBalance) },
               { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
               { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
               { label: "Estimated Equity", value: formatWhole(results.equity) },
               {
-                label: "Estimated Monthly Principal and Interest Payment",
+                label: "Monthly Principal and Interest",
                 value: formatCents(traditionalMonthlyPI),
+              },
+              {
+                label: "Traditional Closing Cost Percentage",
+                value: formatPercent(percent.traditionalClosingCostPct),
               },
             ]
           : [
@@ -1581,6 +1647,7 @@ export default function SharedHousingCalculator() {
                 value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
               },
               { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
+              { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
             ]),
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
@@ -1595,7 +1662,6 @@ export default function SharedHousingCalculator() {
         { label: "Cleaning", value: formatCents(maintenanceExpenses.cleaning) },
         { label: "Lawn Care", value: formatCents(maintenanceExpenses.lawnCare) },
         { label: "Pest Control", value: formatCents(maintenanceExpenses.pestControl) },
-        { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
         {
           label: "Holding Costs Source",
           value: results.holdingCostsIsManual ? "Manually overridden" : "Automatically calculated",
@@ -1616,7 +1682,8 @@ export default function SharedHousingCalculator() {
       propertyAddress,
       videoWalkthroughLink,
       financingStructure.traditional,
-      traditionalLoanAmount,
+      traditionalDownPaymentAmount,
+      traditionalLoanBalance,
       traditionalMonthlyPI,
     ]
   );
@@ -2148,11 +2215,11 @@ export default function SharedHousingCalculator() {
 
           {/* ------------------------------------------------------ */}
           {/* Traditional Financing: a dedicated section with its own
-              inputs and calculations (Purchase Price, Down Payment,
-              Interest Rate, and a fixed 30-year/360-payment
-              amortization term), since a conventional mortgage is
-              structured very differently from Seller Financing or
-              Subject To above. */}
+              inputs and calculations (Purchase Price, Down Payment
+              Percentage, Interest Rate, Closing Cost Percentage, and a
+              fixed 30-year/360-payment amortization term), since a
+              conventional mortgage is structured very differently from
+              Seller Financing or Subject To above. */}
           {/* ------------------------------------------------------ */}
           {financingStructure.traditional && (
             <div className="mt-8 pt-6 border-t border-line-dark">
@@ -2161,7 +2228,7 @@ export default function SharedHousingCalculator() {
                 A conventional, fully amortizing 30-year mortgage. The
                 monthly principal and interest payment below is
                 calculated automatically from the purchase price, down
-                payment, and interest rate entered here.
+                payment percentage, and interest rate entered here.
               </p>
               <div className="grid sm:grid-cols-2 gap-5">
                 <CurrencyField
@@ -2171,13 +2238,23 @@ export default function SharedHousingCalculator() {
                   onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
                   onBlur={() => handleFinancingBlur("purchasePrice")}
                 />
-                <CurrencyField
-                  id="traditionalDownPayment"
-                  label="Down Payment"
-                  draft={financingDraft.traditionalDownPayment}
-                  onChange={(raw) => handleFinancingChange("traditionalDownPayment", raw)}
-                  onBlur={() => handleFinancingBlur("traditionalDownPayment")}
-                  helperText="Cash paid at closing. Cannot exceed the purchase price."
+                <PercentField
+                  id="traditionalDownPaymentPct"
+                  label="Down Payment Percentage"
+                  draft={percentDraft.traditionalDownPaymentPct}
+                  onChange={(raw) => handlePercentChange("traditionalDownPaymentPct", raw)}
+                  onBlur={() => handlePercentBlur("traditionalDownPaymentPct")}
+                  info="Allows decimals, e.g. 15.5%. Applied to the purchase price to calculate the down payment."
+                />
+                <ReadOnlyStat
+                  label="Estimated Down Payment"
+                  value={formatWhole(traditionalDownPaymentAmount)}
+                  helperText="Purchase Price x Down Payment Percentage."
+                />
+                <ReadOnlyStat
+                  label="Estimated Loan Balance"
+                  value={formatWhole(traditionalLoanBalance)}
+                  helperText="Purchase Price minus Estimated Down Payment. Never falls below $0."
                 />
                 <PercentField
                   id="traditionalInterestRatePct"
@@ -2207,25 +2284,60 @@ export default function SharedHousingCalculator() {
                   onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
                   helperText="Added to the monthly principal and interest payment below."
                 />
+                <PercentField
+                  id="traditionalClosingCostPct"
+                  label="Closing Cost Percentage"
+                  draft={percentDraft.traditionalClosingCostPct}
+                  onChange={(raw) => handlePercentChange("traditionalClosingCostPct", raw)}
+                  onBlur={() => handlePercentBlur("traditionalClosingCostPct")}
+                  info="Applied to the Estimated Loan Balance, not the purchase price, to estimate closing costs."
+                />
+                <ReadOnlyStat
+                  label="Estimated Closing Costs"
+                  value={formatWhole(traditionalClosingCosts)}
+                  helperText="Estimated Loan Balance x Closing Cost Percentage."
+                />
               </div>
 
-              {financing.traditionalDownPayment > financing.purchasePrice && (
-                <p className="mt-4 text-sm text-red-700">
-                  The down payment exceeds the purchase price. The estimated loan amount is floored at $0.
-                </p>
-              )}
-
-              <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-4">
-                <ReadOnlyStat
-                  label="Estimated Loan Amount"
-                  value={formatWhole(traditionalLoanAmount)}
-                  helperText="Purchase Price minus Down Payment. Never falls below $0."
-                />
+              <div className="mt-8 pt-6 border-t border-line-dark">
                 <div className="border border-brass bg-paper-2 p-6">
                   <p className="eyebrow text-brass mb-1.5">
                     Estimated Monthly Principal and Interest Payment
                   </p>
                   <p className="font-display text-3xl">{formatCents(traditionalMonthlyPI)}</p>
+                </div>
+              </div>
+
+              {/* Monthly PITI: principal and interest (calculated above),
+                  plus monthly property taxes and insurance (the entered
+                  annual figures divided by 12), combined into a single,
+                  visually prominent Estimated Monthly PITI figure. This
+                  is the housing expense used everywhere else in this
+                  calculator -- monthly operating expenses, cash flow,
+                  holding costs, cash-on-cash return, the full breakdown,
+                  the printed report, and the CSV export -- so taxes and
+                  insurance are never counted twice. */}
+              <div className="mt-6 rounded border border-line-dark bg-white p-6">
+                <p className="eyebrow text-brass mb-4">Estimated Monthly PITI</p>
+                <div className="divide-y divide-line-dark border-t border-b border-line-dark">
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Monthly Principal and Interest</span>
+                    <span>{formatCents(traditionalMonthlyPI)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Monthly Property Taxes</span>
+                    <span>{formatCents(traditionalMonthlyTaxes)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Monthly Property Insurance</span>
+                    <span>{formatCents(traditionalMonthlyInsurance)}</span>
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
+                  <span className="eyebrow text-brass">Estimated Monthly PITI</span>
+                  <span className="font-display text-2xl text-ink">
+                    {formatCents(results.monthlyHousingPayment)}
+                  </span>
                 </div>
               </div>
 
@@ -2306,7 +2418,7 @@ export default function SharedHousingCalculator() {
               value={formatWhole(results.equity)}
               helperText={
                 financingStructure.traditional
-                  ? "Estimated equity is calculated by subtracting the estimated loan amount from the purchase price."
+                  ? "Estimated equity is calculated by subtracting the estimated loan balance from the purchase price."
                   : "Estimated equity is calculated by subtracting the loan balance from the purchase price."
               }
             />
@@ -2629,19 +2741,36 @@ export default function SharedHousingCalculator() {
               onBlur={() => handleCapitalBlur("tcAndLlc")}
               helperText="Transaction coordination and entity formation costs."
             />
-            <PercentField
-              id="closingCostPct"
-              label="Estimated Closing Cost Percentage"
-              draft={percentDraft.closingCostPct}
-              onChange={(raw) => handlePercentChange("closingCostPct", raw)}
-              onBlur={() => handlePercentBlur("closingCostPct")}
-              info="Applied to the purchase price to estimate closing costs."
-            />
-            <ReadOnlyStat
-              label="Closing Costs"
-              value={formatCents(results.closingCosts)}
-              helperText="Calculated using the estimated closing cost percentage entered above."
-            />
+            {financingStructure.traditional ? (
+              <>
+                <ReadOnlyStat
+                  label="Traditional Closing Cost Percentage"
+                  value={formatPercent(percent.traditionalClosingCostPct)}
+                  helperText="Editable in the Traditional Financing section above. Applied to the Estimated Loan Balance, not the purchase price."
+                />
+                <ReadOnlyStat
+                  label="Traditional Financing Closing Costs"
+                  value={formatCents(results.closingCosts)}
+                  helperText="Estimated Loan Balance x Traditional Closing Cost Percentage."
+                />
+              </>
+            ) : (
+              <>
+                <PercentField
+                  id="closingCostPct"
+                  label="Estimated Closing Cost Percentage"
+                  draft={percentDraft.closingCostPct}
+                  onChange={(raw) => handlePercentChange("closingCostPct", raw)}
+                  onBlur={() => handlePercentBlur("closingCostPct")}
+                  info="Applied to the purchase price to estimate closing costs."
+                />
+                <ReadOnlyStat
+                  label="Closing Costs"
+                  value={formatCents(results.closingCosts)}
+                  helperText="Calculated using the estimated closing cost percentage entered above."
+                />
+              </>
+            )}
             <CurrencyField
               id="agentFee"
               label="Agent Fee"
@@ -3047,14 +3176,20 @@ export default function SharedHousingCalculator() {
                 {financingStructure.traditional ? (
                   <>
                     <div className="flex justify-between">
-                      <span className="text-ink/60">Down Payment</span>
+                      <span className="text-ink/60">Down Payment Percentage</span>
                       <span className="font-medium text-ink">
-                        {formatCents(financing.traditionalDownPayment)}
+                        {formatPercent(percent.traditionalDownPaymentPct)}
                       </span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-ink/60">Estimated Loan Amount</span>
-                      <span className="font-medium text-ink">{formatCents(traditionalLoanAmount)}</span>
+                      <span className="text-ink/60">Estimated Down Payment</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(traditionalDownPaymentAmount)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Estimated Loan Balance</span>
+                      <span className="font-medium text-ink">{formatCents(traditionalLoanBalance)}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Interest Rate</span>
@@ -3067,7 +3202,7 @@ export default function SharedHousingCalculator() {
                       <span className="font-medium text-ink">30 Years</span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Monthly Principal and Interest Payment</span>
+                      <span className="font-semibold text-ink">Monthly Principal and Interest</span>
                       <span className="font-semibold text-ink">{formatCents(traditionalMonthlyPI)}</span>
                     </div>
                     <div className="flex justify-between">
@@ -3083,7 +3218,7 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">Estimated Monthly PITI</span>
                       <span className="font-semibold text-ink">
                         {formatCents(results.monthlyHousingPayment)}
                       </span>
@@ -3263,7 +3398,11 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink">{formatCents(capital.appliances)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-ink/60">Closing Costs ({formatPercent(percent.closingCostPct)})</span>
+                <span className="text-ink/60">
+                  {financingStructure.traditional
+                    ? `Traditional Closing Cost Percentage (${formatPercent(percent.traditionalClosingCostPct)})`
+                    : `Closing Costs (${formatPercent(percent.closingCostPct)})`}
+                </span>
                 <span className="text-ink">{formatCents(results.closingCosts)}</span>
               </div>
               <div className="flex justify-between">
