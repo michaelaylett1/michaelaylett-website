@@ -32,7 +32,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Info } from "lucide-react";
+import { Info, Upload } from "lucide-react";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -44,6 +44,14 @@ const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
 const RESERVES_AMOUNT = 10000;
 const HOLDING_MONTHS = 3;
+
+// Property Images: processed and stored entirely client-side (never
+// uploaded anywhere) as compressed, orientation-corrected data URLs so
+// they can be previewed on screen and embedded directly in the
+// printable report.
+const MAX_PROPERTY_IMAGES = 6;
+const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+const MAX_IMAGE_DIMENSION = 1600;
 
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
@@ -109,6 +117,55 @@ function parseTypedPercent(raw: string): number {
   const n = Number(cleaned);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.min(100, n);
+}
+
+// ---------------------------------------------------------------------
+// Property Images: type, client-side processing, and print gallery
+// layout. Everything here runs entirely in the browser; no image is
+// ever uploaded to a server. Orientation is auto-corrected and the
+// image is resized/compressed via an off-screen canvas before being
+// stored as a data URL, both for on-screen previews and for the
+// printable report.
+// ---------------------------------------------------------------------
+type PropertyImage = { id: string; dataUrl: string; name: string };
+
+async function processImageFile(file: File): Promise<string> {
+  try {
+    const bitmap = await createImageBitmap(file, {
+      imageOrientation: "from-image",
+    } as ImageBitmapOptions);
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas is not supported in this browser.");
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    // Fallback for browsers that do not support createImageBitmap/canvas:
+    // read the file directly as a data URL with no resizing or
+    // orientation correction, so the upload still works.
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not read the selected file."));
+      reader.readAsDataURL(file);
+    });
+  }
+}
+
+// Determines the printable report's image-gallery grid based on how
+// many photos were uploaded: 1 = large featured image, 2 = side by
+// side, 3-4 = a balanced grid, 5-6 = a compact multi-row gallery.
+function getGalleryLayout(count: number): { gridClass: string; imgHeightClass: string } {
+  if (count <= 1) return { gridClass: "grid-cols-1", imgHeightClass: "h-[3.2in]" };
+  if (count === 2) return { gridClass: "grid-cols-2", imgHeightClass: "h-[2.4in]" };
+  if (count <= 4) return { gridClass: "grid-cols-2", imgHeightClass: "h-[1.8in]" };
+  return { gridClass: "grid-cols-3", imgHeightClass: "h-[1.3in]" };
 }
 
 // ---------------------------------------------------------------------
@@ -456,6 +513,15 @@ export default function SharedHousingCalculator() {
 
   const [breakdownOpen, setBreakdownOpen] = useState(false);
 
+  // Property Address and Property Images stay local to the current
+  // browser session: plain in-memory state only, never written to
+  // localStorage/sessionStorage, never uploaded anywhere, and cleared on
+  // refresh or Reset to Defaults.
+  const [propertyAddress, setPropertyAddress] = useState("");
+  const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
+  const [imageError, setImageError] = useState("");
+  const [processingImages, setProcessingImages] = useState(false);
+
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
     setFinancingDraft((prev) => ({ ...prev, [key]: raw }));
@@ -526,6 +592,80 @@ export default function SharedHousingCalculator() {
     setHoldingCostsDraft(formatCents(calculatedHoldingCosts));
   }
 
+  // Property Images handlers: adding, removing, and replacing all run
+  // entirely client-side (see processImageFile above). Unsupported file
+  // types are rejected with a clear error message instead of breaking
+  // the calculator, and selection is capped at MAX_PROPERTY_IMAGES.
+  async function handleAddImageFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
+    setImageError("");
+
+    const valid = files.filter((f) => ACCEPTED_IMAGE_TYPES.includes(f.type));
+    const invalid = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type));
+
+    if (invalid.length > 0) {
+      setImageError("Some files were not added. Only JPG, PNG, and WEBP images are supported.");
+    }
+    if (valid.length === 0) return;
+
+    const remainingSlots = MAX_PROPERTY_IMAGES - propertyImages.length;
+    if (remainingSlots <= 0) {
+      setImageError(
+        `Up to ${MAX_PROPERTY_IMAGES} images are supported. Remove an image before adding another.`
+      );
+      return;
+    }
+
+    const toProcess = valid.slice(0, remainingSlots);
+    if (valid.length > toProcess.length) {
+      setImageError(
+        `Up to ${MAX_PROPERTY_IMAGES} images are supported. Only the first ${toProcess.length} of the selected images were added.`
+      );
+    }
+
+    setProcessingImages(true);
+    try {
+      const processed = await Promise.all(
+        toProcess.map(async (file) => ({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          dataUrl: await processImageFile(file),
+          name: file.name,
+        }))
+      );
+      setPropertyImages((prev) => [...prev, ...processed]);
+    } catch {
+      setImageError("One or more images could not be processed. Please try a different file.");
+    } finally {
+      setProcessingImages(false);
+    }
+  }
+
+  function handleRemoveImage(id: string) {
+    setPropertyImages((prev) => prev.filter((img) => img.id !== id));
+  }
+
+  async function handleReplaceImage(id: string, fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file) return;
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setImageError("That file is not a supported image type. Please choose a JPG, PNG, or WEBP image.");
+      return;
+    }
+    setImageError("");
+    setProcessingImages(true);
+    try {
+      const dataUrl = await processImageFile(file);
+      setPropertyImages((prev) =>
+        prev.map((img) => (img.id === id ? { ...img, dataUrl, name: file.name } : img))
+      );
+    } catch {
+      setImageError("That image could not be processed. Please try a different file.");
+    } finally {
+      setProcessingImages(false);
+    }
+  }
+
   function resetToDefaults() {
     setPaymentType(PAYMENT_TYPE_DEFAULT);
     setFinancing(FINANCING_DEFAULTS);
@@ -555,6 +695,11 @@ export default function SharedHousingCalculator() {
     // manually entered amount.
     setHoldingCostsOverride(null);
     setHoldingCostsDraft(formatCents(0));
+    // Property Address and Property Images are cleared on reset, same
+    // as every other field.
+    setPropertyAddress("");
+    setPropertyImages([]);
+    setImageError("");
   }
 
   // ---------------------------------------------------------------------
@@ -738,6 +883,7 @@ export default function SharedHousingCalculator() {
       {
         title: "Property and Financing",
         rows: [
+          { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
           { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
           { label: "Loan Balance", value: formatCents(financing.loanBalance) },
           { label: "Estimated Equity", value: formatCents(results.equity) },
@@ -812,13 +958,14 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing, capital, percent]
+    [results, financing, capital, percent, propertyAddress]
   );
 
   const inputsSection: BreakdownSection = useMemo(
     () => ({
       title: "Inputs",
       rows: [
+        { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
         { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
@@ -845,7 +992,7 @@ export default function SharedHousingCalculator() {
         },
       ],
     }),
-    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses]
+    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, maintenanceExpenses, propertyAddress]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
@@ -1037,9 +1184,113 @@ export default function SharedHousingCalculator() {
         </div>
 
         {/* ---------------------------------------------------------- */}
-        {/* Section 1: Property and financing                          */}
+        {/* Property Address                                            */}
         {/* ---------------------------------------------------------- */}
         <div className="print:hidden mt-10 bg-paper text-ink p-6 sm:p-8 md:p-10">
+          <p className="eyebrow text-brass mb-5">Property Address</p>
+          <div>
+            <label htmlFor="propertyAddress" className="block mb-2">
+              <FieldLabel>Property Address</FieldLabel>
+            </label>
+            <input
+              id="propertyAddress"
+              type="text"
+              value={propertyAddress}
+              onChange={(e) => setPropertyAddress(e.target.value)}
+              placeholder="Enter the property address"
+              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+            />
+            <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
+              Optional. Appears near the top of the printable underwriting
+              summary. Left blank, the address line is omitted from the
+              report rather than shown empty.
+            </p>
+          </div>
+        </div>
+
+        {/* ---------------------------------------------------------- */}
+        {/* Property Images                                             */}
+        {/* ---------------------------------------------------------- */}
+        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+          <p className="eyebrow text-brass mb-2">Property Images</p>
+          <p className="text-sm text-ink/60 leading-relaxed mb-5">
+            Upload property photos to include in the printable underwriting summary.
+          </p>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {propertyImages.map((img) => (
+              <div key={img.id} className="relative border border-line-dark bg-white p-2">
+                <img
+                  src={img.dataUrl}
+                  alt={img.name || "Property photo"}
+                  className="w-full h-32 object-cover"
+                />
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
+                    Replace
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleReplaceImage(img.id, e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveImage(img.id)}
+                    className="text-xs text-ink/50 hover:text-red-700 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {propertyImages.length < MAX_PROPERTY_IMAGES && (
+              <label
+                htmlFor="propertyImagesInput"
+                className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 h-full min-h-[128px] p-4 text-center cursor-pointer hover:border-brass transition-colors"
+              >
+                <Upload size={18} className="text-ink/40" aria-hidden="true" />
+                <span className="text-xs text-ink/60">
+                  {processingImages ? "Processing..." : "Add Photos"}
+                </span>
+                <input
+                  id="propertyImagesInput"
+                  type="file"
+                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  multiple
+                  className="hidden"
+                  disabled={processingImages}
+                  onChange={(e) => {
+                    handleAddImageFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+          </div>
+
+          {imageError && (
+            <p role="alert" className="mt-4 text-sm text-red-700">
+              {imageError}
+            </p>
+          )}
+
+          <p className="mt-4 text-xs text-ink/50 leading-relaxed">
+            Up to {MAX_PROPERTY_IMAGES} images. Supported formats: JPG, PNG,
+            and WEBP. Images are used only to personalize the underwriting
+            summary generated from this calculator.
+          </p>
+        </div>
+
+        {/* ---------------------------------------------------------- */}
+        {/* Section 1: Property and financing                          */}
+        {/* ---------------------------------------------------------- */}
+        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
           <p className="eyebrow text-brass mb-5">Property and Financing</p>
           <div className="grid sm:grid-cols-2 gap-5">
             <CurrencyField
@@ -1579,20 +1830,34 @@ export default function SharedHousingCalculator() {
         </p>
 
         {/* Printable underwriting summary: hidden on screen, shown only
-            when printing or saving as PDF from the print dialog. Built
-            from printSections (defined above) rather than the on-page
-            breakdown or CSV data, since this report has its own rules:
-            only calculated figures, no input controls, tooltips, or
-            buttons, and Annual Property Taxes/Insurance appear only for
-            Principal and Interest Only (see printSections). */}
-        <div className="hidden print:block bg-white text-black text-[10.5pt] leading-snug">
-          <div className="mb-5 print:break-inside-avoid-page">
-            <h1 className="text-[18pt] font-display font-semibold leading-tight">
-              Shared Housing Underwriting Summary
+            when printing or saving as PDF from the print dialog. Renamed
+            "Co-Living Underwriting Summary" per current branding, redesigned
+            with the site's cream/charcoal/brass identity, and reordered into
+            the exact section order required: header (title, optional
+            address, source, generated date), property photo gallery (only
+            if images were uploaded), investment and return summary cards,
+            then the five printSections (Property and Financing, Rental
+            Income, Monthly Operating Expenses, Upfront Capital Required,
+            Estimated Returns), and finally the disclaimer. Built from
+            printSections (defined above) rather than the on-page breakdown
+            or CSV data, since this report has its own rules: only
+            calculated figures, no input controls, tooltips, or buttons, and
+            Annual Property Taxes/Insurance appear only for Principal and
+            Interest Only (see printSections). */}
+        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6">
+          {/* 1. Report header */}
+          <div className="mb-6 print:break-inside-avoid-page border-b-4 border-brass pb-4">
+            <h1 className="text-[20pt] font-display font-semibold leading-tight text-ink">
+              Co-Living Underwriting Summary
             </h1>
-            <p className="mt-1 text-[9pt] text-black/70">Source: michaelaylett.com</p>
-            <p className="text-[9pt] text-black/70">
-              Generated{" "}
+            {propertyAddress.trim() && (
+              <p className="mt-2 text-[10pt] text-ink/80">
+                Property Address: {propertyAddress.trim()}
+              </p>
+            )}
+            <p className="mt-1 text-[9pt] text-ink/60">Source: michaelaylett.com</p>
+            <p className="text-[9pt] text-ink/60">
+              Generated:{" "}
               {new Date().toLocaleDateString("en-US", {
                 year: "numeric",
                 month: "long",
@@ -1601,56 +1866,94 @@ export default function SharedHousingCalculator() {
             </p>
           </div>
 
-          {/* Top summary: the five headline figures, with Total Capital
-              Required and Cash-on-Cash Return made the most visually
-              prominent (larger type, bolder border). */}
-          <div className="mb-6 print:break-inside-avoid-page">
-            <div className="grid grid-cols-3 gap-2 mb-2">
-              <div className="border border-black/30 px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-black/60">Purchase Price</p>
-                <p className="text-[13pt] font-semibold">{formatCents(financing.purchasePrice)}</p>
+          {/* 2. Property photo gallery, only if images were uploaded */}
+          {propertyImages.length > 0 && (
+            <div className="mb-6 print:break-inside-avoid-page">
+              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
+                Property Photos
+              </p>
+              <div className={`grid ${getGalleryLayout(propertyImages.length).gridClass} gap-2`}>
+                {propertyImages.map((img) => (
+                  <div
+                    key={img.id}
+                    className={`overflow-hidden rounded border border-ink/15 print:break-inside-avoid ${
+                      getGalleryLayout(propertyImages.length).imgHeightClass
+                    }`}
+                  >
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name || "Property photo"}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                ))}
               </div>
-              <div className="border border-black/30 px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+            </div>
+          )}
+
+          {/* 3. Investment and return summary: the five headline figures,
+              with Total Capital Required and Estimated Cash-on-Cash Return
+              made the most visually prominent. The Cash-on-Cash Return card
+              always uses the same green treatment regardless of the value,
+              with a bold border and very dark text so the figure stays
+              readable even if the printer omits background colors. */}
+          <div className="mb-6 print:break-inside-avoid-page">
+            <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
+              Investment and Return Summary
+            </p>
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-ink/60">Purchase Price</p>
+                <p className="text-[13pt] font-semibold text-ink">{formatCents(financing.purchasePrice)}</p>
+              </div>
+              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
                   Estimated Monthly Cash Flow
                 </p>
-                <p className="text-[13pt] font-semibold">{formatCents(results.monthlyCashFlow)}</p>
+                <p className="text-[13pt] font-semibold text-ink">{formatCents(results.monthlyCashFlow)}</p>
               </div>
-              <div className="border border-black/30 px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
+                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
                   Estimated Annual Cash Flow
                 </p>
-                <p className="text-[13pt] font-semibold">{formatCents(results.annualCashFlow)}</p>
+                <p className="text-[13pt] font-semibold text-ink">{formatCents(results.annualCashFlow)}</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <div className="border-2 border-black px-3 py-3">
-                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+              <div className="border-2 border-brass bg-white rounded px-3 py-3">
+                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
                   Total Capital Required
                 </p>
-                <p className="text-[20pt] font-bold">{formatCents(results.totalCapitalRequired)}</p>
+                <p className="text-[20pt] font-bold text-ink">
+                  {formatCents(results.totalCapitalRequired)}
+                </p>
               </div>
-              <div className="border-2 border-black px-3 py-3">
-                <p className="text-[8pt] uppercase tracking-wide text-black/60">
+              <div
+                className="border-4 border-emerald-900 rounded px-3 py-3"
+                style={{ backgroundColor: "#4E9C6C" }}
+              >
+                <p className="text-[8pt] uppercase tracking-wide text-ink font-bold">
                   Estimated Cash-on-Cash Return
                 </p>
-                <p className="text-[20pt] font-bold">
+                <p className="text-[20pt] font-bold text-ink">
                   {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
                 </p>
               </div>
             </div>
           </div>
 
+          {/* 4-8. Property and Financing, Rental Income, Monthly Operating
+              Expenses, Upfront Capital Required, Estimated Returns */}
           {printSections.map((section) => (
             <div key={section.title} className="mb-4 print:break-inside-avoid-page">
-              <p className="text-[10pt] font-semibold uppercase tracking-wide border-b border-black/40 pb-1 mb-1.5 print:break-after-avoid-page">
+              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-1.5 print:break-after-avoid-page">
                 {section.title}
               </p>
               {section.rows.map((row) => (
                 <div
                   key={row.label}
                   className={`flex justify-between gap-4 text-[10pt] py-0.5 print:break-inside-avoid ${
-                    row.isTotal ? "font-semibold border-t border-black/30 mt-1 pt-1" : ""
+                    row.isTotal ? "font-semibold border-t border-brass/50 mt-1 pt-1 text-ink" : "text-ink/85"
                   }`}
                 >
                   <span>{row.label}</span>
@@ -1660,7 +1963,8 @@ export default function SharedHousingCalculator() {
             </div>
           ))}
 
-          <p className="mt-6 text-[7.5pt] leading-relaxed text-black/60 print:break-inside-avoid-page">
+          {/* 9. Disclaimer */}
+          <p className="mt-6 text-[7.5pt] leading-relaxed text-ink/60 print:break-inside-avoid-page border-t border-ink/15 pt-3">
             This calculator is provided for illustrative and educational
             purposes only. Results are estimates based on the information
             entered and the assumptions displayed. Actual rents,

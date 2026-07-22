@@ -47,6 +47,19 @@ body {
     background: #fff !important;
     color: #000 !important;
   }
+
+  /* Lets the printable Co-Living Underwriting Summary's cream/brass/green
+     background colors (set via Tailwind classes) actually render when a
+     visitor prints or saves the report as a PDF, since browsers otherwise
+     strip background colors unless "print background graphics" is on. The
+     report itself still remains readable if a printer omits background
+     graphics: every colored panel also has a visible border and bold,
+     high-contrast text that does not depend on the background color. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
 }
 
 .bg-noise {
