@@ -49,6 +49,8 @@ import {
   CheckCircle2,
   XCircle,
   HelpCircle,
+  ArrowLeft,
+  ArrowRight,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------
@@ -66,7 +68,7 @@ const HOLDING_MONTHS = 3;
 // uploaded anywhere) as compressed, orientation-corrected data URLs so
 // they can be previewed on screen and embedded directly in the
 // printable report.
-const MAX_PROPERTY_IMAGES = 6;
+const MAX_PROPERTY_IMAGES = 5;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const MAX_IMAGE_DIMENSION = 1600;
 
@@ -319,6 +321,338 @@ function ZeroOutOfPocketBadge({
   );
 }
 
+// One row of a Balloon Refinance Analysis results panel: a label on the
+// left, its value right-aligned, matching the row style used throughout
+// the rest of the on-page calculator.
+function BalloonStatRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2.5 text-sm">
+      <span className="text-ink/70">{label}</span>
+      <span className="text-right">{value}</span>
+    </div>
+  );
+}
+
+// The on-page Balloon Refinance Analysis section, shared by Stack
+// Method, Subject To, Seller Financing, and Hybrid (never Traditional
+// Financing, which never renders this component). Every prop is
+// supplied by the parent, which owns all of the actual state -- this
+// component is purely presentational, reading no state and performing
+// no calculations of its own, exactly like the printable report
+// components below.
+function BalloonRefinanceAnalysisPanel({
+  balloonExists,
+  onToggleExists,
+  balloonYearsDraft,
+  onBalloonYearsChange,
+  onBalloonYearsBlur,
+  appreciationDraft,
+  onAppreciationChange,
+  onAppreciationBlur,
+  has70LtvContingency,
+  onToggleContingency,
+  analysis,
+  loanBalanceRows,
+}: {
+  balloonExists: boolean;
+  onToggleExists: (value: boolean) => void;
+  balloonYearsDraft: string;
+  onBalloonYearsChange: (raw: string) => void;
+  onBalloonYearsBlur: () => void;
+  appreciationDraft: string;
+  onAppreciationChange: (raw: string) => void;
+  onAppreciationBlur: () => void;
+  has70LtvContingency: boolean;
+  onToggleContingency: (value: boolean) => void;
+  analysis: BalloonAnalysis | null;
+  loanBalanceRows: { label: string; value: number }[];
+}) {
+  return (
+    <div className="mt-8 pt-6 border-t border-line-dark">
+      <p className="eyebrow text-brass mb-1">Balloon Refinance Analysis</p>
+      <p className="text-xs text-ink/50 leading-relaxed mb-5">
+        Does this financing structure have a balloon payment? Most Subject To and Seller
+        Financing deals do not -- only select Yes if one actually applies.
+      </p>
+      <div className="inline-flex border border-line-dark divide-x divide-line-dark">
+        <button
+          type="button"
+          onClick={() => onToggleExists(false)}
+          aria-pressed={!balloonExists}
+          className={`px-4 py-2 text-sm transition-colors ${
+            !balloonExists ? "bg-brass/10 text-ink" : "text-ink/60 hover:text-ink"
+          }`}
+        >
+          No
+        </button>
+        <button
+          type="button"
+          onClick={() => onToggleExists(true)}
+          aria-pressed={balloonExists}
+          className={`px-4 py-2 text-sm transition-colors ${
+            balloonExists ? "bg-brass/10 text-ink" : "text-ink/60 hover:text-ink"
+          }`}
+        >
+          Yes
+        </button>
+      </div>
+
+      {balloonExists && (
+        <>
+          <div className="mt-6 grid sm:grid-cols-2 gap-5">
+            <IntegerField
+              id="balloonYears"
+              label="Balloon Due in Years"
+              draft={balloonYearsDraft}
+              onChange={onBalloonYearsChange}
+              onBlur={onBalloonYearsBlur}
+              info="Must be greater than 0."
+            />
+            <PercentField
+              id="balloonAppreciationPct"
+              label="Annual Property Appreciation"
+              draft={appreciationDraft}
+              onChange={onAppreciationChange}
+              onBlur={onAppreciationBlur}
+              info="Decimals allowed, e.g. 2.5%. Defaults to 2%, fully editable."
+            />
+          </div>
+          <div className="mt-5">
+            <div className="mb-2">
+              <FieldLabel>Is There a 70% LTV Refinance Contingency?</FieldLabel>
+            </div>
+            <div
+              className="grid grid-cols-2 gap-2 max-w-sm"
+              role="group"
+              aria-label="Is There a 70% LTV Refinance Contingency?"
+            >
+              <button
+                type="button"
+                onClick={() => onToggleContingency(false)}
+                aria-pressed={!has70LtvContingency}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  !has70LtvContingency
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => onToggleContingency(true)}
+                aria-pressed={has70LtvContingency}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  has70LtvContingency
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+
+          {analysis && (
+            <div className="mt-6 rounded border border-line-dark bg-white p-6">
+              <p className="eyebrow text-brass mb-1.5">Balloon Refinance Analysis Results</p>
+              <div className="divide-y divide-line-dark border-t border-b border-line-dark">
+                <BalloonStatRow label="Balloon Due in" value={`${analysis.balloonYears} Years`} />
+                <BalloonStatRow label="Annual Property Appreciation" value={formatPercent(analysis.appreciationPct)} />
+                <BalloonStatRow label="Current Purchase Price" value={formatCents(analysis.purchasePrice)} />
+                <BalloonStatRow
+                  label="Projected Appraised Value at Balloon"
+                  value={formatCents(analysis.projectedAppraisedValue)}
+                />
+                {loanBalanceRows.map((row) => (
+                  <BalloonStatRow key={row.label} label={row.label} value={formatCents(row.value)} />
+                ))}
+                <BalloonStatRow
+                  label="Total Projected Debt at Balloon"
+                  value={formatCents(analysis.projectedDebtAtBalloon)}
+                />
+                <BalloonStatRow label="Maximum Debt at 70% LTV" value={formatCents(analysis.maxDebtAt70Ltv)} />
+                <BalloonStatRow
+                  label="Projected LTV at Balloon"
+                  value={analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+                />
+                <BalloonStatRow label="Estimated Equity Cushion" value={formatCents(analysis.equityCushion)} />
+              </div>
+
+              <div className="mt-4">
+                {!analysis.has70LtvContingency ? (
+                  <div className="rounded border border-ink/30 bg-paper-2 p-4">
+                    <p className="text-sm text-ink/70 leading-relaxed inline-flex items-start gap-2">
+                      <HelpCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        No 70% LTV refinance contingency has been selected. Projected LTV at Balloon:{" "}
+                        {analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}.
+                      </span>
+                    </p>
+                  </div>
+                ) : analysis.meets70Ltv ? (
+                  <div className="rounded border border-green-700 bg-green-50 p-4">
+                    <p className="text-sm text-green-800 leading-relaxed inline-flex items-start gap-2">
+                      <CheckCircle2 size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        Projected refinance LTV is at or below 70%. The modeled balloon term meets the 70% LTV
+                        refinance contingency.
+                      </span>
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded border border-red-700 bg-red-50 p-4">
+                    <p className="text-sm text-red-800 leading-relaxed inline-flex items-start gap-2">
+                      <XCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>
+                        Projected refinance LTV is above 70%. The modeled balloon term does not meet the 70% LTV
+                        refinance contingency.
+                      </span>
+                    </p>
+                    <p className="mt-2 text-sm text-red-800">
+                      {analysis.recommendedYears !== null
+                        ? `Recommended Minimum Balloon Term: ${analysis.recommendedYears} Years (Projected LTV at Recommended Term: ${
+                            analysis.projectedLtvAtRecommended === null
+                              ? "N/A"
+                              : formatPercent(analysis.projectedLtvAtRecommended * 100)
+                          }).`
+                        : "The projected LTV does not reach 70% within the modeled amortization period."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// The printable-report counterpart to BalloonRefinanceAnalysisPanel
+// above: same underlying BalloonAnalysis data and the same exact
+// status wording, laid out as a compact two-column card matching the
+// other printable Financing cards. Rendered only when the caller
+// passes a non-null analysis (i.e. only when that mode's balloon
+// toggle is Yes), so no blank or near-blank balloon section or page
+// ever appears for a financing structure without a balloon. Status is
+// conveyed with a colored panel AND an icon AND written text, so it
+// stays understandable if printed in grayscale.
+function BalloonRefinancePrintCard({
+  analysis,
+  loanBalanceRows,
+}: {
+  analysis: BalloonAnalysis;
+  loanBalanceRows: { label: string; value: number }[];
+}) {
+  const statusPass = analysis.has70LtvContingency && analysis.meets70Ltv === true;
+  const statusFail = analysis.has70LtvContingency && analysis.meets70Ltv === false;
+  return (
+    <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <Landmark size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+          Balloon Refinance Analysis
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Does the Financing Have a Balloon?</span>
+          <span className="text-ink flex-shrink-0 text-right">Yes</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Balloon Due in Years</span>
+          <span className="text-ink flex-shrink-0 text-right">{analysis.balloonYears} Years</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Annual Property Appreciation</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatPercent(analysis.appreciationPct)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">70% LTV Refinance Contingency</span>
+          <span className="text-ink flex-shrink-0 text-right">
+            {analysis.has70LtvContingency ? "Yes" : "No"}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Projected Appraised Value at Balloon</span>
+          <span className="text-ink flex-shrink-0 text-right">
+            {formatCents(analysis.projectedAppraisedValue)}
+          </span>
+        </div>
+        {loanBalanceRows.map((row) => (
+          <div className="flex justify-between gap-3" key={row.label}>
+            <span className="text-ink/60 min-w-0">{row.label}</span>
+            <span className="text-ink flex-shrink-0 text-right">{formatCents(row.value)}</span>
+          </div>
+        ))}
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Total Projected Debt at Balloon</span>
+          <span className="text-ink flex-shrink-0 text-right">
+            {formatCents(analysis.projectedDebtAtBalloon)}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Maximum Debt at 70% LTV</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.maxDebtAt70Ltv)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Projected LTV at Balloon</span>
+          <span className="text-ink flex-shrink-0 text-right">
+            {analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+          </span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Estimated Equity Cushion</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.equityCushion)}</span>
+        </div>
+      </div>
+
+      <div className="mt-2 pt-2 border-t border-ink/10">
+        {!analysis.has70LtvContingency ? (
+          <div className="rounded border border-ink/30 bg-paper-2 p-2.5">
+            <p className="text-[9pt] text-ink/70 leading-relaxed inline-flex items-start gap-1.5">
+              <HelpCircle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>No 70% LTV refinance contingency has been selected.</span>
+            </p>
+          </div>
+        ) : statusPass ? (
+          <div className="rounded border border-green-700 bg-green-50 p-2.5">
+            <p className="text-[9pt] text-green-800 leading-relaxed inline-flex items-start gap-1.5">
+              <CheckCircle2 size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>
+                Projected refinance LTV is at or below 70%. The modeled balloon term meets the 70% LTV
+                refinance contingency.
+              </span>
+            </p>
+          </div>
+        ) : (
+          <div className="rounded border border-red-700 bg-red-50 p-2.5">
+            <p className="text-[9pt] text-red-800 leading-relaxed inline-flex items-start gap-1.5">
+              <XCircle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+              <span>
+                Projected refinance LTV is above 70%. The modeled balloon term does not meet the 70% LTV
+                refinance contingency.
+              </span>
+            </p>
+            {statusFail && (
+              <p className="mt-1 text-[9pt] text-red-800">
+                {analysis.recommendedYears !== null
+                  ? `Recommended Minimum Balloon Term: ${analysis.recommendedYears} Years (Projected LTV at Recommended Term: ${
+                      analysis.projectedLtvAtRecommended === null
+                        ? "N/A"
+                        : formatPercent(analysis.projectedLtvAtRecommended * 100)
+                    }).`
+                  : "The projected LTV does not reach 70% within the modeled amortization period."}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
 // Traditional Financing: a true fixed-rate, fully amortizing 30-year
 // loan schedule (principal and interest only, no balloon payment). The
@@ -480,6 +814,237 @@ function buildAmortizationScheduleForTerm(
 }
 
 // ---------------------------------------------------------------------
+// Balloon Refinance Analysis: shared math used by every financing
+// structure's balloon feature (Stack Method, Subject To, Seller
+// Financing, and Subject To & Seller Finance Hybrid). Every function
+// here works in unrounded values internally -- only the values actually
+// displayed are rounded to cents/percent, per the "use unrounded values
+// internally" requirement.
+// ---------------------------------------------------------------------
+
+// The remaining principal balance of a fully-amortizing loan after
+// `monthsElapsed` of its `totalMonths` term, using the true amortization
+// formula (never simple/linear division): B_k = P x [(1+r)^n - (1+r)^k]
+// / [(1+r)^n - 1]. At a 0% rate this correctly reduces to equal
+// principal payments each month (straight-line), matching how a 0%
+// seller-finance note actually pays down.
+function remainingBalanceAfterMonths(
+  principal: number,
+  annualRatePct: number,
+  totalMonths: number,
+  monthsElapsed: number
+): number {
+  if (!Number.isFinite(principal) || principal <= 0) return 0;
+  const n = Math.max(1, Math.round(totalMonths));
+  const k = Math.max(0, Math.min(n, Math.round(monthsElapsed)));
+  if (k >= n) return 0;
+  const monthlyRate = annualRatePct / 100 / 12;
+  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
+    return (principal * (n - k)) / n;
+  }
+  const factor = Math.pow(1 + monthlyRate, n);
+  const factorK = Math.pow(1 + monthlyRate, k);
+  if (!Number.isFinite(factor) || factor <= 1) return principal;
+  const balance = (principal * (factor - factorK)) / (factor - 1);
+  return Number.isFinite(balance) ? Math.max(0, balance) : 0;
+}
+
+// Projected appraised value at the balloon date, using compound annual
+// appreciation (never simple/linear appreciation): Purchase Price x
+// (1 + Appreciation Rate)^Years.
+function projectedAppraisedValue(purchasePrice: number, annualAppreciationPct: number, years: number): number {
+  if (!Number.isFinite(purchasePrice) || purchasePrice <= 0) return 0;
+  const rate = annualAppreciationPct / 100;
+  const y = Math.max(0, years);
+  const value = purchasePrice * Math.pow(1 + rate, y);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+// Searches forward, one whole year at a time, starting at the currently
+// entered balloon year, for the earliest year at which the projected LTV
+// (combined remaining debt / projected appraised value) is at or below
+// 70%. `debtAtYear` supplies the structure-specific combined remaining
+// principal balance for a given balloon year (e.g. bank + seller-finance
+// for Stack Method). Both the debt (amortizing down) and the appraised
+// value (compounding up) move in the direction that helps the search
+// converge, but a hard `maxYear` ceiling (the underlying amortization
+// term) plus a 100-year absolute safety limit guarantee this can never
+// loop indefinitely. Returns null if 70% LTV is never reached within
+// that window.
+function findRecommendedBalloonYears(
+  startYear: number,
+  maxYear: number,
+  purchasePrice: number,
+  annualAppreciationPct: number,
+  debtAtYear: (year: number) => number
+): { recommendedYears: number; projectedLtvAtRecommended: number } | null {
+  const ceiling = Math.max(1, Math.min(Math.round(maxYear), 100));
+  const start = Math.max(1, Math.ceil(startYear));
+  if (purchasePrice <= 0) return null;
+  for (let year = start; year <= ceiling; year++) {
+    const value = projectedAppraisedValue(purchasePrice, annualAppreciationPct, year);
+    if (value <= 0) continue;
+    const debt = Math.max(0, debtAtYear(year));
+    const ltv = debt / value;
+    if (ltv <= 0.7) {
+      return { recommendedYears: year, projectedLtvAtRecommended: ltv };
+    }
+  }
+  return null;
+}
+
+// Shared shape for a fully-computed Balloon Refinance Analysis result,
+// used identically by all four financing structures so the on-page
+// panel, printable report section, and CSV export can all read from one
+// consistent set of fields regardless of which structure produced them.
+type BalloonAnalysis = {
+  balloonYears: number;
+  appreciationPct: number;
+  has70LtvContingency: boolean;
+  purchasePrice: number;
+  projectedAppraisedValue: number;
+  projectedDebtAtBalloon: number;
+  maxDebtAt70Ltv: number;
+  projectedLtv: number | null;
+  equityCushion: number;
+  meets70Ltv: boolean | null;
+  recommendedYears: number | null;
+  projectedLtvAtRecommended: number | null;
+  amortizationCeilingYears: number;
+};
+
+// Assembles a complete BalloonAnalysis from a structure's already
+// mode-specific projected debt at the entered balloon year and a
+// `debtAtYear` function for the recommended-term search. Never
+// recalculates the underlying loan balances itself -- those are always
+// computed by the caller using that structure's own true amortization
+// terms.
+function buildBalloonAnalysis({
+  balloonYears,
+  appreciationPct,
+  has70LtvContingency,
+  purchasePrice,
+  projectedDebtAtBalloon,
+  amortizationCeilingYears,
+  debtAtYear,
+}: {
+  balloonYears: number;
+  appreciationPct: number;
+  has70LtvContingency: boolean;
+  purchasePrice: number;
+  projectedDebtAtBalloon: number;
+  amortizationCeilingYears: number;
+  debtAtYear: (year: number) => number;
+}): BalloonAnalysis {
+  const appraisedValue = projectedAppraisedValue(purchasePrice, appreciationPct, balloonYears);
+  const maxDebtAt70Ltv = appraisedValue * 0.7;
+  const projectedLtv = appraisedValue > 0 ? projectedDebtAtBalloon / appraisedValue : null;
+  const equityCushion = maxDebtAt70Ltv - projectedDebtAtBalloon;
+  const meets70Ltv = projectedLtv === null ? null : projectedLtv <= 0.7;
+
+  let recommendedYears: number | null = null;
+  let projectedLtvAtRecommended: number | null = null;
+  if (meets70Ltv === false) {
+    const found = findRecommendedBalloonYears(
+      balloonYears + 1,
+      amortizationCeilingYears,
+      purchasePrice,
+      appreciationPct,
+      debtAtYear
+    );
+    if (found) {
+      recommendedYears = found.recommendedYears;
+      projectedLtvAtRecommended = found.projectedLtvAtRecommended;
+    }
+  }
+
+  return {
+    balloonYears,
+    appreciationPct,
+    has70LtvContingency,
+    purchasePrice,
+    projectedAppraisedValue: appraisedValue,
+    projectedDebtAtBalloon,
+    maxDebtAt70Ltv,
+    projectedLtv,
+    equityCushion,
+    meets70Ltv,
+    recommendedYears,
+    projectedLtvAtRecommended,
+    amortizationCeilingYears,
+  };
+}
+
+// Turns a completed BalloonAnalysis into the exact same ordered list of
+// {label, value} rows used by the on-page Full Underwriting Breakdown,
+// the CSV export, and (restyled, not re-derived) the printable report --
+// one single source of truth for every place the Balloon Refinance
+// Analysis is displayed. `loanBalanceRows` supplies the structure-
+// specific balance line(s) (e.g. First-Position Loan Balance at Balloon
+// + Seller-Finance Balance at Balloon for Stack Method, or just the
+// Existing Mortgage Balance at Balloon for Subject To), inserted between
+// the projected appraised value and the combined total.
+function balloonAnalysisRows(
+  analysis: BalloonAnalysis,
+  loanBalanceRows: { label: string; value: number }[]
+): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = [
+    { label: "Balloon Exists", value: "Yes" },
+    { label: "Balloon Due in Years", value: `${analysis.balloonYears} Years` },
+    { label: "Annual Property Appreciation", value: formatPercent(analysis.appreciationPct) },
+    { label: "Current Purchase Price", value: formatCents(analysis.purchasePrice) },
+    { label: "Projected Appraised Value at Balloon", value: formatCents(analysis.projectedAppraisedValue) },
+  ];
+  for (const row of loanBalanceRows) {
+    rows.push({ label: row.label, value: formatCents(row.value) });
+  }
+  rows.push(
+    { label: "Total Projected Debt at Balloon", value: formatCents(analysis.projectedDebtAtBalloon) },
+    { label: "Maximum Debt at 70% LTV", value: formatCents(analysis.maxDebtAt70Ltv) },
+    {
+      label: "Projected LTV at Balloon",
+      value: analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100),
+    },
+    { label: "Estimated Equity Cushion", value: formatCents(analysis.equityCushion) },
+    { label: "70% LTV Refinance Contingency", value: analysis.has70LtvContingency ? "Yes" : "No" }
+  );
+  if (!analysis.has70LtvContingency) {
+    rows.push({
+      label: "70% LTV Refinance Status",
+      value: "No 70% LTV refinance contingency has been selected.",
+    });
+  } else if (analysis.meets70Ltv) {
+    rows.push({
+      label: "70% LTV Refinance Status",
+      value: "Meets the 70% LTV refinance contingency.",
+    });
+  } else {
+    rows.push({
+      label: "70% LTV Refinance Status",
+      value: "Does not meet the 70% LTV refinance contingency.",
+    });
+    if (analysis.recommendedYears !== null) {
+      rows.push(
+        { label: "Recommended Minimum Balloon Term", value: `${analysis.recommendedYears} Years` },
+        {
+          label: "Projected LTV at Recommended Term",
+          value:
+            analysis.projectedLtvAtRecommended === null
+              ? "N/A"
+              : formatPercent(analysis.projectedLtvAtRecommended * 100),
+        }
+      );
+    } else {
+      rows.push({
+        label: "Recommended Minimum Balloon Term",
+        value: "The projected LTV does not reach 70% within the modeled amortization period.",
+      });
+    }
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------
 // Printable report presentation components. These are purely
 // presentational (props in, JSX out): they read no state and perform no
 // calculations of their own, so the printed report's figures always
@@ -591,95 +1156,43 @@ function HighlightBullet({
   );
 }
 
-// A simple SVG bar chart (Income vs. Expenses) generated directly from
-// the calculator's own computed figures. Pure SVG, no charting library,
-// so it renders crisply and reliably in print/PDF output.
-function IncomeExpenseChart({
-  effectiveRent,
-  operatingExpenses,
-  cashFlow,
+// A simple, print/grayscale-safe horizontal bar chart used for both the
+// "Monthly Income and Expense Breakdown" and "Capital Required Breakdown"
+// charts in the printable report. Plain HTML/CSS rather than SVG (a
+// label column, a filled-and-bordered bar track, and a right-aligned
+// dollar figure per row): every bar is independently labeled and its
+// exact dollar amount is always printed next to it, so the chart stays
+// fully readable even if a printer omits color entirely -- it never
+// depends on color alone to distinguish one bar/category from another.
+// `bars` should already be in the exact order they should display,
+// top to bottom.
+function HorizontalBarChart({
+  bars,
 }: {
-  effectiveRent: number;
-  operatingExpenses: number;
-  cashFlow: number;
+  bars: { label: string; value: number; color?: string }[];
 }) {
-  const bars = [
-    { label: "Effective Rent", value: Math.max(0, effectiveRent), color: "#12181C" },
-    { label: "Operating Expenses", value: Math.max(0, operatingExpenses), color: "#C08A3E" },
-    { label: "Cash Flow", value: Math.max(0, cashFlow), color: "#1E8E3E" },
-  ];
-  const max = Math.max(1, ...bars.map((b) => b.value));
-  const chartHeight = 130;
-  const barWidth = 54;
-  const gap = 34;
-  const width = bars.length * barWidth + (bars.length + 1) * gap;
-  const totalHeight = chartHeight + 46;
+  const max = Math.max(1, ...bars.map((b) => Math.abs(b.value)));
   return (
-    <svg viewBox={`0 0 ${width} ${totalHeight}`} className="w-full h-auto" role="img" aria-label="Income versus expenses chart">
-      {bars.map((b, i) => {
-        const h = (b.value / max) * chartHeight;
-        const x = gap + i * (barWidth + gap);
-        const y = 20 + (chartHeight - h);
+    <div className="space-y-1">
+      {bars.map((b) => {
+        const widthPct = Math.max(2, Math.min(100, (Math.abs(b.value) / max) * 100));
         return (
-          <g key={b.label}>
-            <text x={x + barWidth / 2} y={14} textAnchor="middle" fontSize="10" fontWeight="700" fill="#12181C">
-              {formatCents(b.value)}
-            </text>
-            <rect x={x} y={y} width={barWidth} height={h} rx="5" fill={b.color} />
-            <text x={x + barWidth / 2} y={chartHeight + 38} textAnchor="middle" fontSize="8" fill="#12181C" opacity="0.6">
+          <div key={b.label} className="flex items-center gap-2">
+            <span className="w-[40%] flex-shrink-0 text-[7pt] text-ink/70 leading-tight">
               {b.label}
-            </text>
-          </g>
+            </span>
+            <div className="flex-1 h-2.5 rounded-sm bg-paper-2 border border-ink/15 overflow-hidden">
+              <div
+                className="h-full rounded-sm"
+                style={{ width: `${widthPct}%`, backgroundColor: b.color ?? "#12181C" }}
+              />
+            </div>
+            <span className="w-[54px] flex-shrink-0 text-right text-[7pt] font-semibold text-ink">
+              {formatCents(b.value)}
+            </span>
+          </div>
         );
       })}
-    </svg>
-  );
-}
-
-// A pure-SVG donut chart for Capital Allocation, built with the classic
-// stroke-dasharray technique (no charting library). `segments` should
-// already sum to the exact Total Capital Required figure; this
-// component only visualizes the same numbers, it never recalculates
-// them.
-function CapitalAllocationDonut({
-  segments,
-}: {
-  segments: { label: string; value: number; color: string }[];
-}) {
-  const total = segments.reduce((sum, s) => sum + s.value, 0);
-  const radius = 52;
-  const circumference = 2 * Math.PI * radius;
-  let offsetAccum = 0;
-  return (
-    <div className="relative w-[140px] h-[140px] flex-shrink-0">
-      <svg viewBox="0 0 140 140" className="w-full h-full" role="img" aria-label="Capital allocation donut chart">
-        <g transform="translate(70,70) rotate(-90)">
-          <circle r={radius} fill="none" stroke="#EAE3D3" strokeWidth="20" />
-          {total > 0 &&
-            segments.map((s) => {
-              const fraction = s.value / total;
-              const dash = fraction * circumference;
-              const seg = (
-                <circle
-                  key={s.label}
-                  r={radius}
-                  fill="none"
-                  stroke={s.color}
-                  strokeWidth="20"
-                  strokeDasharray={`${dash} ${circumference - dash}`}
-                  strokeDashoffset={-offsetAccum}
-                />
-              );
-              offsetAccum += dash;
-              return seg;
-            })}
-        </g>
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="h-10 w-10 rounded-full bg-paper flex items-center justify-center border border-ink/10">
-          <Home size={16} className="text-brass" />
-        </div>
-      </div>
     </div>
   );
 }
@@ -725,18 +1238,29 @@ type CapitalKey =
   | "upfrontInsurance"
   | "acquisitionFee"
   | "tcAndLlc"
+  | "stackTcFee"
+  | "stackLlcFee"
   | "agentFee"
   | "assignmentFee";
 
 const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   arrears: 0,
   renovationCost: 0,
-  furniture: 13000,
+  furniture: 10000,
   appliances: 3000,
   photos: 300,
   upfrontInsurance: 3000,
   acquisitionFee: 10000,
+  // "TC and LLC" (Traditional Financing, Subject To, Seller Financing,
+  // and Subject To & Seller Finance Hybrid): a single combined field,
+  // unchanged.
   tcAndLlc: 2000,
+  // Stack Method only: TC and LLC are two separate, independently
+  // editable fees instead of the combined field above. Never used by
+  // any other financing structure, and the combined tcAndLlc field above
+  // is never used by Stack Method -- each fee is included exactly once.
+  stackTcFee: 2500,
+  stackLlcFee: 1000,
   agentFee: 0,
   assignmentFee: 0,
 };
@@ -755,7 +1279,23 @@ type PercentKey =
   | "stackAgentCommissionPct"
   | "stackTransactionalFundingFeePct"
   | "stackBankInterestRatePct"
-  | "stackSellerFinanceRatePct";
+  | "stackSellerFinanceRatePct"
+  // Shared by Subject To and Seller Financing (the two modes already
+  // share the same underlying loan-balance/monthly-payment fields):
+  // the existing/seller-financed loan's interest rate, used only for
+  // the Balloon Refinance Analysis's projected-balance calculation,
+  // never for the existing PITI/operating-expense math.
+  | "loanInterestRatePct"
+  // Hybrid's existing subject-to first mortgage rate, used the same way
+  // -- only for its Balloon Refinance Analysis.
+  | "hybridExistingMortgageRatePct"
+  // Balloon Refinance Analysis: Annual Property Appreciation, one
+  // independently editable field per financing structure (each
+  // structure's balloon terms are otherwise entirely independent).
+  | "stackBalloonAppreciationPct"
+  | "subjectToBalloonAppreciationPct"
+  | "sellerFinancingBalloonAppreciationPct"
+  | "hybridBalloonAppreciationPct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
@@ -772,6 +1312,12 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   stackTransactionalFundingFeePct: 2.5,
   stackBankInterestRatePct: 7,
   stackSellerFinanceRatePct: 0,
+  loanInterestRatePct: 6,
+  hybridExistingMortgageRatePct: 6,
+  stackBalloonAppreciationPct: 2,
+  subjectToBalloonAppreciationPct: 2,
+  sellerFinancingBalloonAppreciationPct: 2,
+  hybridBalloonAppreciationPct: 2,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -810,6 +1356,20 @@ function makeDraft<K extends string>(values: Record<K, number>): Record<K, strin
   const draft = {} as Record<K, string>;
   (Object.keys(values) as K[]).forEach((k) => {
     draft[k] = formatCents(values[k]);
+  });
+  return draft;
+}
+
+// Same idea as makeDraft above, but formatted as a plain two-decimal
+// percentage string (e.g. "2.00") rather than currency, for PercentKey
+// draft state. Generating this generically from PERCENT_DEFAULTS (rather
+// than a hand-written object literal) means every new percent field
+// automatically gets a correct initial/reset draft value with no risk of
+// a forgotten key.
+function makePercentDraft<K extends string>(values: Record<K, number>): Record<K, string> {
+  const draft = {} as Record<K, string>;
+  (Object.keys(values) as K[]).forEach((k) => {
+    draft[k] = values[k].toFixed(2);
   });
   return draft;
 }
@@ -1020,36 +1580,22 @@ export default function SharedHousingCalculator() {
   );
 
   const [percent, setPercent] = useState<Record<PercentKey, number>>(PERCENT_DEFAULTS);
-  const [percentDraft, setPercentDraft] = useState<Record<PercentKey, string>>({
-    vacancyPct: PERCENT_DEFAULTS.vacancyPct.toFixed(2),
-    propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
-    platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
-    closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
-    traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
-    traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
-    traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
-    hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
-    stackBankLtvPct: PERCENT_DEFAULTS.stackBankLtvPct.toFixed(2),
-    stackClosingCostPct: PERCENT_DEFAULTS.stackClosingCostPct.toFixed(2),
-    stackAgentCommissionPct: PERCENT_DEFAULTS.stackAgentCommissionPct.toFixed(2),
-    stackTransactionalFundingFeePct: PERCENT_DEFAULTS.stackTransactionalFundingFeePct.toFixed(2),
-    stackBankInterestRatePct: PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2),
-    stackSellerFinanceRatePct: PERCENT_DEFAULTS.stackSellerFinanceRatePct.toFixed(2),
-  });
+  const [percentDraft, setPercentDraft] = useState<Record<PercentKey, string>>(
+    makePercentDraft(PERCENT_DEFAULTS)
+  );
 
-  // Stack Method: Bank Amortization Term, Seller Finance Amortization
-  // Term, and the optional Seller Finance Balloon Term are all entered
-  // in years (not currency or percent), so they follow the same plain
-  // integer draft-string pattern used for the bedroom counts below
-  // rather than the currency/percent field patterns. A balloon term of
-  // 0 means "None" (no balloon).
+  // Stack Method: Bank Amortization Term and Seller Finance Amortization
+  // Term are both entered in years (not currency or percent), so they
+  // follow the same plain integer draft-string pattern used for the
+  // bedroom counts below rather than the currency/percent field
+  // patterns. The narrower "Seller Finance Balloon Term" that used to
+  // live here has been replaced by the comprehensive, whole-structure
+  // Balloon Refinance Analysis feature below (see stackBalloonExists).
   const [stackBankAmortizationYears, setStackBankAmortizationYears] = useState(30);
   const [stackBankAmortizationYearsDraft, setStackBankAmortizationYearsDraft] = useState("30");
   const [stackSellerFinanceAmortizationYears, setStackSellerFinanceAmortizationYears] = useState(30);
   const [stackSellerFinanceAmortizationYearsDraft, setStackSellerFinanceAmortizationYearsDraft] =
     useState("30");
-  const [stackSellerFinanceBalloonYears, setStackSellerFinanceBalloonYears] = useState(0);
-  const [stackSellerFinanceBalloonYearsDraft, setStackSellerFinanceBalloonYearsDraft] = useState("0");
 
   // Are Monthly Seller Finance Payments Required?: the Stack Method's
   // seller-financed balance can exist without any monthly seller-finance
@@ -1067,6 +1613,59 @@ export default function SharedHousingCalculator() {
   // stackLtvAutoSelected below).
   const [stackLongTermRent, setStackLongTermRent] = useState<number | null>(null);
   const [stackLongTermRentDraft, setStackLongTermRentDraft] = useState("");
+
+  // ---------------------------------------------------------------------
+  // Balloon Refinance Analysis: one independent Yes/No + terms + 70% LTV
+  // contingency set per applicable financing structure (Stack Method,
+  // Subject To, Seller Financing, and Hybrid -- never Traditional
+  // Financing). Every "Exists" flag defaults to No/false; Balloon Due in
+  // Years defaults to 5 (must be > 0 whenever a balloon exists); the 70%
+  // LTV contingency defaults to Yes/true. Annual Property Appreciation
+  // defaults are in PERCENT_DEFAULTS above (2% each, independently
+  // editable per structure).
+  // ---------------------------------------------------------------------
+  const [stackBalloonExists, setStackBalloonExists] = useState(false);
+  const [stackBalloonYears, setStackBalloonYears] = useState(5);
+  const [stackBalloonYearsDraft, setStackBalloonYearsDraft] = useState("5");
+  const [stackBalloonHas70LtvContingency, setStackBalloonHas70LtvContingency] = useState(true);
+
+  const [subjectToBalloonExists, setSubjectToBalloonExists] = useState(false);
+  const [subjectToBalloonYears, setSubjectToBalloonYears] = useState(5);
+  const [subjectToBalloonYearsDraft, setSubjectToBalloonYearsDraft] = useState("5");
+  const [subjectToBalloonHas70LtvContingency, setSubjectToBalloonHas70LtvContingency] = useState(true);
+
+  const [sellerFinancingBalloonExists, setSellerFinancingBalloonExists] = useState(false);
+  const [sellerFinancingBalloonYears, setSellerFinancingBalloonYears] = useState(5);
+  const [sellerFinancingBalloonYearsDraft, setSellerFinancingBalloonYearsDraft] = useState("5");
+  const [sellerFinancingBalloonHas70LtvContingency, setSellerFinancingBalloonHas70LtvContingency] =
+    useState(true);
+
+  const [hybridBalloonExists, setHybridBalloonExists] = useState(false);
+  const [hybridBalloonYears, setHybridBalloonYears] = useState(5);
+  const [hybridBalloonYearsDraft, setHybridBalloonYearsDraft] = useState("5");
+  const [hybridBalloonHas70LtvContingency, setHybridBalloonHas70LtvContingency] = useState(true);
+
+  // Subject To and Seller Financing already share the same underlying
+  // loan-balance/monthly-payment fields (see the FinancingKey block
+  // above and the shared input section below); they now also share
+  // these two fields, used only by the Balloon Refinance Analysis to
+  // project that same loan's remaining balance at the balloon date via
+  // its true amortization schedule. Never used for the existing
+  // PITI/operating-expense math, which continues to read only
+  // financing.monthlyPayment exactly as before.
+  const [loanRemainingAmortizationYears, setLoanRemainingAmortizationYears] = useState(30);
+  const [loanRemainingAmortizationYearsDraft, setLoanRemainingAmortizationYearsDraft] = useState("30");
+
+  // Hybrid's existing subject-to first mortgage has the same gap: only
+  // a monthly PITI payment is collected (financing.hybridSubjectToPITI),
+  // never a rate or remaining term, so this pair exists solely to
+  // project that mortgage's remaining balance at the balloon date.
+  const [hybridExistingMortgageAmortizationYears, setHybridExistingMortgageAmortizationYears] =
+    useState(30);
+  const [
+    hybridExistingMortgageAmortizationYearsDraft,
+    setHybridExistingMortgageAmortizationYearsDraft,
+  ] = useState("30");
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
@@ -1272,7 +1871,7 @@ export default function SharedHousingCalculator() {
     const remainingSlots = MAX_PROPERTY_IMAGES - propertyImages.length;
     if (remainingSlots <= 0) {
       setImageError(
-        `Up to ${MAX_PROPERTY_IMAGES} images are supported. Remove an image before adding another.`
+        `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Remove a photo before adding another.`
       );
       return;
     }
@@ -1280,7 +1879,7 @@ export default function SharedHousingCalculator() {
     const toProcess = valid.slice(0, remainingSlots);
     if (valid.length > toProcess.length) {
       setImageError(
-        `Up to ${MAX_PROPERTY_IMAGES} images are supported. Only the first ${toProcess.length} of the selected images were added.`
+        `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Only the first ${toProcess.length} of the selected images were added.`
       );
     }
 
@@ -1303,6 +1902,25 @@ export default function SharedHousingCalculator() {
 
   function handleRemoveImage(id: string) {
     setPropertyImages((prev) => prev.filter((img) => img.id !== id));
+  }
+
+  // Reorders property photos by swapping the photo at `id` with its
+  // immediate left/right neighbor. The array order here is exactly the
+  // order used everywhere the photos are displayed -- the on-page
+  // preview grid, the featured/thumbnail brochure layout in the
+  // printable report (index 0 is always the large featured photo), and
+  // the printable gallery -- so reordering on-page reorders the printed
+  // report identically.
+  function handleMoveImage(id: string, direction: "left" | "right") {
+    setPropertyImages((prev) => {
+      const index = prev.findIndex((img) => img.id === id);
+      if (index === -1) return prev;
+      const targetIndex = direction === "left" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
   }
 
   async function handleReplaceImage(id: string, fileList: FileList | null) {
@@ -1363,28 +1981,11 @@ export default function SharedHousingCalculator() {
     setCapital(CAPITAL_DEFAULTS);
     setCapitalDraft(makeDraft(CAPITAL_DEFAULTS));
     setPercent(PERCENT_DEFAULTS);
-    setPercentDraft({
-      vacancyPct: PERCENT_DEFAULTS.vacancyPct.toFixed(2),
-      propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
-      platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
-      closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
-      traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
-      traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
-      traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
-      hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
-      stackBankLtvPct: PERCENT_DEFAULTS.stackBankLtvPct.toFixed(2),
-      stackClosingCostPct: PERCENT_DEFAULTS.stackClosingCostPct.toFixed(2),
-      stackAgentCommissionPct: PERCENT_DEFAULTS.stackAgentCommissionPct.toFixed(2),
-      stackTransactionalFundingFeePct: PERCENT_DEFAULTS.stackTransactionalFundingFeePct.toFixed(2),
-      stackBankInterestRatePct: PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2),
-      stackSellerFinanceRatePct: PERCENT_DEFAULTS.stackSellerFinanceRatePct.toFixed(2),
-    });
+    setPercentDraft(makePercentDraft(PERCENT_DEFAULTS));
     setStackBankAmortizationYears(30);
     setStackBankAmortizationYearsDraft("30");
     setStackSellerFinanceAmortizationYears(30);
     setStackSellerFinanceAmortizationYearsDraft("30");
-    setStackSellerFinanceBalloonYears(0);
-    setStackSellerFinanceBalloonYearsDraft("0");
     // Are Monthly Seller Finance Payments Required? resets to No, its
     // default, so no monthly seller-finance payment is assumed after a
     // reset.
@@ -1393,6 +1994,29 @@ export default function SharedHousingCalculator() {
     // Bank Loan-to-Value Percentage goes back to being manually selected.
     setStackLongTermRent(null);
     setStackLongTermRentDraft("");
+    // Balloon Refinance Analysis: every "Exists" flag resets to No, the
+    // year fields reset to their 5-year default, and every 70% LTV
+    // contingency resets to Yes, for all four applicable structures.
+    setStackBalloonExists(false);
+    setStackBalloonYears(5);
+    setStackBalloonYearsDraft("5");
+    setStackBalloonHas70LtvContingency(true);
+    setSubjectToBalloonExists(false);
+    setSubjectToBalloonYears(5);
+    setSubjectToBalloonYearsDraft("5");
+    setSubjectToBalloonHas70LtvContingency(true);
+    setSellerFinancingBalloonExists(false);
+    setSellerFinancingBalloonYears(5);
+    setSellerFinancingBalloonYearsDraft("5");
+    setSellerFinancingBalloonHas70LtvContingency(true);
+    setHybridBalloonExists(false);
+    setHybridBalloonYears(5);
+    setHybridBalloonYearsDraft("5");
+    setHybridBalloonHas70LtvContingency(true);
+    setLoanRemainingAmortizationYears(30);
+    setLoanRemainingAmortizationYearsDraft("30");
+    setHybridExistingMortgageAmortizationYears(30);
+    setHybridExistingMortgageAmortizationYearsDraft("30");
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -1835,22 +2459,239 @@ export default function SharedHousingCalculator() {
     [stackSellerFinancedBalance, percent.stackSellerFinanceRatePct, stackSellerAmortMonths]
   );
 
-  // Estimated remaining Seller-Financed Balance due at the balloon date
-  // (the ending balance of whichever scheduled payment falls at the
-  // entered Balloon Term in years), or null when no balloon term has
-  // been entered (0 years = "None").
-  const stackSellerBalloonRemainingBalance = useMemo(() => {
-    if (stackSellerFinanceBalloonYears <= 0) return null;
-    const balloonPaymentNumber = Math.round(stackSellerFinanceBalloonYears * 12);
-    if (balloonPaymentNumber <= 0 || stackSellerAmortization.schedule.length === 0) {
-      return stackSellerFinancedBalance;
-    }
-    const row =
-      stackSellerAmortization.schedule[
-        Math.min(balloonPaymentNumber, stackSellerAmortization.schedule.length) - 1
-      ];
-    return row ? row.endingBalance : 0;
-  }, [stackSellerFinanceBalloonYears, stackSellerAmortization, stackSellerFinancedBalance]);
+  // Stack Method Balloon Refinance Analysis: projected first-position
+  // bank loan balance and seller-finance balance at the entered balloon
+  // year, using true amortization (never simple division), then the
+  // combined projected LTV against the projected appraised value. Only
+  // computed when stackBalloonExists is true; otherwise this is null and
+  // no balloon information is shown anywhere (on-page, print, or CSV).
+  const stackBalloonAnalysis = useMemo(() => {
+    if (!stackBalloonExists) return null;
+    const balloonMonths = Math.max(0, Math.round(stackBalloonYears * 12));
+    const bankBalanceAtBalloon = remainingBalanceAfterMonths(
+      stackBankLoanAmount,
+      percent.stackBankInterestRatePct,
+      stackBankAmortMonths,
+      balloonMonths
+    );
+    const sellerBalanceAtBalloon = stackSellerFinancePaymentsRequired
+      ? remainingBalanceAfterMonths(
+          stackSellerFinancedBalance,
+          percent.stackSellerFinanceRatePct,
+          stackSellerAmortMonths,
+          balloonMonths
+        )
+      : stackSellerFinancedBalance;
+    const projectedDebtAtBalloon = bankBalanceAtBalloon + sellerBalanceAtBalloon;
+    const debtAtYear = (year: number) => {
+      const months = Math.max(0, Math.round(year * 12));
+      const bank = remainingBalanceAfterMonths(
+        stackBankLoanAmount,
+        percent.stackBankInterestRatePct,
+        stackBankAmortMonths,
+        months
+      );
+      const seller = stackSellerFinancePaymentsRequired
+        ? remainingBalanceAfterMonths(
+            stackSellerFinancedBalance,
+            percent.stackSellerFinanceRatePct,
+            stackSellerAmortMonths,
+            months
+          )
+        : stackSellerFinancedBalance;
+      return bank + seller;
+    };
+    return {
+      ...buildBalloonAnalysis({
+        balloonYears: stackBalloonYears,
+        appreciationPct: percent.stackBalloonAppreciationPct,
+        has70LtvContingency: stackBalloonHas70LtvContingency,
+        purchasePrice: financing.purchasePrice,
+        projectedDebtAtBalloon,
+        amortizationCeilingYears: stackBankAmortizationYears,
+        debtAtYear,
+      }),
+      bankBalanceAtBalloon,
+      sellerBalanceAtBalloon,
+    };
+  }, [
+    stackBalloonExists,
+    stackBalloonYears,
+    stackBalloonHas70LtvContingency,
+    percent.stackBalloonAppreciationPct,
+    stackBankLoanAmount,
+    percent.stackBankInterestRatePct,
+    stackBankAmortMonths,
+    stackBankAmortizationYears,
+    stackSellerFinancePaymentsRequired,
+    stackSellerFinancedBalance,
+    percent.stackSellerFinanceRatePct,
+    stackSellerAmortMonths,
+    financing.purchasePrice,
+  ]);
+
+  // Subject To Balloon Refinance Analysis: projects the existing
+  // mortgage's remaining balance at the balloon date using its true
+  // amortization schedule (financing.loanBalance as the starting
+  // principal, percent.loanInterestRatePct and
+  // loanRemainingAmortizationYears as its terms -- see the shared
+  // Subject To / Seller Financing input section above). Standalone
+  // Subject To has no separate seller-carried balance, so the projected
+  // debt is this mortgage balance alone.
+  const subjectToBalloonAnalysis = useMemo(() => {
+    if (!subjectToBalloonExists) return null;
+    const totalMonths = Math.max(1, Math.round(loanRemainingAmortizationYears * 12));
+    const balloonMonths = Math.max(0, Math.round(subjectToBalloonYears * 12));
+    const mortgageBalanceAtBalloon = remainingBalanceAfterMonths(
+      financing.loanBalance,
+      percent.loanInterestRatePct,
+      totalMonths,
+      balloonMonths
+    );
+    const debtAtYear = (year: number) =>
+      remainingBalanceAfterMonths(
+        financing.loanBalance,
+        percent.loanInterestRatePct,
+        totalMonths,
+        Math.max(0, Math.round(year * 12))
+      );
+    return {
+      ...buildBalloonAnalysis({
+        balloonYears: subjectToBalloonYears,
+        appreciationPct: percent.subjectToBalloonAppreciationPct,
+        has70LtvContingency: subjectToBalloonHas70LtvContingency,
+        purchasePrice: financing.purchasePrice,
+        projectedDebtAtBalloon: mortgageBalanceAtBalloon,
+        amortizationCeilingYears: loanRemainingAmortizationYears,
+        debtAtYear,
+      }),
+      mortgageBalanceAtBalloon,
+    };
+  }, [
+    subjectToBalloonExists,
+    subjectToBalloonYears,
+    subjectToBalloonHas70LtvContingency,
+    percent.subjectToBalloonAppreciationPct,
+    financing.loanBalance,
+    percent.loanInterestRatePct,
+    loanRemainingAmortizationYears,
+    financing.purchasePrice,
+  ]);
+
+  // Seller Financing Balloon Refinance Analysis: identical math to
+  // Subject To above (the two modes share the same underlying
+  // loan-balance/rate/amortization fields), computed completely
+  // independently since each mode's balloon Yes/No, years, appreciation,
+  // and 70% LTV contingency are all separate state.
+  const sellerFinancingBalloonAnalysis = useMemo(() => {
+    if (!sellerFinancingBalloonExists) return null;
+    const totalMonths = Math.max(1, Math.round(loanRemainingAmortizationYears * 12));
+    const balloonMonths = Math.max(0, Math.round(sellerFinancingBalloonYears * 12));
+    const sellerFinanceBalanceAtBalloon = remainingBalanceAfterMonths(
+      financing.loanBalance,
+      percent.loanInterestRatePct,
+      totalMonths,
+      balloonMonths
+    );
+    const debtAtYear = (year: number) =>
+      remainingBalanceAfterMonths(
+        financing.loanBalance,
+        percent.loanInterestRatePct,
+        totalMonths,
+        Math.max(0, Math.round(year * 12))
+      );
+    return {
+      ...buildBalloonAnalysis({
+        balloonYears: sellerFinancingBalloonYears,
+        appreciationPct: percent.sellerFinancingBalloonAppreciationPct,
+        has70LtvContingency: sellerFinancingBalloonHas70LtvContingency,
+        purchasePrice: financing.purchasePrice,
+        projectedDebtAtBalloon: sellerFinanceBalanceAtBalloon,
+        amortizationCeilingYears: loanRemainingAmortizationYears,
+        debtAtYear,
+      }),
+      sellerFinanceBalanceAtBalloon,
+    };
+  }, [
+    sellerFinancingBalloonExists,
+    sellerFinancingBalloonYears,
+    sellerFinancingBalloonHas70LtvContingency,
+    percent.sellerFinancingBalloonAppreciationPct,
+    financing.loanBalance,
+    percent.loanInterestRatePct,
+    loanRemainingAmortizationYears,
+    financing.purchasePrice,
+  ]);
+
+  // Hybrid Balloon Refinance Analysis: combines the projected existing
+  // subject-to first mortgage balance (financing.hybridExistingMortgageBalance
+  // as starting principal, its own dedicated rate/amortization fields)
+  // with the projected seller-finance balance (hybridSellerFinancedBalance,
+  // percent.hybridSellerFinanceRatePct, fixed 30-year amortization --
+  // Hybrid always assumes monthly seller-finance payments are made, so
+  // this always uses the amortized balance, never the full original
+  // balance).
+  const hybridBalloonAnalysis = useMemo(() => {
+    if (!hybridBalloonExists) return null;
+    const mortgageTotalMonths = Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12));
+    const balloonMonths = Math.max(0, Math.round(hybridBalloonYears * 12));
+    const mortgageBalanceAtBalloon = remainingBalanceAfterMonths(
+      financing.hybridExistingMortgageBalance,
+      percent.hybridExistingMortgageRatePct,
+      mortgageTotalMonths,
+      balloonMonths
+    );
+    const sellerFinanceBalanceAtBalloon = remainingBalanceAfterMonths(
+      hybridSellerFinancedBalance,
+      percent.hybridSellerFinanceRatePct,
+      TRADITIONAL_NUM_PAYMENTS,
+      balloonMonths
+    );
+    const projectedDebtAtBalloon = mortgageBalanceAtBalloon + sellerFinanceBalanceAtBalloon;
+    const debtAtYear = (year: number) => {
+      const months = Math.max(0, Math.round(year * 12));
+      const mortgage = remainingBalanceAfterMonths(
+        financing.hybridExistingMortgageBalance,
+        percent.hybridExistingMortgageRatePct,
+        mortgageTotalMonths,
+        months
+      );
+      const sellerFinance = remainingBalanceAfterMonths(
+        hybridSellerFinancedBalance,
+        percent.hybridSellerFinanceRatePct,
+        TRADITIONAL_NUM_PAYMENTS,
+        months
+      );
+      return mortgage + sellerFinance;
+    };
+    return {
+      ...buildBalloonAnalysis({
+        balloonYears: hybridBalloonYears,
+        appreciationPct: percent.hybridBalloonAppreciationPct,
+        has70LtvContingency: hybridBalloonHas70LtvContingency,
+        purchasePrice: financing.purchasePrice,
+        projectedDebtAtBalloon,
+        amortizationCeilingYears: Math.max(
+          hybridExistingMortgageAmortizationYears,
+          TRADITIONAL_NUM_PAYMENTS / 12
+        ),
+        debtAtYear,
+      }),
+      mortgageBalanceAtBalloon,
+      sellerFinanceBalanceAtBalloon,
+    };
+  }, [
+    hybridBalloonExists,
+    hybridBalloonYears,
+    hybridBalloonHas70LtvContingency,
+    percent.hybridBalloonAppreciationPct,
+    financing.hybridExistingMortgageBalance,
+    percent.hybridExistingMortgageRatePct,
+    hybridExistingMortgageAmortizationYears,
+    hybridSellerFinancedBalance,
+    percent.hybridSellerFinanceRatePct,
+    financing.purchasePrice,
+  ]);
 
   // Total Monthly Housing Payment = Estimated Monthly Bank PITI +
   // Estimated Monthly Seller Finance Payment.
@@ -2043,6 +2884,15 @@ export default function SharedHousingCalculator() {
     // Required (the seller-financed proceeds offset some or all of the
     // buyer's other cash needs); a negative result (cash required)
     // increases it. Never allowed to fall below $0.
+    // Stack Method uses two separate fees (stackTcFee, stackLlcFee)
+    // instead of the combined tcAndLlc field used by every other
+    // financing structure, and never includes Upfront Insurance as a
+    // separate capital item (Annual Property Insurance is still fully
+    // accounted for inside Estimated Monthly Bank PITI above -- this
+    // only removes the separate upfront capital line item). Traditional
+    // Financing also excludes Upfront Insurance as a separate capital
+    // item for the same reason (Annual/Monthly Property Insurance is
+    // still fully accounted for inside its PITI payment).
     const stackBaseCapitalRequired = round2(
       capital.renovationCost +
         capital.furniture +
@@ -2050,9 +2900,9 @@ export default function SharedHousingCalculator() {
         capital.photos +
         holdingCosts +
         RESERVES_AMOUNT +
-        capital.upfrontInsurance +
         capital.acquisitionFee +
-        capital.tcAndLlc
+        capital.stackTcFee +
+        capital.stackLlcFee
     );
     // Positive when it adds to Base Capital Required (buyer cash
     // required at closing), negative when it reduces it (cash to buyer).
@@ -2074,7 +2924,7 @@ export default function SharedHousingCalculator() {
               capital.photos +
               holdingCosts +
               RESERVES_AMOUNT +
-              capital.upfrontInsurance +
+              (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
               capital.acquisitionFee +
               capital.tcAndLlc +
               closingCosts +
@@ -2306,18 +3156,6 @@ export default function SharedHousingCalculator() {
                             label: "Seller Finance Amortization",
                             value: `${stackSellerFinanceAmortizationYears} Years (${stackSellerAmortMonths} Monthly Payments)`,
                           },
-                          ...(stackSellerFinanceBalloonYears > 0
-                            ? [
-                                {
-                                  label: "Seller Finance Balloon Term",
-                                  value: `${stackSellerFinanceBalloonYears} Years`,
-                                },
-                                {
-                                  label: "Estimated Balloon Remaining Balance",
-                                  value: formatCents(stackSellerBalloonRemainingBalance ?? 0),
-                                },
-                              ]
-                            : []),
                         ]
                       : []),
                     {
@@ -2403,9 +3241,9 @@ export default function SharedHousingCalculator() {
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
                 { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
-                { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
                 { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
-                { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
+                { label: "TC Fee", value: formatCents(capital.stackTcFee) },
+                { label: "LLC Entity Formation Cost", value: formatCents(capital.stackLlcFee) },
                 {
                   label: "Bank Loan Down Payment, Stack Method Closing Costs, Agent Fees, and Assignment Fee",
                   value: "Included in Cash to Close, Leg 1 above",
@@ -2436,7 +3274,9 @@ export default function SharedHousingCalculator() {
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
                 { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
-                { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
+                ...(financingMode === "traditional"
+                  ? []
+                  : [{ label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) }]),
                 { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
                 { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
                 ...(financingMode === "traditional"
@@ -2507,8 +3347,6 @@ export default function SharedHousingCalculator() {
       stackMonthlyBankPITI,
       stackSellerFinanceAmortizationYears,
       stackSellerAmortMonths,
-      stackSellerFinanceBalloonYears,
-      stackSellerBalloonRemainingBalance,
       stackMonthlySellerFinancePayment,
       stackCashToCloseLeg1,
       stackTransactionalFundingFee,
@@ -2566,6 +3404,18 @@ export default function SharedHousingCalculator() {
                   value: formatCents(hybridMonthlySellerFinancePayment),
                 },
                 { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+                ...(hybridBalloonAnalysis
+                  ? balloonAnalysisRows(hybridBalloonAnalysis, [
+                      {
+                        label: "Existing Subject-To Balance at Balloon",
+                        value: hybridBalloonAnalysis.mortgageBalanceAtBalloon,
+                      },
+                      {
+                        label: "Seller-Finance Balance at Balloon",
+                        value: hybridBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                      },
+                    ])
+                  : [{ label: "Balloon Exists", value: "No" }]),
               ]
             : financingMode === "stackMethod"
               ? [
@@ -2616,11 +3466,6 @@ export default function SharedHousingCalculator() {
                           label: "Seller Finance Amortization",
                           value: `${stackSellerFinanceAmortizationYears} Years`,
                         },
-                        {
-                          label: "Seller Finance Balloon Term",
-                          value:
-                            stackSellerFinanceBalloonYears > 0 ? `${stackSellerFinanceBalloonYears} Years` : "None",
-                        },
                       ]
                     : []),
                   {
@@ -2653,6 +3498,12 @@ export default function SharedHousingCalculator() {
                     value: stackZeroOutOfPocket,
                   },
                   { label: "Adjusted Total Capital Required", value: formatWhole(results.totalCapitalRequired) },
+                  ...(stackBalloonAnalysis
+                    ? balloonAnalysisRows(stackBalloonAnalysis, [
+                        { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
+                        { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+                      ])
+                    : [{ label: "Balloon Exists", value: "No" }]),
                 ]
               : [
                   { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
@@ -2664,6 +3515,23 @@ export default function SharedHousingCalculator() {
                   },
                   { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
                   { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+                  ...(financingMode === "subjectTo" && subjectToBalloonAnalysis
+                    ? balloonAnalysisRows(subjectToBalloonAnalysis, [
+                        {
+                          label: "Projected Existing Mortgage Balance at Balloon",
+                          value: subjectToBalloonAnalysis.mortgageBalanceAtBalloon,
+                        },
+                      ])
+                    : financingMode === "sellerFinancing" && sellerFinancingBalloonAnalysis
+                      ? balloonAnalysisRows(sellerFinancingBalloonAnalysis, [
+                          {
+                            label: "Projected Seller-Finance Balance at Balloon",
+                            value: sellerFinancingBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                          },
+                        ])
+                      : financingMode === "subjectTo" || financingMode === "sellerFinancing"
+                        ? [{ label: "Balloon Exists", value: "No" }]
+                        : []),
                 ]),
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
@@ -2711,69 +3579,100 @@ export default function SharedHousingCalculator() {
       stackLeverageRatioDecimal,
       stackBankAmortizationYears,
       stackSellerFinanceAmortizationYears,
-      stackSellerFinanceBalloonYears,
       stackSellerFinancePaymentsRequired,
       stackMonthlySellerFinancePayment,
       stackEstimatedBuyerCashAtClosing,
       stackZeroOutOfPocket,
       stackEffectiveBankLtvPct,
+      stackBalloonAnalysis,
+      subjectToBalloonAnalysis,
+      sellerFinancingBalloonAnalysis,
+      hybridBalloonAnalysis,
     ]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
 
 
-  // Capital Allocation donut chart data for the printable report: the
+  // Monthly Income and Expense Breakdown chart data for the printable
+  // report: every figure that makes up the monthly cash flow picture, as
+  // its own labeled horizontal bar, always in this same order regardless
+  // of financing structure. "Total PITI" here always refers to
+  // results.monthlyHousingPayment -- the exact same figure printed
+  // elsewhere in the report as "Total PITI" (see printHousingPaymentLabel
+  // above) -- so this chart never introduces a second, different monthly
+  // housing figure.
+  const monthlyIncomeExpenseBars = useMemo(
+    () => [
+      { label: "Gross Monthly Rent", value: results.grossMonthlyRent, color: "#12181C" },
+      { label: "Effective Monthly Rent", value: results.effectiveRentAfterVacancy, color: "#12181C" },
+      { label: "Total PITI", value: results.monthlyHousingPayment, color: "#C08A3E" },
+      { label: "Platform Fees", value: results.platformFees, color: "#C08A3E" },
+      { label: "Property Management", value: results.propertyManagementFee, color: "#C08A3E" },
+      { label: "Maintenance", value: results.maintenanceMonthly, color: "#C08A3E" },
+      { label: "Utilities", value: results.utilitiesMonthly, color: "#C08A3E" },
+      { label: "Cleaning", value: results.cleaningMonthly, color: "#C08A3E" },
+      { label: "Lawn Care", value: results.lawnCareMonthly, color: "#C08A3E" },
+      { label: "Pest Control", value: results.pestControlMonthly, color: "#C08A3E" },
+      { label: "Estimated Monthly Cash Flow", value: results.monthlyCashFlow, color: "#1E8E3E" },
+    ],
+    [
+      results.grossMonthlyRent,
+      results.effectiveRentAfterVacancy,
+      results.monthlyHousingPayment,
+      results.platformFees,
+      results.propertyManagementFee,
+      results.maintenanceMonthly,
+      results.utilitiesMonthly,
+      results.cleaningMonthly,
+      results.lawnCareMonthly,
+      results.pestControlMonthly,
+      results.monthlyCashFlow,
+    ]
+  );
+
+  // Capital Required Breakdown chart data for the printable report: the
   // same figures that make up Total Capital Required (see the
-  // totalCapitalRequired calculation above), grouped into six visual
-  // categories rather than fourteen individual line items. "Other
-  // Costs" is the sum of every remaining capital line item, so the six
-  // values here always add up to exactly results.totalCapitalRequired.
-  // Zero-value categories are omitted so the chart and legend only show
-  // what is actually part of this deal's capital stack.
-  const capitalAllocationSegments = useMemo(() => {
-    // Stack Method: Bank Loan Down Payment, Stack Method Closing Costs,
-    // Agent Fees, and the Assignment Fee are all already inside Cash to
-    // Close, Leg 1 (never part of Total Capital Required at all for this
-    // structure), and the signed Estimated Cash to Buyer at Closing
-    // adjustment is a closing-day credit or debit against the total
-    // rather than a spending category, so it cannot be represented as a
-    // positively-sized pie segment. The chart instead shows how Base
-    // Capital Required (before that adjustment) breaks down; the
-    // adjustment itself and the resulting Adjusted Total Capital
-    // Required are shown separately in the Capital Required
-    // Reconciliation.
+  // totalCapitalRequired calculation above), itemized as individual bars
+  // rather than a donut chart. "Other Applicable Costs" is the sum of
+  // every remaining small capital line item, so the bars here always add
+  // up to exactly results.totalCapitalRequired (Stack Method: exactly
+  // results.stackBaseCapitalRequired, before the separate signed closing
+  // adjustment shown in the Capital Required Reconciliation). Zero-value
+  // bars are omitted.
+  const capitalRequiredBreakdownBars = useMemo(() => {
     if (financingMode === "stackMethod") {
-      const otherCosts = round2(
-        capital.furniture + capital.appliances + capital.photos + results.holdingCosts + capital.tcAndLlc
-      );
+      const otherApplicableCosts = round2(capital.photos + capital.acquisitionFee);
       return [
-        { label: "Acquisition Fee", value: capital.acquisitionFee, color: "#C08A3E" },
         { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
+        { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
+        { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
+        { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
         { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
-        { label: "Upfront Insurance", value: capital.upfrontInsurance, color: "#8B9795" },
-        { label: "Other Costs", value: otherCosts, color: "#C9BFA6" },
-      ].filter((segment) => segment.value > 0);
+        { label: "TC Fee", value: capital.stackTcFee, color: "#C08A3E" },
+        { label: "LLC Entity Formation Cost", value: capital.stackLlcFee, color: "#C08A3E" },
+        { label: "Other Applicable Costs", value: otherApplicableCosts, color: "#C9BFA6" },
+      ].filter((bar) => bar.value > 0);
     }
-    const otherCosts = round2(
+    const otherApplicableCosts = round2(
       capital.arrears +
-        capital.furniture +
-        capital.appliances +
-        capital.photos +
-        results.holdingCosts +
-        capital.tcAndLlc +
-        results.closingCosts +
-        capital.agentFee +
-        capital.assignmentFee
+        (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
+        capital.acquisitionFee +
+        capital.photos
     );
     return [
       { label: downPaymentLabel, value: results.downPaymentForCapital, color: "#12181C" },
-      { label: "Acquisition Fee", value: capital.acquisitionFee, color: "#C08A3E" },
       { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
+      { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
+      { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
+      { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
       { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
-      { label: "Upfront Insurance", value: capital.upfrontInsurance, color: "#8B9795" },
-      { label: "Other Costs", value: otherCosts, color: "#C9BFA6" },
-    ].filter((segment) => segment.value > 0);
+      { label: "TC and LLC", value: capital.tcAndLlc, color: "#C08A3E" },
+      { label: "Closing Costs", value: results.closingCosts, color: "#C08A3E" },
+      { label: "Agent Fee", value: capital.agentFee, color: "#C08A3E" },
+      { label: "Assignment Fee", value: capital.assignmentFee, color: "#C08A3E" },
+      { label: "Other Applicable Costs", value: otherApplicableCosts, color: "#C9BFA6" },
+    ].filter((bar) => bar.value > 0);
   }, [
     downPaymentLabel,
     results.downPaymentForCapital,
@@ -3054,14 +3953,36 @@ export default function SharedHousingCalculator() {
           </p>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {propertyImages.map((img) => (
+            {propertyImages.map((img, index) => (
               <div key={img.id} className="relative border border-line-dark bg-white p-2">
                 <img
                   src={img.dataUrl}
                   alt={img.name || "Property photo"}
                   className="w-full h-32 object-cover"
                 />
-                <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="mt-2 flex items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleMoveImage(img.id, "left")}
+                      disabled={index === 0}
+                      aria-label="Move photo earlier"
+                      title="Move earlier"
+                      className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                    >
+                      <ArrowLeft size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMoveImage(img.id, "right")}
+                      disabled={index === propertyImages.length - 1}
+                      aria-label="Move photo later"
+                      title="Move later"
+                      className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                    >
+                      <ArrowRight size={12} />
+                    </button>
+                  </div>
                   <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
                     Replace
                     <input
@@ -3082,6 +4003,11 @@ export default function SharedHousingCalculator() {
                     Remove
                   </button>
                 </div>
+                {index === 0 && propertyImages.length > 1 && (
+                  <p className="mt-1.5 text-[10px] uppercase tracking-wide text-brass/80">
+                    Featured Photo
+                  </p>
+                )}
               </div>
             ))}
 
@@ -3117,9 +4043,11 @@ export default function SharedHousingCalculator() {
           )}
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-            Up to {MAX_PROPERTY_IMAGES} images. Supported formats: JPG, PNG,
-            and WEBP. Images are used only to personalize the underwriting
-            summary generated from this calculator.
+            {propertyImages.length >= MAX_PROPERTY_IMAGES
+              ? `You can upload up to ${MAX_PROPERTY_IMAGES} property photos.`
+              : `You can upload up to ${MAX_PROPERTY_IMAGES} property photos. Supported formats: JPG, PNG, and WEBP.`}{" "}
+            Images are used only to personalize the underwriting summary
+            generated from this calculator.
           </p>
         </div>
 
@@ -3423,7 +4351,98 @@ export default function SharedHousingCalculator() {
                     : "Added to the monthly housing payment."
                 }
               />
+
+              {((financingMode === "subjectTo" && subjectToBalloonExists) ||
+                (financingMode === "sellerFinancing" && sellerFinancingBalloonExists)) && (
+                <>
+                  <PercentField
+                    id="loanInterestRatePct"
+                    label={
+                      financingMode === "subjectTo" ? "Existing Mortgage Interest Rate" : "Seller Financing Interest Rate"
+                    }
+                    draft={percentDraft.loanInterestRatePct}
+                    onChange={(raw) => handlePercentChange("loanInterestRatePct", raw)}
+                    onBlur={() => handlePercentBlur("loanInterestRatePct")}
+                    info="Decimals are allowed. Used only for the Balloon Refinance Analysis's projected loan-balance calculation below, never for the monthly payment above."
+                  />
+                  <IntegerField
+                    id="loanRemainingAmortizationYears"
+                    label="Remaining Amortization (Years)"
+                    draft={loanRemainingAmortizationYearsDraft}
+                    onChange={(raw) => {
+                      setLoanRemainingAmortizationYearsDraft(raw);
+                      setLoanRemainingAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                    }}
+                    onBlur={() =>
+                      setLoanRemainingAmortizationYearsDraft(String(Math.max(1, loanRemainingAmortizationYears)))
+                    }
+                    info="How many years remain on this loan's amortization schedule, starting today. Used only for the Balloon Refinance Analysis below."
+                  />
+                </>
+              )}
             </div>
+          )}
+
+          {financingMode === "subjectTo" && (
+            <BalloonRefinanceAnalysisPanel
+              balloonExists={subjectToBalloonExists}
+              onToggleExists={setSubjectToBalloonExists}
+              balloonYearsDraft={subjectToBalloonYearsDraft}
+              onBalloonYearsChange={(raw) => {
+                setSubjectToBalloonYearsDraft(raw);
+                setSubjectToBalloonYears(Math.max(1, parseTypedInt(raw)));
+              }}
+              onBalloonYearsBlur={() =>
+                setSubjectToBalloonYearsDraft(String(Math.max(1, subjectToBalloonYears)))
+              }
+              appreciationDraft={percentDraft.subjectToBalloonAppreciationPct}
+              onAppreciationChange={(raw) => handlePercentChange("subjectToBalloonAppreciationPct", raw)}
+              onAppreciationBlur={() => handlePercentBlur("subjectToBalloonAppreciationPct")}
+              has70LtvContingency={subjectToBalloonHas70LtvContingency}
+              onToggleContingency={setSubjectToBalloonHas70LtvContingency}
+              analysis={subjectToBalloonAnalysis}
+              loanBalanceRows={
+                subjectToBalloonAnalysis
+                  ? [
+                      {
+                        label: "Projected Existing Mortgage Balance at Balloon",
+                        value: subjectToBalloonAnalysis.mortgageBalanceAtBalloon,
+                      },
+                    ]
+                  : []
+              }
+            />
+          )}
+
+          {financingMode === "sellerFinancing" && (
+            <BalloonRefinanceAnalysisPanel
+              balloonExists={sellerFinancingBalloonExists}
+              onToggleExists={setSellerFinancingBalloonExists}
+              balloonYearsDraft={sellerFinancingBalloonYearsDraft}
+              onBalloonYearsChange={(raw) => {
+                setSellerFinancingBalloonYearsDraft(raw);
+                setSellerFinancingBalloonYears(Math.max(1, parseTypedInt(raw)));
+              }}
+              onBalloonYearsBlur={() =>
+                setSellerFinancingBalloonYearsDraft(String(Math.max(1, sellerFinancingBalloonYears)))
+              }
+              appreciationDraft={percentDraft.sellerFinancingBalloonAppreciationPct}
+              onAppreciationChange={(raw) => handlePercentChange("sellerFinancingBalloonAppreciationPct", raw)}
+              onAppreciationBlur={() => handlePercentBlur("sellerFinancingBalloonAppreciationPct")}
+              has70LtvContingency={sellerFinancingBalloonHas70LtvContingency}
+              onToggleContingency={setSellerFinancingBalloonHas70LtvContingency}
+              analysis={sellerFinancingBalloonAnalysis}
+              loanBalanceRows={
+                sellerFinancingBalloonAnalysis
+                  ? [
+                      {
+                        label: "Projected Seller-Finance Balance at Balloon",
+                        value: sellerFinancingBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                      },
+                    ]
+                  : []
+              }
+            />
           )}
 
           {/* ------------------------------------------------------ */}
@@ -3695,6 +4714,33 @@ export default function SharedHousingCalculator() {
                     onBlur={() => handleFinancingBlur("hybridSubjectToPITI")}
                     helperText="The buyer takes over making this existing monthly payment."
                   />
+                  {hybridBalloonExists && (
+                    <>
+                      <PercentField
+                        id="hybridExistingMortgageRatePct"
+                        label="Existing Mortgage Interest Rate"
+                        draft={percentDraft.hybridExistingMortgageRatePct}
+                        onChange={(raw) => handlePercentChange("hybridExistingMortgageRatePct", raw)}
+                        onBlur={() => handlePercentBlur("hybridExistingMortgageRatePct")}
+                        info="Decimals are allowed. Used only for the Balloon Refinance Analysis's projected loan-balance calculation below, never for the monthly payment above."
+                      />
+                      <IntegerField
+                        id="hybridExistingMortgageAmortizationYears"
+                        label="Remaining Amortization (Years)"
+                        draft={hybridExistingMortgageAmortizationYearsDraft}
+                        onChange={(raw) => {
+                          setHybridExistingMortgageAmortizationYearsDraft(raw);
+                          setHybridExistingMortgageAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                        }}
+                        onBlur={() =>
+                          setHybridExistingMortgageAmortizationYearsDraft(
+                            String(Math.max(1, hybridExistingMortgageAmortizationYears))
+                          )
+                        }
+                        info="How many years remain on the existing mortgage's amortization schedule, starting today. Used only for the Balloon Refinance Analysis below."
+                      />
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -3754,6 +4800,37 @@ export default function SharedHousingCalculator() {
                   </span>
                 </div>
               </div>
+
+              <BalloonRefinanceAnalysisPanel
+                balloonExists={hybridBalloonExists}
+                onToggleExists={setHybridBalloonExists}
+                balloonYearsDraft={hybridBalloonYearsDraft}
+                onBalloonYearsChange={(raw) => {
+                  setHybridBalloonYearsDraft(raw);
+                  setHybridBalloonYears(Math.max(1, parseTypedInt(raw)));
+                }}
+                onBalloonYearsBlur={() => setHybridBalloonYearsDraft(String(Math.max(1, hybridBalloonYears)))}
+                appreciationDraft={percentDraft.hybridBalloonAppreciationPct}
+                onAppreciationChange={(raw) => handlePercentChange("hybridBalloonAppreciationPct", raw)}
+                onAppreciationBlur={() => handlePercentBlur("hybridBalloonAppreciationPct")}
+                has70LtvContingency={hybridBalloonHas70LtvContingency}
+                onToggleContingency={setHybridBalloonHas70LtvContingency}
+                analysis={hybridBalloonAnalysis}
+                loanBalanceRows={
+                  hybridBalloonAnalysis
+                    ? [
+                        {
+                          label: "Existing Subject-To Balance at Balloon",
+                          value: hybridBalloonAnalysis.mortgageBalanceAtBalloon,
+                        },
+                        {
+                          label: "Seller-Finance Balance at Balloon",
+                          value: hybridBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                        },
+                      ]
+                    : []
+                }
+              />
 
               {/* Seller Finance Amortization Schedule: covers only the
                   seller-financed balance. The existing subject-to
@@ -4238,21 +5315,6 @@ export default function SharedHousingCalculator() {
                         value="30 Years"
                         helperText="Fixed at a standard 30-year (360 monthly payment) amortization; not editable."
                       />
-                      <IntegerField
-                        id="stackSellerFinanceBalloonYears"
-                        label="Seller Finance Balloon Term (Years, Optional)"
-                        draft={stackSellerFinanceBalloonYearsDraft}
-                        onChange={(raw) => {
-                          setStackSellerFinanceBalloonYearsDraft(raw);
-                          setStackSellerFinanceBalloonYears(Math.max(0, parseTypedInt(raw)));
-                        }}
-                        onBlur={() =>
-                          setStackSellerFinanceBalloonYearsDraft(
-                            String(Math.max(0, stackSellerFinanceBalloonYears))
-                          )
-                        }
-                        info="Enter 0 for no balloon (None). The monthly payment is still based on the full amortization term above; only the remaining balance due at the balloon date changes."
-                      />
                     </div>
                     <div className="mt-6 rounded border border-brass bg-paper-2 p-6">
                       <p className="eyebrow text-brass mb-1.5">Estimated Monthly Seller Finance Payment</p>
@@ -4260,15 +5322,6 @@ export default function SharedHousingCalculator() {
                         {formatCents(stackMonthlySellerFinancePayment)}
                       </p>
                     </div>
-                    {stackSellerFinanceBalloonYears > 0 && (
-                      <div className="mt-4">
-                        <ReadOnlyStat
-                          label="Estimated Balloon Remaining Balance"
-                          value={formatCents(stackSellerBalloonRemainingBalance ?? 0)}
-                          helperText={`Estimated seller-financed balance still owed after ${stackSellerFinanceBalloonYears} years of payments at the selected amortization term.`}
-                        />
-                      </div>
-                    )}
                   </>
                 ) : (
                   <p className="mt-4 text-xs text-ink/50 leading-relaxed">
@@ -4342,6 +5395,31 @@ export default function SharedHousingCalculator() {
                   buyer.
                 </p>
               </div>
+
+              <BalloonRefinanceAnalysisPanel
+                balloonExists={stackBalloonExists}
+                onToggleExists={setStackBalloonExists}
+                balloonYearsDraft={stackBalloonYearsDraft}
+                onBalloonYearsChange={(raw) => {
+                  setStackBalloonYearsDraft(raw);
+                  setStackBalloonYears(Math.max(1, parseTypedInt(raw)));
+                }}
+                onBalloonYearsBlur={() => setStackBalloonYearsDraft(String(Math.max(1, stackBalloonYears)))}
+                appreciationDraft={percentDraft.stackBalloonAppreciationPct}
+                onAppreciationChange={(raw) => handlePercentChange("stackBalloonAppreciationPct", raw)}
+                onAppreciationBlur={() => handlePercentBlur("stackBalloonAppreciationPct")}
+                has70LtvContingency={stackBalloonHas70LtvContingency}
+                onToggleContingency={setStackBalloonHas70LtvContingency}
+                analysis={stackBalloonAnalysis}
+                loanBalanceRows={
+                  stackBalloonAnalysis
+                    ? [
+                        { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
+                        { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+                      ]
+                    : []
+                }
+              />
 
               {/* Bank Loan Amortization Schedule */}
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -4826,14 +5904,16 @@ export default function SharedHousingCalculator() {
               value={formatWhole(RESERVES_AMOUNT)}
               helperText="Estimated reserve funds set aside for the property."
             />
-            <CurrencyField
-              id="upfrontInsurance"
-              label="Upfront Insurance"
-              draft={capitalDraft.upfrontInsurance}
-              onChange={(raw) => handleCapitalChange("upfrontInsurance", raw)}
-              onBlur={() => handleCapitalBlur("upfrontInsurance")}
-              helperText="Prepaid or upfront insurance premium, separate from the annual insurance used in monthly operating expenses."
-            />
+            {financingMode !== "stackMethod" && financingMode !== "traditional" && (
+              <CurrencyField
+                id="upfrontInsurance"
+                label="Upfront Insurance"
+                draft={capitalDraft.upfrontInsurance}
+                onChange={(raw) => handleCapitalChange("upfrontInsurance", raw)}
+                onBlur={() => handleCapitalBlur("upfrontInsurance")}
+                helperText="Prepaid or upfront insurance premium, separate from the annual insurance used in monthly operating expenses."
+              />
+            )}
             <CurrencyField
               id="acquisitionFee"
               label="Acquisition Fee"
@@ -4841,14 +5921,35 @@ export default function SharedHousingCalculator() {
               onChange={(raw) => handleCapitalChange("acquisitionFee", raw)}
               onBlur={() => handleCapitalBlur("acquisitionFee")}
             />
-            <CurrencyField
-              id="tcAndLlc"
-              label="TC and LLC"
-              draft={capitalDraft.tcAndLlc}
-              onChange={(raw) => handleCapitalChange("tcAndLlc", raw)}
-              onBlur={() => handleCapitalBlur("tcAndLlc")}
-              helperText="Transaction coordination and entity formation costs."
-            />
+            {financingMode === "stackMethod" ? (
+              <>
+                <CurrencyField
+                  id="stackTcFee"
+                  label="TC Fee"
+                  draft={capitalDraft.stackTcFee}
+                  onChange={(raw) => handleCapitalChange("stackTcFee", raw)}
+                  onBlur={() => handleCapitalBlur("stackTcFee")}
+                  helperText="Transaction coordination cost."
+                />
+                <CurrencyField
+                  id="stackLlcFee"
+                  label="LLC Entity Formation Cost"
+                  draft={capitalDraft.stackLlcFee}
+                  onChange={(raw) => handleCapitalChange("stackLlcFee", raw)}
+                  onBlur={() => handleCapitalBlur("stackLlcFee")}
+                  helperText="Entity formation cost."
+                />
+              </>
+            ) : (
+              <CurrencyField
+                id="tcAndLlc"
+                label="TC and LLC"
+                draft={capitalDraft.tcAndLlc}
+                onChange={(raw) => handleCapitalChange("tcAndLlc", raw)}
+                onBlur={() => handleCapitalBlur("tcAndLlc")}
+                helperText="Transaction coordination and entity formation costs."
+              />
+            )}
             {financingMode === "traditional" ? (
               <>
                 <ReadOnlyStat
@@ -5046,10 +6147,10 @@ export default function SharedHousingCalculator() {
                 </div>
                 <div>
                   <p className="text-[11pt] font-display font-semibold text-ink leading-tight">
-                    MICHAEL AYLETT
+                    MICHAEL AYLETT&apos;S
                   </p>
                   <p className="text-[7pt] tracking-widest uppercase text-brass">
-                    Real Estate Investments
+                    Underwriting Tool
                   </p>
                 </div>
               </div>
@@ -5137,9 +6238,6 @@ export default function SharedHousingCalculator() {
                   <div className="h-10 w-10 rounded-full bg-brass text-white flex items-center justify-center">
                     <Play size={16} fill="currentColor" />
                   </div>
-                  <p className="text-[7.5pt] font-semibold uppercase tracking-wide text-ink/60">
-                    Video Walkthrough
-                  </p>
                   <p className="text-[10pt] font-semibold text-brass underline">
                     View Video Walkthrough
                   </p>
@@ -5183,7 +6281,7 @@ export default function SharedHousingCalculator() {
 
           {/* Investment Highlights: a concise, scannable card summarizing
               the deal before the detailed sections below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
             <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-1 pb-2 border-b border-brass/40">
               Investment Highlights
             </p>
@@ -5228,47 +6326,25 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
-          {/* Charts: Income vs. Expenses (bar) and Capital Allocation
-              (donut), generated automatically from the calculator's own
-              figures via pure SVG, no charting library involved. */}
+          {/* Charts: Monthly Income and Expense Breakdown and Capital
+              Required Breakdown, both plain horizontal bar charts (see
+              HorizontalBarChart above) generated automatically from the
+              calculator's own figures. Deliberately not a donut chart --
+              every bar is individually labeled with its exact dollar
+              amount printed alongside it, so nothing here depends on
+              color alone to stay readable, including in grayscale. */}
           <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
-            <div className="rounded-xl border border-ink/15 bg-white p-4">
-              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-3 pb-2 border-b border-brass/40">
-                Income vs. Expenses (Monthly)
+            <div className="rounded-xl border border-ink/15 bg-white p-3">
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-2 pb-1.5 border-b border-brass/40">
+                Monthly Income and Expense Breakdown
               </p>
-              <IncomeExpenseChart
-                effectiveRent={results.effectiveRentAfterVacancy}
-                operatingExpenses={results.totalMonthlyOperatingExpenses}
-                cashFlow={results.monthlyCashFlow}
-              />
+              <HorizontalBarChart bars={monthlyIncomeExpenseBars} />
             </div>
-            <div className="rounded-xl border border-ink/15 bg-white p-4">
-              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-3 pb-2 border-b border-brass/40">
-                Capital Allocation
+            <div className="rounded-xl border border-ink/15 bg-white p-3">
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-2 pb-1.5 border-b border-brass/40">
+                Capital Required Breakdown
               </p>
-              <div className="flex items-center gap-4">
-                <CapitalAllocationDonut segments={capitalAllocationSegments} />
-                <div className="flex-1 space-y-1.5 text-[8pt]">
-                  {capitalAllocationSegments.map((segment) => {
-                    const pct =
-                      results.totalCapitalRequired > 0
-                        ? (segment.value / results.totalCapitalRequired) * 100
-                        : 0;
-                    return (
-                      <div key={segment.label} className="flex items-center justify-between gap-2">
-                        <span className="inline-flex items-center gap-1.5 text-ink/70">
-                          <span
-                            className="h-2 w-2 rounded-full inline-block flex-shrink-0"
-                            style={{ backgroundColor: segment.color }}
-                          />
-                          {segment.label}
-                        </span>
-                        <span className="text-ink font-medium">{pct.toFixed(1)}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <HorizontalBarChart bars={capitalRequiredBreakdownBars} />
             </div>
           </div>
 
@@ -5280,8 +6356,8 @@ export default function SharedHousingCalculator() {
               Principal and Interest Only shows the payment plus taxes,
               insurance, and the full monthly housing payment. */}
           <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
-            <div className="rounded-xl border border-ink/15 bg-white p-4">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+            <div className="rounded-xl border border-ink/15 bg-white p-3">
+              <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Home size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Property</p>
               </div>
@@ -5316,8 +6392,8 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
             </div>
-            <div className="rounded-xl border border-ink/15 bg-white p-4">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+            <div className="rounded-xl border border-ink/15 bg-white p-3">
+              <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Landmark size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Financing</p>
               </div>
@@ -5500,145 +6576,175 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
+          {financingMode === "subjectTo" && subjectToBalloonAnalysis && (
+            <BalloonRefinancePrintCard
+              analysis={subjectToBalloonAnalysis}
+              loanBalanceRows={[
+                {
+                  label: "Projected Existing Mortgage Balance at Balloon",
+                  value: subjectToBalloonAnalysis.mortgageBalanceAtBalloon,
+                },
+              ]}
+            />
+          )}
+
+          {financingMode === "sellerFinancing" && sellerFinancingBalloonAnalysis && (
+            <BalloonRefinancePrintCard
+              analysis={sellerFinancingBalloonAnalysis}
+              loanBalanceRows={[
+                {
+                  label: "Projected Seller-Finance Balance at Balloon",
+                  value: sellerFinancingBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                },
+              ]}
+            />
+          )}
+
+          {financingMode === "hybrid" && hybridBalloonAnalysis && (
+            <BalloonRefinancePrintCard
+              analysis={hybridBalloonAnalysis}
+              loanBalanceRows={[
+                {
+                  label: "Existing Subject-To Balance at Balloon",
+                  value: hybridBalloonAnalysis.mortgageBalanceAtBalloon,
+                },
+                {
+                  label: "Seller-Finance Balance at Balloon",
+                  value: hybridBalloonAnalysis.sellerFinanceBalanceAtBalloon,
+                },
+              ]}
+            />
+          )}
+
           {/* Stack Method Financing: a dedicated full-width card covering
               every acquisition, closing, and monthly-financing figure
               from the Stack Method calculation, printed only when Stack
               Method is the selected Financing Structure. */}
           {financingMode === "stackMethod" && (
-            <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+            <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+              <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
                 <Landmark size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
                   Stack Method Financing
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[9.5pt]">
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Purchase Price</span>
-                  <span className="text-ink">{formatCents(financing.purchasePrice)}</span>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Purchase Price</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.purchasePrice)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Bank Loan-to-Value Percentage</span>
-                  <span className="text-ink">{formatPercent(stackEffectiveBankLtvPct)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Bank Loan-to-Value Percentage</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatPercent(stackEffectiveBankLtvPct)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">First-Position Bank Loan</span>
-                  <span className="text-ink">{formatCents(stackBankLoanAmount)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">First-Position Bank Loan</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackBankLoanAmount)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Bank Interest Rate</span>
-                  <span className="text-ink">{formatPercent(percent.stackBankInterestRatePct)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Bank Interest Rate</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatPercent(percent.stackBankInterestRatePct)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Bank Amortization</span>
-                  <span className="text-ink">
-                    {stackBankAmortizationYears} Years ({stackBankAmortMonths} Monthly Payments)
-                  </span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Amortization</span>
+                  <span className="text-ink flex-shrink-0 text-right">30-years</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Monthly Bank Principal and Interest</span>
-                  <span className="text-ink">{formatCents(stackBankMonthlyPI)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Monthly Bank Principal and Interest</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackBankMonthlyPI)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Annual Property Taxes</span>
-                  <span className="text-ink">{formatCents(financing.annualPropertyTaxes)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Annual Property Taxes</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.annualPropertyTaxes)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Annual Property Insurance</span>
-                  <span className="text-ink">{formatCents(financing.annualPropertyInsurance)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Annual Property Insurance</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.annualPropertyInsurance)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Estimated Monthly Bank PITI</span>
-                  <span className="text-ink">{formatCents(stackMonthlyBankPITI)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Estimated Monthly Bank PITI</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlyBankPITI)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Down Payment to Seller</span>
-                  <span className="text-ink">{formatCents(financing.stackDownPaymentToSeller)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Down Payment to Seller</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackDownPaymentToSeller)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Estimated Seller-Financed Balance</span>
-                  <span className="text-ink">{formatCents(stackSellerFinancedBalance)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Estimated Seller-Financed Balance</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackSellerFinancedBalance)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Are Monthly Seller Finance Payments Required?</span>
-                  <span className="text-ink">{stackSellerFinancePaymentsRequired ? "Yes" : "No"}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Are Monthly Seller Finance Payments Required?</span>
+                  <span className="text-ink flex-shrink-0 text-right">{stackSellerFinancePaymentsRequired ? "Yes" : "No"}</span>
                 </div>
                 {stackSellerFinancePaymentsRequired ? (
                   <>
-                    <div className="flex justify-between">
-                      <span className="text-ink/60">Seller Finance Interest Rate</span>
-                      <span className="text-ink">{formatPercent(percent.stackSellerFinanceRatePct)}</span>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-ink/60 min-w-0">Seller Finance Interest Rate</span>
+                      <span className="text-ink flex-shrink-0 text-right">{formatPercent(percent.stackSellerFinanceRatePct)}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-ink/60">Seller Finance Amortization</span>
-                      <span className="text-ink">
-                        {stackSellerFinanceAmortizationYears} Years ({stackSellerAmortMonths} Monthly Payments)
-                      </span>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-ink/60 min-w-0">Seller Finance Amortization</span>
+                      <span className="text-ink flex-shrink-0 text-right">30-years</span>
                     </div>
-                    {stackSellerFinanceBalloonYears > 0 && (
-                      <div className="flex justify-between">
-                        <span className="text-ink/60">Seller Finance Balloon Term</span>
-                        <span className="text-ink">{stackSellerFinanceBalloonYears} Years</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between">
-                      <span className="text-ink/60">Estimated Monthly Seller Finance Payment</span>
-                      <span className="text-ink">{formatCents(stackMonthlySellerFinancePayment)}</span>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-ink/60 min-w-0">Estimated Monthly Seller Finance Payment</span>
+                      <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlySellerFinancePayment)}</span>
                     </div>
                   </>
                 ) : (
-                  <div className="flex justify-between">
-                    <span className="text-ink/60">Monthly Seller Finance Payment</span>
-                    <span className="text-ink">Not Included</span>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-ink/60 min-w-0">Monthly Seller Finance Payment</span>
+                    <span className="text-ink flex-shrink-0 text-right">Not Included</span>
                   </div>
                 )}
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Cash to Close, Leg 1</span>
-                  <span className="text-ink">{formatCents(stackCashToCloseLeg1)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Cash to Close, Leg 1</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackCashToCloseLeg1)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Transactional Funding Fee</span>
-                  <span className="text-ink">{formatCents(stackTransactionalFundingFee)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Transactional Funding Fee</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackTransactionalFundingFee)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">
                     {stackEstimatedBuyerCashAtClosing < 0
                       ? "Estimated Buyer Cash Required"
                       : "Estimated Cash to Buyer at Closing"}
                   </span>
-                  <span className="text-ink">{formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Total Debt at Acquisition</span>
-                  <span className="text-ink">{formatCents(stackTotalDebtAtAcquisition)}</span>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Total Debt at Acquisition</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackTotalDebtAtAcquisition)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Current Leverage Ratio</span>
-                  <span className="text-ink">
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Current Leverage Ratio</span>
+                  <span className="text-ink flex-shrink-0 text-right">
                     {formatLeverageRatio(stackLeverageRatioDecimal)}
                   </span>
                 </div>
               </div>
 
-              <div className="mt-3 pt-3 border-t border-ink/10 flex items-center justify-between">
+              <div className="mt-2 pt-2 border-t border-ink/10 flex items-center justify-between">
                 <span className="text-[9.5pt] text-ink/60">
                   Can this be purchased for an estimated $0 out of pocket?
                 </span>
                 <ZeroOutOfPocketBadge value={stackZeroOutOfPocket} size="print" />
               </div>
 
-              <div className="mt-3 pt-3 border-t border-ink/10">
+              <div className="mt-2 pt-2 border-t border-ink/10">
                 <p className="text-[8.5pt] font-semibold uppercase tracking-wide text-ink/60 mb-1.5">
                   Capital Required Reconciliation
                 </p>
                 <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
-                  <div className="flex justify-between">
-                    <span className="text-ink/60">Base Capital Required</span>
-                    <span className="text-ink">{formatCents(results.stackBaseCapitalRequired)}</span>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-ink/60 min-w-0">Base Capital Required</span>
+                    <span className="text-ink flex-shrink-0 text-right">{formatCents(results.stackBaseCapitalRequired)}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-ink/60">Closing Cash Adjustment</span>
-                    <span className="text-ink">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-ink/60 min-w-0">Closing Cash Adjustment</span>
+                    <span className="text-ink flex-shrink-0 text-right">
                       {stackEstimatedBuyerCashAtClosing >= 0
                         ? `-${formatCents(stackEstimatedBuyerCashAtClosing)}`
                         : `+${formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}`}
@@ -5662,12 +6768,22 @@ export default function SharedHousingCalculator() {
             </div>
           )}
 
+          {financingMode === "stackMethod" && stackBalloonAnalysis && (
+            <BalloonRefinancePrintCard
+              analysis={stackBalloonAnalysis}
+              loanBalanceRows={[
+                { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
+                { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+              ]}
+            />
+          )}
+
           {/* Rental Income card: Gross and Effective Monthly Rent called
               out as large highlight tiles (Effective Monthly Rent uses a
               subtle green tint, since it is the positive, spendable
               figure), with the supporting line items below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
-            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+            <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <DollarSign size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Rental Income</p>
             </div>
@@ -5701,8 +6817,8 @@ export default function SharedHousingCalculator() {
 
           {/* Monthly Operating Expenses card: alternating row backgrounds,
               Total Monthly Operating Expenses called out at the bottom. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
-            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+            <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <Wallet size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
                 Monthly Operating Expenses
@@ -5748,12 +6864,12 @@ export default function SharedHousingCalculator() {
               up the Total Capital Required calculation, laid out as a
               two-column list with Total Capital Required called out
               below. */}
-          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
-            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+            <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
               <PiggyBank size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Capital Required</p>
             </div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[9.5pt]">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
               {financingMode !== "stackMethod" && (
                 <div className="flex justify-between">
                   <span className="text-ink/60">{downPaymentLabel}</span>
@@ -5770,10 +6886,12 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink">{formatCents(capital.arrears)}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-ink/60">Upfront Insurance</span>
-                <span className="text-ink">{formatCents(capital.upfrontInsurance)}</span>
-              </div>
+              {financingMode !== "stackMethod" && financingMode !== "traditional" && (
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Upfront Insurance</span>
+                  <span className="text-ink">{formatCents(capital.upfrontInsurance)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Renovation Cost</span>
                 <span className="text-ink">{formatCents(capital.renovationCost)}</span>
@@ -5786,10 +6904,23 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/60">Furniture</span>
                 <span className="text-ink">{formatCents(capital.furniture)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-ink/60">TC and LLC</span>
-                <span className="text-ink">{formatCents(capital.tcAndLlc)}</span>
-              </div>
+              {financingMode === "stackMethod" ? (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">TC Fee</span>
+                    <span className="text-ink">{formatCents(capital.stackTcFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">LLC Entity Formation Cost</span>
+                    <span className="text-ink">{formatCents(capital.stackLlcFee)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between">
+                  <span className="text-ink/60">TC and LLC</span>
+                  <span className="text-ink">{formatCents(capital.tcAndLlc)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Appliances</span>
                 <span className="text-ink">{formatCents(capital.appliances)}</span>
@@ -5829,7 +6960,7 @@ export default function SharedHousingCalculator() {
               </div>
             </div>
             {financingMode === "stackMethod" && (
-              <div className="mt-3 pt-3 border-t border-ink/10">
+              <div className="mt-2 pt-2 border-t border-ink/10">
                 <p className="text-[8.5pt] font-semibold uppercase tracking-wide text-ink/60 mb-1.5">
                   Capital Required Reconciliation
                 </p>
@@ -5874,13 +7005,13 @@ export default function SharedHousingCalculator() {
               Estimated Returns
             </p>
             <div className="grid grid-cols-3 gap-3">
-              <div className="rounded-xl border border-ink/15 bg-white p-4 text-center">
+              <div className="rounded-xl border border-ink/15 bg-white p-3 text-center">
                 <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
                   Estimated Monthly Cash Flow
                 </p>
                 <p className="mt-1 text-[16pt] font-bold text-ink">{formatCents(results.monthlyCashFlow)}</p>
               </div>
-              <div className="rounded-xl border border-ink/15 bg-white p-4 text-center">
+              <div className="rounded-xl border border-ink/15 bg-white p-3 text-center">
                 <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
                   Estimated Annual Cash Flow
                 </p>
