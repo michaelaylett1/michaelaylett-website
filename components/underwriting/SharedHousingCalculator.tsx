@@ -7228,7 +7228,11 @@ export default function SharedHousingCalculator() {
               <HighlightBullet
                 icon={<Users size={13} />}
                 label={`${results.totalBedrooms} Total Bedrooms`}
-                detail={`${sharedBathBedrooms} Shared-Bath Bedrooms, ${ensuiteBedrooms} Ensuite Bedrooms`}
+                detail={`Shared-Bath Bedrooms: ${sharedBathBedrooms} · Shared-Bath Weekly Room Rate: ${formatCents(
+                  weeklySharedBathRent
+                )} per week · Ensuite Bedrooms: ${ensuiteBedrooms} · Ensuite Weekly Room Rate: ${formatCents(
+                  weeklyEnsuiteRent
+                )} per week`}
               />
               <HighlightBullet
                 icon={<Landmark size={13} />}
@@ -7770,15 +7774,47 @@ export default function SharedHousingCalculator() {
                 </p>
               </div>
             </div>
+            {/* Room-Rate Summary: Room Type, Number of Rooms, Weekly Rate
+                per Room, and Estimated Monthly Revenue for each room type
+                plus a Total row. Reuses results.monthlySharedBathRent /
+                results.monthlyEnsuiteRent exactly as computed by the
+                underwriting engine above, so the printed monthly revenue
+                always matches the calculator's own figures -- no separate
+                or duplicate weekly-to-monthly conversion is introduced
+                here. */}
+            <table className="w-full text-[9pt] border-collapse mb-3">
+              <thead>
+                <tr className="text-left text-ink/60 border-b border-ink/15">
+                  <th className="py-1 font-medium">Room Type</th>
+                  <th className="py-1 font-medium text-right">Rooms</th>
+                  <th className="py-1 font-medium text-right">Weekly Rate</th>
+                  <th className="py-1 font-medium text-right">Monthly Revenue</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-ink/10 print:break-inside-avoid-page">
+                  <td className="py-1 text-ink">Shared Bath</td>
+                  <td className="py-1 text-ink text-right">{sharedBathBedrooms}</td>
+                  <td className="py-1 text-ink text-right">{formatCents(weeklySharedBathRent)}</td>
+                  <td className="py-1 text-ink text-right">{formatCents(results.monthlySharedBathRent)}</td>
+                </tr>
+                <tr className="border-b border-ink/10 print:break-inside-avoid-page">
+                  <td className="py-1 text-ink">Ensuite</td>
+                  <td className="py-1 text-ink text-right">{ensuiteBedrooms}</td>
+                  <td className="py-1 text-ink text-right">{formatCents(weeklyEnsuiteRent)}</td>
+                  <td className="py-1 text-ink text-right">{formatCents(results.monthlyEnsuiteRent)}</td>
+                </tr>
+                <tr className="print:break-inside-avoid-page">
+                  <td className="py-1 text-ink font-semibold">Total</td>
+                  <td className="py-1 text-ink text-right font-semibold">{results.totalBedrooms}</td>
+                  <td className="py-1 text-ink text-right"></td>
+                  <td className="py-1 text-ink text-right font-semibold">
+                    {formatCents(results.grossMonthlyRent)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
             <div className="space-y-1.5 text-[9.5pt]">
-              <div className="flex justify-between">
-                <span className="text-ink/60">Shared-Bath Bedroom Income</span>
-                <span className="text-ink">{formatCents(results.monthlySharedBathRent)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-ink/60">Ensuite Bedroom Income</span>
-                <span className="text-ink">{formatCents(results.monthlyEnsuiteRent)}</span>
-              </div>
               <div className="flex justify-between">
                 <span className="text-ink/60">Vacancy ({formatPercent(percent.vacancyPct)})</span>
                 <span className="text-ink">-{formatCents(results.vacancyExpense)}</span>

@@ -58,7 +58,7 @@ export default function Header() {
 
           <Link
             href="/sellers#contact-form"
-            className="hidden lg:inline-flex items-center gap-2 border border-brass/60 px-4 py-2 eyebrow text-brass-light hover:bg-brass hover:text-ink transition-colors"
+            className="hidden lg:inline-flex items-center gap-2 border border-brass/60 px-4 py-2 eyebrow text-brass-light hover:bg-brass hover:text-ink transition-colors ml-3 xl:ml-4"
           >
             Get in Touch
           </Link>
