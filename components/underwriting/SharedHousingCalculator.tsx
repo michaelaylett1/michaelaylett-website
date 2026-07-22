@@ -217,6 +217,8 @@ function getFinancingStructureLabel(mode: FinancingMode): string {
       return "Seller Financing";
     case "hybrid":
       return "Subject To & Seller Finance Hybrid";
+    case "stackMethod":
+      return "Stack Method";
     default:
       return "Not Specified";
   }
@@ -319,6 +321,73 @@ function buildAmortizationSchedule(
     // Guards against rounding ever taking the balance below $0, whether
     // on the scheduled final payment or (in an edge case with a very
     // small loan/high rate) an earlier one.
+    if (isFinalPayment || principalPaid >= beginningBalance) {
+      principalPaid = beginningBalance;
+    }
+
+    const totalPayment = round2(interestPaid + principalPaid);
+    const endingBalance = Math.max(0, round2(beginningBalance - principalPaid));
+
+    schedule.push({
+      paymentNumber: i,
+      beginningBalance,
+      principalPaid,
+      interestPaid,
+      totalPayment,
+      endingBalance,
+    });
+
+    balance = endingBalance;
+    if (balance <= 0) break;
+  }
+
+  return { schedule, monthlyPayment };
+}
+
+// ---------------------------------------------------------------------
+// Stack Method: unlike Traditional Financing and the Hybrid structure
+// (both fixed at 30 years / 360 monthly payments), the Stack Method's
+// Bank Amortization Term and Seller Finance Amortization Term are both
+// editable, so the two functions below generalize the same standard
+// fixed-rate amortization formula and schedule builder to accept any
+// number of monthly payments rather than the fixed 360.
+// ---------------------------------------------------------------------
+function calculateMonthlyPaymentForTerm(principal: number, annualRatePct: number, numPayments: number): number {
+  if (!Number.isFinite(principal) || principal <= 0) return 0;
+  const n = Math.max(1, Math.round(numPayments));
+  const monthlyRate = annualRatePct / 100 / 12;
+  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
+    return principal / n;
+  }
+  const factor = Math.pow(1 + monthlyRate, n);
+  const payment = (principal * (monthlyRate * factor)) / (factor - 1);
+  return Number.isFinite(payment) ? payment : 0;
+}
+
+function buildAmortizationScheduleForTerm(
+  principal: number,
+  annualRatePct: number,
+  numPayments: number
+): { schedule: AmortizationRow[]; monthlyPayment: number } {
+  const roundedPrincipal = round2(Math.max(0, principal));
+  const n = Math.max(1, Math.round(numPayments));
+  const monthlyPaymentUnrounded = calculateMonthlyPaymentForTerm(roundedPrincipal, annualRatePct, n);
+  const monthlyPayment = round2(monthlyPaymentUnrounded);
+
+  if (roundedPrincipal <= 0) {
+    return { schedule: [], monthlyPayment: 0 };
+  }
+
+  const monthlyRate = annualRatePct / 100 / 12;
+  const schedule: AmortizationRow[] = [];
+  let balance = roundedPrincipal;
+
+  for (let i = 1; i <= n; i++) {
+    const beginningBalance = balance;
+    const interestPaid = round2(beginningBalance * monthlyRate);
+    const isFinalPayment = i === n;
+    let principalPaid = round2(monthlyPayment - interestPaid);
+
     if (isFinalPayment || principalPaid >= beginningBalance) {
       principalPaid = beginningBalance;
     }
@@ -558,7 +627,11 @@ type FinancingKey =
   | "annualPropertyTaxes"
   | "annualPropertyInsurance"
   | "hybridExistingMortgageBalance"
-  | "hybridSubjectToPITI";
+  | "hybridSubjectToPITI"
+  | "stackSellerFirstLoanBalance"
+  | "stackSellerSecondLien"
+  | "stackMiscLiens"
+  | "stackDownPaymentToSeller";
 
 const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   purchasePrice: 0,
@@ -569,6 +642,10 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   annualPropertyInsurance: 0,
   hybridExistingMortgageBalance: 0,
   hybridSubjectToPITI: 0,
+  stackSellerFirstLoanBalance: 0,
+  stackSellerSecondLien: 0,
+  stackMiscLiens: 0,
+  stackDownPaymentToSeller: 0,
 };
 
 type CapitalKey =
@@ -604,7 +681,13 @@ type PercentKey =
   | "traditionalDownPaymentPct"
   | "traditionalInterestRatePct"
   | "traditionalClosingCostPct"
-  | "hybridSellerFinanceRatePct";
+  | "hybridSellerFinanceRatePct"
+  | "stackBankLtvPct"
+  | "stackClosingCostPct"
+  | "stackAgentCommissionPct"
+  | "stackTransactionalFundingFeePct"
+  | "stackBankInterestRatePct"
+  | "stackSellerFinanceRatePct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
@@ -615,6 +698,12 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   traditionalInterestRatePct: 7,
   traditionalClosingCostPct: 5,
   hybridSellerFinanceRatePct: 2,
+  stackBankLtvPct: 80,
+  stackClosingCostPct: 5.128205,
+  stackAgentCommissionPct: 0,
+  stackTransactionalFundingFeePct: 2.5,
+  stackBankInterestRatePct: 7,
+  stackSellerFinanceRatePct: 2,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -640,7 +729,7 @@ const PAYMENT_TYPE_DEFAULT: PaymentType = "piti";
 
 // Financing Structure: a single-select mode. "" is "Not Specified" (no
 // structure chosen yet).
-type FinancingMode = "" | "traditional" | "subjectTo" | "sellerFinancing" | "hybrid";
+type FinancingMode = "" | "traditional" | "subjectTo" | "sellerFinancing" | "hybrid" | "stackMethod";
 const FINANCING_MODE_DEFAULT: FinancingMode = "";
 
 // Editable currency fields always display and reformat with cents (see
@@ -872,7 +961,27 @@ export default function SharedHousingCalculator() {
     traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
     traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
     hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
+    stackBankLtvPct: PERCENT_DEFAULTS.stackBankLtvPct.toFixed(2),
+    stackClosingCostPct: PERCENT_DEFAULTS.stackClosingCostPct.toFixed(2),
+    stackAgentCommissionPct: PERCENT_DEFAULTS.stackAgentCommissionPct.toFixed(2),
+    stackTransactionalFundingFeePct: PERCENT_DEFAULTS.stackTransactionalFundingFeePct.toFixed(2),
+    stackBankInterestRatePct: PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2),
+    stackSellerFinanceRatePct: PERCENT_DEFAULTS.stackSellerFinanceRatePct.toFixed(2),
   });
+
+  // Stack Method: Bank Amortization Term, Seller Finance Amortization
+  // Term, and the optional Seller Finance Balloon Term are all entered
+  // in years (not currency or percent), so they follow the same plain
+  // integer draft-string pattern used for the bedroom counts below
+  // rather than the currency/percent field patterns. A balloon term of
+  // 0 means "None" (no balloon).
+  const [stackBankAmortizationYears, setStackBankAmortizationYears] = useState(30);
+  const [stackBankAmortizationYearsDraft, setStackBankAmortizationYearsDraft] = useState("30");
+  const [stackSellerFinanceAmortizationYears, setStackSellerFinanceAmortizationYears] = useState(30);
+  const [stackSellerFinanceAmortizationYearsDraft, setStackSellerFinanceAmortizationYearsDraft] =
+    useState("30");
+  const [stackSellerFinanceBalloonYears, setStackSellerFinanceBalloonYears] = useState(0);
+  const [stackSellerFinanceBalloonYearsDraft, setStackSellerFinanceBalloonYearsDraft] = useState("0");
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
@@ -959,6 +1068,15 @@ export default function SharedHousingCalculator() {
   // independently even though only one is ever visible at a time.
   const [hybridAmortizationOpen, setHybridAmortizationOpen] = useState(false);
   const [hybridAmortizationShowAll, setHybridAmortizationShowAll] = useState(false);
+
+  // Amortization schedule expand/collapse state for the Stack Method's
+  // two separate schedules: the first-position Bank Loan and the
+  // second-position Seller Finance balance. Kept independent from each
+  // other and from the schedules above.
+  const [stackBankAmortizationOpen, setStackBankAmortizationOpen] = useState(false);
+  const [stackBankAmortizationShowAll, setStackBankAmortizationShowAll] = useState(false);
+  const [stackSellerAmortizationOpen, setStackSellerAmortizationOpen] = useState(false);
+  const [stackSellerAmortizationShowAll, setStackSellerAmortizationShowAll] = useState(false);
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
@@ -1150,7 +1268,19 @@ export default function SharedHousingCalculator() {
       traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
       traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
       hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
+      stackBankLtvPct: PERCENT_DEFAULTS.stackBankLtvPct.toFixed(2),
+      stackClosingCostPct: PERCENT_DEFAULTS.stackClosingCostPct.toFixed(2),
+      stackAgentCommissionPct: PERCENT_DEFAULTS.stackAgentCommissionPct.toFixed(2),
+      stackTransactionalFundingFeePct: PERCENT_DEFAULTS.stackTransactionalFundingFeePct.toFixed(2),
+      stackBankInterestRatePct: PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2),
+      stackSellerFinanceRatePct: PERCENT_DEFAULTS.stackSellerFinanceRatePct.toFixed(2),
     });
+    setStackBankAmortizationYears(30);
+    setStackBankAmortizationYearsDraft("30");
+    setStackSellerFinanceAmortizationYears(30);
+    setStackSellerFinanceAmortizationYearsDraft("30");
+    setStackSellerFinanceBalloonYears(0);
+    setStackSellerFinanceBalloonYearsDraft("0");
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -1189,6 +1319,10 @@ export default function SharedHousingCalculator() {
     setAmortizationShowAll(false);
     setHybridAmortizationOpen(false);
     setHybridAmortizationShowAll(false);
+    setStackBankAmortizationOpen(false);
+    setStackBankAmortizationShowAll(false);
+    setStackSellerAmortizationOpen(false);
+    setStackSellerAmortizationShowAll(false);
   }
 
   // ---------------------------------------------------------------------
@@ -1318,6 +1452,250 @@ export default function SharedHousingCalculator() {
   );
 
   // ---------------------------------------------------------------------
+  // Stack Method: a two-position creative-finance structure combining a
+  // first-position bank/DSCR loan (typically around half the purchase
+  // price, though the Bank Loan-to-Value Percentage is fully editable)
+  // with second-position seller financing carrying the seller's
+  // remaining equity. This reproduces, term for term, the acquisition
+  // and cash-to-close formulas reviewed in the attached workbook's
+  // "Cash Back" sheet:
+  //   Loan Amount            = Purchase Price x LTV
+  //   Proposed Seller Carry  = Purchase Price - Seller's Current First
+  //                            Loan Balance - 2nd Lien - Misc. Liens -
+  //                            Down Payment to Seller
+  //   Debt Owed Day 1        = Loan Amount + Seller Carry Amount
+  //   Current Leverage Ratio = Debt Owed Day 1 / Purchase Price
+  //   DSCR Down Payment      = Purchase Price - Loan Amount
+  //   Closing Costs          = Purchase Price x Closing Cost %
+  //   Agent Fees             = Purchase Price x Agent Commission %
+  //   Cash To Close (Leg 1)  = DSCR Down Payment + Closing Costs +
+  //                            Agent Fees + Assignment Fee
+  //   Transactional Funding Fee = Cash To Close (Leg 1) x Funding Fee %
+  //   Est. Buyer Cash At Close  = Seller Carry - Cash To Close (Leg 1) -
+  //                               Transactional Funding Fee
+  //   Est. Seller Cash At Close = Purchase Price - Seller's Current
+  //                               First Loan Balance - Seller Carry
+  // The monthly Bank PITI and Seller Finance payment calculations below
+  // are new additions, not present in the workbook, needed to feed the
+  // combined Total Monthly Housing Payment into the co-living
+  // underwriting further down; both reuse the same standard fixed-rate
+  // amortization formula as Traditional Financing and the Hybrid
+  // structure, generalized to an editable number of payments.
+  // ---------------------------------------------------------------------
+
+  // First-Position Bank Loan = Purchase Price x Bank Loan-to-Value %.
+  const stackBankLoanAmount = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice * (percent.stackBankLtvPct / 100))),
+    [financing.purchasePrice, percent.stackBankLtvPct]
+  );
+
+  // Estimated Seller-Financed Balance (workbook: "Proposed Seller
+  // Carry") = Purchase Price - Seller's Current First Loan Balance -
+  // Existing Second Lien - Miscellaneous Liens - Down Payment to
+  // Seller, floored at $0 for display and every downstream use.
+  const stackSellerFinancedBalanceRaw = useMemo(
+    () =>
+      financing.purchasePrice -
+      financing.stackSellerFirstLoanBalance -
+      financing.stackSellerSecondLien -
+      financing.stackMiscLiens -
+      financing.stackDownPaymentToSeller,
+    [
+      financing.purchasePrice,
+      financing.stackSellerFirstLoanBalance,
+      financing.stackSellerSecondLien,
+      financing.stackMiscLiens,
+      financing.stackDownPaymentToSeller,
+    ]
+  );
+  const stackSellerFinancedBalance = Math.max(0, round2(stackSellerFinancedBalanceRaw));
+
+  // Total Debt at Acquisition = First-Position Bank Loan + Seller-
+  // Financed Balance.
+  const stackTotalDebtAtAcquisition = useMemo(
+    () => round2(stackBankLoanAmount + stackSellerFinancedBalance),
+    [stackBankLoanAmount, stackSellerFinancedBalance]
+  );
+
+  // Current Leverage Ratio = Total Debt at Acquisition / Purchase Price
+  // x 100. Intentionally never capped at 100%, matching the workbook.
+  // null (displayed as "N/A") when the Purchase Price is $0, matching
+  // the workbook's IFERROR(...,"") behavior.
+  const stackLeverageRatio = useMemo(() => {
+    if (financing.purchasePrice <= 0) return null;
+    return (stackTotalDebtAtAcquisition / financing.purchasePrice) * 100;
+  }, [stackTotalDebtAtAcquisition, financing.purchasePrice]);
+
+  // Bank Loan Down Payment (workbook: "DSCR Down Payment") = Purchase
+  // Price - First-Position Bank Loan.
+  const stackBankLoanDownPayment = useMemo(
+    () => round2(financing.purchasePrice - stackBankLoanAmount),
+    [financing.purchasePrice, stackBankLoanAmount]
+  );
+
+  // Stack Method Closing Costs = Purchase Price x Closing Cost %.
+  const stackClosingCosts = useMemo(
+    () => round2(financing.purchasePrice * (percent.stackClosingCostPct / 100)),
+    [financing.purchasePrice, percent.stackClosingCostPct]
+  );
+
+  // Agent Fees = Purchase Price x Agent Commission %.
+  const stackAgentFees = useMemo(
+    () => round2(financing.purchasePrice * (percent.stackAgentCommissionPct / 100)),
+    [financing.purchasePrice, percent.stackAgentCommissionPct]
+  );
+
+  // Cash to Close, Leg 1 = Bank Loan Down Payment + Stack Method Closing
+  // Costs + Agent Fees + Assignment Fee. The Assignment Fee reuses the
+  // same capital.assignmentFee field already used in the Total Capital
+  // Required section (see the dedicated Stack Method UI section below)
+  // instead of creating a second, independent input. Does not yet
+  // include the Transactional Funding Fee, matching the workbook.
+  const stackCashToCloseLeg1 = useMemo(
+    () => round2(stackBankLoanDownPayment + stackClosingCosts + stackAgentFees + capital.assignmentFee),
+    [stackBankLoanDownPayment, stackClosingCosts, stackAgentFees, capital.assignmentFee]
+  );
+
+  // Transactional Funding Fee = Cash to Close, Leg 1 x Transactional
+  // Funding Fee %.
+  const stackTransactionalFundingFee = useMemo(
+    () => round2(stackCashToCloseLeg1 * (percent.stackTransactionalFundingFeePct / 100)),
+    [stackCashToCloseLeg1, percent.stackTransactionalFundingFeePct]
+  );
+
+  // Estimated Buyer Cash at Closing = Seller-Financed Balance - Cash to
+  // Close, Leg 1 - Transactional Funding Fee. Positive, zero, and
+  // negative results are all preserved unmodified, since the sign is
+  // itself meaningful (see the contextual label logic in the UI below).
+  const stackEstimatedBuyerCashAtClosing = useMemo(
+    () => round2(stackSellerFinancedBalance - stackCashToCloseLeg1 - stackTransactionalFundingFee),
+    [stackSellerFinancedBalance, stackCashToCloseLeg1, stackTransactionalFundingFee]
+  );
+
+  // Net Stack Method Buyer Cash Requirement: the amount actually
+  // required out of the buyer's own pocket for Total Capital Required
+  // purposes. Never negative (a positive cash-back result must never
+  // become a negative capital contribution), and mathematically the
+  // same result as taking the absolute value of a negative Estimated
+  // Buyer Cash at Closing.
+  const stackNetBuyerCashRequirement = useMemo(
+    () =>
+      Math.max(
+        0,
+        round2(stackCashToCloseLeg1 + stackTransactionalFundingFee - stackSellerFinancedBalance)
+      ),
+    [stackCashToCloseLeg1, stackTransactionalFundingFee, stackSellerFinancedBalance]
+  );
+
+  // Can this be purchased for an estimated $0 out of pocket? Yes if the
+  // buyer's cash at closing is $0 or positive, No if negative, TBD if
+  // the Purchase Price has not been entered yet.
+  const stackZeroOutOfPocket: "Yes" | "No" | "TBD" = useMemo(() => {
+    if (financing.purchasePrice <= 0) return "TBD";
+    return stackEstimatedBuyerCashAtClosing >= 0 ? "Yes" : "No";
+  }, [financing.purchasePrice, stackEstimatedBuyerCashAtClosing]);
+
+  // Estimated Seller Cash at Closing (workbook formula) = Purchase
+  // Price - Seller's Current First Loan Balance - Seller-Financed
+  // Balance. This is the workbook's own formula; the fuller
+  // reconciliation against the Second Lien, Misc. Liens, and Down
+  // Payment to Seller is shown separately in the UI below.
+  const stackEstimatedSellerCashAtClosing = useMemo(
+    () => round2(financing.purchasePrice - financing.stackSellerFirstLoanBalance - stackSellerFinancedBalance),
+    [financing.purchasePrice, financing.stackSellerFirstLoanBalance, stackSellerFinancedBalance]
+  );
+
+  // Monthly Bank Principal and Interest: a true fixed-rate amortizing
+  // loan on the First-Position Bank Loan, using the entered Bank
+  // Interest Rate and Bank Amortization Term (editable, in years, unlike
+  // Traditional Financing and the Hybrid structure's fixed 30 years).
+  const stackBankAmortMonths = Math.max(1, Math.round(stackBankAmortizationYears * 12));
+  const stackBankMonthlyPI = useMemo(
+    () =>
+      round2(
+        calculateMonthlyPaymentForTerm(stackBankLoanAmount, percent.stackBankInterestRatePct, stackBankAmortMonths)
+      ),
+    [stackBankLoanAmount, percent.stackBankInterestRatePct, stackBankAmortMonths]
+  );
+  const stackBankAmortization = useMemo(
+    () =>
+      buildAmortizationScheduleForTerm(stackBankLoanAmount, percent.stackBankInterestRatePct, stackBankAmortMonths),
+    [stackBankLoanAmount, percent.stackBankInterestRatePct, stackBankAmortMonths]
+  );
+
+  // Monthly Property Taxes and Monthly Property Insurance reuse the
+  // same shared Annual Property Taxes / Annual Property Insurance
+  // fields as Traditional Financing (only one financing structure is
+  // ever active at a time, so there is no conflict). Estimated Monthly
+  // Bank PITI = Monthly Bank P&I + Monthly Property Taxes + Monthly
+  // Property Insurance; taxes and insurance are never counted again
+  // anywhere else once they are part of Bank PITI.
+  const stackMonthlyPropertyTaxes = useMemo(
+    () => round2(financing.annualPropertyTaxes / 12),
+    [financing.annualPropertyTaxes]
+  );
+  const stackMonthlyPropertyInsurance = useMemo(
+    () => round2(financing.annualPropertyInsurance / 12),
+    [financing.annualPropertyInsurance]
+  );
+  const stackMonthlyBankPITI = useMemo(
+    () => round2(stackBankMonthlyPI + stackMonthlyPropertyTaxes + stackMonthlyPropertyInsurance),
+    [stackBankMonthlyPI, stackMonthlyPropertyTaxes, stackMonthlyPropertyInsurance]
+  );
+
+  // Estimated Monthly Seller Finance Payment: a true fixed-rate
+  // amortizing loan on the Seller-Financed Balance, using the entered
+  // Seller Finance Interest Rate and Seller Finance Amortization Term.
+  // If a balloon term is entered, the monthly payment is still based on
+  // the full selected amortization term; only the remaining balance due
+  // at the balloon date is additionally calculated below.
+  const stackSellerAmortMonths = Math.max(1, Math.round(stackSellerFinanceAmortizationYears * 12));
+  const stackMonthlySellerFinancePayment = useMemo(
+    () =>
+      round2(
+        calculateMonthlyPaymentForTerm(
+          stackSellerFinancedBalance,
+          percent.stackSellerFinanceRatePct,
+          stackSellerAmortMonths
+        )
+      ),
+    [stackSellerFinancedBalance, percent.stackSellerFinanceRatePct, stackSellerAmortMonths]
+  );
+  const stackSellerAmortization = useMemo(
+    () =>
+      buildAmortizationScheduleForTerm(
+        stackSellerFinancedBalance,
+        percent.stackSellerFinanceRatePct,
+        stackSellerAmortMonths
+      ),
+    [stackSellerFinancedBalance, percent.stackSellerFinanceRatePct, stackSellerAmortMonths]
+  );
+
+  // Estimated remaining Seller-Financed Balance due at the balloon date
+  // (the ending balance of whichever scheduled payment falls at the
+  // entered Balloon Term in years), or null when no balloon term has
+  // been entered (0 years = "None").
+  const stackSellerBalloonRemainingBalance = useMemo(() => {
+    if (stackSellerFinanceBalloonYears <= 0) return null;
+    const balloonPaymentNumber = Math.round(stackSellerFinanceBalloonYears * 12);
+    if (balloonPaymentNumber <= 0 || stackSellerAmortization.schedule.length === 0) {
+      return stackSellerFinancedBalance;
+    }
+    const row =
+      stackSellerAmortization.schedule[
+        Math.min(balloonPaymentNumber, stackSellerAmortization.schedule.length) - 1
+      ];
+    return row ? row.endingBalance : 0;
+  }, [stackSellerFinanceBalloonYears, stackSellerAmortization, stackSellerFinancedBalance]);
+
+  // Total Monthly Housing Payment = Estimated Monthly Bank PITI +
+  // Estimated Monthly Seller Finance Payment.
+  const stackTotalMonthlyHousingPayment = useMemo(
+    () => round2(stackMonthlyBankPITI + stackMonthlySellerFinancePayment),
+    [stackMonthlyBankPITI, stackMonthlySellerFinancePayment]
+  );
+
+  // ---------------------------------------------------------------------
   // Monthly housing payment and the automatically calculated Holding
   // Costs are broken out of the main underwriting engine below (rather
   // than computed inline) so the Holding Costs override effect further
@@ -1343,6 +1721,12 @@ export default function SharedHousingCalculator() {
     if (financingMode === "hybrid") {
       return hybridTotalMonthlyHousingPayment;
     }
+    // Stack Method: the Bank PITI payment plus the separate seller
+    // finance payment, computed above. Taxes/insurance are already part
+    // of Bank PITI, so they are never added a second time.
+    if (financingMode === "stackMethod") {
+      return stackTotalMonthlyHousingPayment;
+    }
     // Prevents taxes/insurance from ever being counted twice: PITI
     // already includes them, so only Principal-and-Interest-Only adds
     // them separately.
@@ -1357,6 +1741,7 @@ export default function SharedHousingCalculator() {
     financingMode,
     traditionalMonthlyPI,
     hybridTotalMonthlyHousingPayment,
+    stackTotalMonthlyHousingPayment,
     paymentType,
     financing.monthlyPayment,
     financing.annualPropertyTaxes,
@@ -1446,7 +1831,9 @@ export default function SharedHousingCalculator() {
         ? financing.purchasePrice - traditionalLoanBalance
         : financingMode === "hybrid"
           ? hybridEquityRaw
-          : financing.purchasePrice - financing.loanBalance;
+          : financingMode === "stackMethod"
+            ? financing.purchasePrice - stackTotalDebtAtAcquisition
+            : financing.purchasePrice - financing.loanBalance;
     const equity = Math.max(0, round2(equityRaw));
     const equityIsNegative = equityRaw < 0;
 
@@ -1466,17 +1853,33 @@ export default function SharedHousingCalculator() {
     const closingCosts =
       financingMode === "traditional"
         ? traditionalClosingCosts
-        : round2(financing.purchasePrice * (percent.closingCostPct / 100));
+        : financingMode === "stackMethod"
+          ? stackClosingCosts
+          : round2(financing.purchasePrice * (percent.closingCostPct / 100));
 
     // The acquisition down payment included in Total Capital Required:
     // the calculated Estimated Down Payment (Purchase Price x Down
-    // Payment Percentage) when Traditional Financing is selected,
+    // Payment Percentage) when Traditional Financing is selected, the
+    // Net Stack Method Buyer Cash Requirement for Stack Method (already
+    // accounts for the Bank Loan Down Payment, Stack Method Closing
+    // Costs, Agent Fees, Assignment Fee, and the offsetting Seller-
+    // Financed Balance, so none of those are added again below),
     // otherwise the existing Seller Down Payment (reused as-is for
-    // Hybrid, so it is included exactly once). Only one of the two is
-    // ever included, never both.
+    // Hybrid, so it is included exactly once). Only one of these is
+    // ever included, never more than one.
     const downPaymentForCapital =
-      financingMode === "traditional" ? traditionalDownPaymentAmount : financing.sellerDownPayment;
+      financingMode === "traditional"
+        ? traditionalDownPaymentAmount
+        : financingMode === "stackMethod"
+          ? stackNetBuyerCashRequirement
+          : financing.sellerDownPayment;
 
+    // For Stack Method, Closing Costs, Agent Fees, and the Assignment
+    // Fee are already fully accounted for inside Cash to Close, Leg 1
+    // and, in turn, the Net Stack Method Buyer Cash Requirement above,
+    // so none of them are added again here (closingCosts and
+    // capital.agentFee/capital.assignmentFee are excluded entirely for
+    // this structure to avoid double-counting).
     const totalCapitalRequired = round2(
       downPaymentForCapital +
         capital.arrears +
@@ -1489,9 +1892,9 @@ export default function SharedHousingCalculator() {
         capital.upfrontInsurance +
         capital.acquisitionFee +
         capital.tcAndLlc +
-        closingCosts +
-        capital.agentFee +
-        capital.assignmentFee
+        (financingMode === "stackMethod" ? 0 : closingCosts) +
+        (financingMode === "stackMethod" ? 0 : capital.agentFee) +
+        (financingMode === "stackMethod" ? 0 : capital.assignmentFee)
     );
 
     const monthlyCashFlow = round2(grossMonthlyRent - totalMonthlyOperatingExpenses);
@@ -1547,6 +1950,9 @@ export default function SharedHousingCalculator() {
     traditionalClosingCosts,
     traditionalDownPaymentAmount,
     hybridEquityRaw,
+    stackTotalDebtAtAcquisition,
+    stackClosingCosts,
+    stackNetBuyerCashRequirement,
   ]);
 
   // Traditional Financing always labels its calculated loan payment
@@ -1581,7 +1987,7 @@ export default function SharedHousingCalculator() {
   const housingPaymentLabel =
     financingMode === "traditional"
       ? "Estimated Monthly PITI"
-      : financingMode === "hybrid"
+      : financingMode === "hybrid" || financingMode === "stackMethod"
         ? "Total Monthly Housing Payment"
         : paymentType === "piti"
           ? "Monthly PITI Payment"
@@ -1597,7 +2003,12 @@ export default function SharedHousingCalculator() {
   // Traditional Financing (the calculated Purchase Price x Down Payment
   // Percentage amount), or "Seller Down Payment" otherwise, matching
   // whichever field is actually in use.
-  const downPaymentLabel = financingMode === "traditional" ? "Estimated Down Payment" : "Seller Down Payment";
+  const downPaymentLabel =
+    financingMode === "traditional"
+      ? "Estimated Down Payment"
+      : financingMode === "stackMethod"
+        ? "Net Stack Method Buyer Cash Requirement"
+        : "Seller Down Payment";
 
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
@@ -1661,15 +2072,73 @@ export default function SharedHousingCalculator() {
                   },
                   { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
                 ]
-              : [
-                  { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
-                  { label: "Financing Structure", value: financingStructureLabel },
-                  { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-                  { label: "Loan Balance", value: formatCents(financing.loanBalance) },
-                  { label: "Estimated Equity", value: formatCents(results.equity) },
-                  { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-                  { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
-                ],
+              : financingMode === "stackMethod"
+                ? [
+                    { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                    { label: "Financing Structure", value: financingStructureLabel },
+                    { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                    { label: "Bank Loan-to-Value Percentage", value: formatPercent(percent.stackBankLtvPct) },
+                    { label: "Estimated First-Position Bank Loan", value: formatCents(stackBankLoanAmount) },
+                    { label: "Estimated Seller-Financed Balance", value: formatCents(stackSellerFinancedBalance) },
+                    { label: "Total Debt at Acquisition", value: formatCents(stackTotalDebtAtAcquisition) },
+                    {
+                      label: "Current Leverage Ratio",
+                      value: stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio),
+                    },
+                    { label: "Bank Interest Rate", value: formatPercent(percent.stackBankInterestRatePct) },
+                    {
+                      label: "Bank Amortization Term",
+                      value: `${stackBankAmortizationYears} Years (${stackBankAmortMonths} Monthly Payments)`,
+                    },
+                    { label: "Monthly Bank Principal and Interest", value: formatCents(stackBankMonthlyPI) },
+                    { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
+                    { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
+                    { label: "Estimated Monthly Bank PITI", value: formatCents(stackMonthlyBankPITI) },
+                    { label: "Down Payment to Seller", value: formatCents(financing.stackDownPaymentToSeller) },
+                    {
+                      label: "Seller Finance Interest Rate",
+                      value: formatPercent(percent.stackSellerFinanceRatePct),
+                    },
+                    {
+                      label: "Seller Finance Amortization Term",
+                      value: `${stackSellerFinanceAmortizationYears} Years (${stackSellerAmortMonths} Monthly Payments)`,
+                    },
+                    ...(stackSellerFinanceBalloonYears > 0
+                      ? [
+                          {
+                            label: "Seller Finance Balloon Term",
+                            value: `${stackSellerFinanceBalloonYears} Years`,
+                          },
+                          {
+                            label: "Estimated Balloon Remaining Balance",
+                            value: formatCents(stackSellerBalloonRemainingBalance ?? 0),
+                          },
+                        ]
+                      : []),
+                    {
+                      label: "Estimated Monthly Seller Finance Payment",
+                      value: formatCents(stackMonthlySellerFinancePayment),
+                    },
+                    { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+                    { label: "Cash to Close, Leg 1", value: formatCents(stackCashToCloseLeg1) },
+                    { label: "Transactional Funding Fee", value: formatCents(stackTransactionalFundingFee) },
+                    {
+                      label:
+                        stackEstimatedBuyerCashAtClosing < 0
+                          ? "Estimated Buyer Cash Required"
+                          : "Estimated Cash to Buyer at Closing",
+                      value: formatCents(Math.abs(stackEstimatedBuyerCashAtClosing)),
+                    },
+                  ]
+                : [
+                    { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                    { label: "Financing Structure", value: financingStructureLabel },
+                    { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                    { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+                    { label: "Estimated Equity", value: formatCents(results.equity) },
+                    { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+                    { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
+                  ],
       },
       {
         title: "Income",
@@ -1721,13 +2190,22 @@ export default function SharedHousingCalculator() {
                   value: formatPercent(percent.traditionalClosingCostPct),
                 },
                 { label: "Traditional Financing Closing Costs", value: formatCents(results.closingCosts) },
+                { label: "Agent Fee", value: formatCents(capital.agentFee) },
+                { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
               ]
-            : [
-                { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
-                { label: "Closing Costs", value: formatCents(results.closingCosts) },
-              ]),
-          { label: "Agent Fee", value: formatCents(capital.agentFee) },
-          { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
+            : financingMode === "stackMethod"
+              ? [
+                  {
+                    label: "Stack Method Closing Costs, Agent Fees, and Assignment Fee",
+                    value: "Included in Net Stack Method Buyer Cash Requirement above",
+                  },
+                ]
+              : [
+                  { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+                  { label: "Closing Costs", value: formatCents(results.closingCosts) },
+                  { label: "Agent Fee", value: formatCents(capital.agentFee) },
+                  { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
+                ]),
           {
             label: "Total Capital Required",
             value: formatCents(results.totalCapitalRequired),
@@ -1763,6 +2241,22 @@ export default function SharedHousingCalculator() {
       traditionalMonthlyPI,
       hybridSellerFinancedBalance,
       hybridMonthlySellerFinancePayment,
+      stackBankLoanAmount,
+      stackSellerFinancedBalance,
+      stackTotalDebtAtAcquisition,
+      stackLeverageRatio,
+      stackBankAmortizationYears,
+      stackBankAmortMonths,
+      stackBankMonthlyPI,
+      stackMonthlyBankPITI,
+      stackSellerFinanceAmortizationYears,
+      stackSellerAmortMonths,
+      stackSellerFinanceBalloonYears,
+      stackSellerBalloonRemainingBalance,
+      stackMonthlySellerFinancePayment,
+      stackCashToCloseLeg1,
+      stackTransactionalFundingFee,
+      stackEstimatedBuyerCashAtClosing,
     ]
   );
 
@@ -1814,17 +2308,62 @@ export default function SharedHousingCalculator() {
                 },
                 { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
               ]
-            : [
-                { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
-                { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
-                { label: "Estimated Equity", value: formatWhole(results.equity) },
-                {
-                  label: "Monthly Payment Type",
-                  value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
-                },
-                { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
-                { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
-              ]),
+            : financingMode === "stackMethod"
+              ? [
+                  { label: "Bank Loan-to-Value Percentage", value: formatPercent(percent.stackBankLtvPct) },
+                  {
+                    label: "Stack Method Closing Cost Percentage",
+                    value: formatPercent(percent.stackClosingCostPct),
+                  },
+                  {
+                    label: "Agent Commission Percentage",
+                    value: formatPercent(percent.stackAgentCommissionPct),
+                  },
+                  { label: "Assignment Fee", value: formatWhole(capital.assignmentFee) },
+                  {
+                    label: "Transactional Funding Fee Percentage",
+                    value: formatPercent(percent.stackTransactionalFundingFeePct),
+                  },
+                  {
+                    label: "Seller's Current First Loan Balance",
+                    value: formatWhole(financing.stackSellerFirstLoanBalance),
+                  },
+                  { label: "Existing Second Lien", value: formatWhole(financing.stackSellerSecondLien) },
+                  { label: "Miscellaneous Liens", value: formatWhole(financing.stackMiscLiens) },
+                  { label: "Down Payment to Seller", value: formatWhole(financing.stackDownPaymentToSeller) },
+                  { label: "Estimated First-Position Bank Loan", value: formatWhole(stackBankLoanAmount) },
+                  {
+                    label: "Estimated Seller-Financed Balance",
+                    value: formatWhole(stackSellerFinancedBalance),
+                  },
+                  { label: "Total Debt at Acquisition", value: formatWhole(stackTotalDebtAtAcquisition) },
+                  {
+                    label: "Current Leverage Ratio",
+                    value: stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio),
+                  },
+                  { label: "Bank Interest Rate", value: formatPercent(percent.stackBankInterestRatePct) },
+                  { label: "Bank Amortization Term", value: `${stackBankAmortizationYears} Years` },
+                  { label: "Seller Finance Interest Rate", value: formatPercent(percent.stackSellerFinanceRatePct) },
+                  {
+                    label: "Seller Finance Amortization Term",
+                    value: `${stackSellerFinanceAmortizationYears} Years`,
+                  },
+                  {
+                    label: "Seller Finance Balloon Term",
+                    value: stackSellerFinanceBalloonYears > 0 ? `${stackSellerFinanceBalloonYears} Years` : "None",
+                  },
+                ]
+              : [
+                  { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
+                  { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
+                  { label: "Estimated Equity", value: formatWhole(results.equity) },
+                  {
+                    label: "Monthly Payment Type",
+                    value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
+                  },
+                  { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
+                  { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+                ]),
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
         { label: "Shared-Bath Bedrooms", value: String(sharedBathBedrooms) },
@@ -1863,6 +2402,14 @@ export default function SharedHousingCalculator() {
       traditionalMonthlyPI,
       hybridSellerFinancedBalance,
       hybridMonthlySellerFinancePayment,
+      capital,
+      stackBankLoanAmount,
+      stackSellerFinancedBalance,
+      stackTotalDebtAtAcquisition,
+      stackLeverageRatio,
+      stackBankAmortizationYears,
+      stackSellerFinanceAmortizationYears,
+      stackSellerFinanceBalloonYears,
     ]
   );
 
@@ -1878,6 +2425,10 @@ export default function SharedHousingCalculator() {
   // Zero-value categories are omitted so the chart and legend only show
   // what is actually part of this deal's capital stack.
   const capitalAllocationSegments = useMemo(() => {
+    // For Stack Method, Closing Costs, Agent Fee, and Assignment Fee are
+    // already folded into results.downPaymentForCapital (the Net Stack
+    // Method Buyer Cash Requirement), so they are excluded here too to
+    // avoid double-counting in the chart.
     const otherCosts = round2(
       capital.arrears +
         capital.furniture +
@@ -1885,9 +2436,9 @@ export default function SharedHousingCalculator() {
         capital.photos +
         results.holdingCosts +
         capital.tcAndLlc +
-        results.closingCosts +
-        capital.agentFee +
-        capital.assignmentFee
+        (financingMode === "stackMethod" ? 0 : results.closingCosts) +
+        (financingMode === "stackMethod" ? 0 : capital.agentFee) +
+        (financingMode === "stackMethod" ? 0 : capital.assignmentFee)
     );
     return [
       { label: downPaymentLabel, value: results.downPaymentForCapital, color: "#12181C" },
@@ -1897,7 +2448,14 @@ export default function SharedHousingCalculator() {
       { label: "Upfront Insurance", value: capital.upfrontInsurance, color: "#8B9795" },
       { label: "Other Costs", value: otherCosts, color: "#C9BFA6" },
     ].filter((segment) => segment.value > 0);
-  }, [downPaymentLabel, results.downPaymentForCapital, capital, results.holdingCosts, results.closingCosts]);
+  }, [
+    downPaymentLabel,
+    results.downPaymentForCapital,
+    capital,
+    results.holdingCosts,
+    results.closingCosts,
+    financingMode,
+  ]);
 
   function downloadCsv() {
     const lines: string[] = ["Section,Field,Value"];
@@ -1981,6 +2539,68 @@ export default function SharedHousingCalculator() {
     URL.revokeObjectURL(url);
   }
 
+  // Downloads the Stack Method's first-position Bank Loan amortization
+  // schedule as its own CSV, separate from the second-position Seller
+  // Finance schedule below and from the main underwriting summary CSV.
+  function downloadStackBankAmortizationCsv() {
+    const lines: string[] = [
+      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Principal and Interest Payment,Ending Balance",
+    ];
+    for (const row of stackBankAmortization.schedule) {
+      lines.push(
+        [
+          row.paymentNumber,
+          row.beginningBalance.toFixed(2),
+          row.principalPaid.toFixed(2),
+          row.interestPaid.toFixed(2),
+          row.totalPayment.toFixed(2),
+          row.endingBalance.toFixed(2),
+        ].join(",")
+      );
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stack-method-bank-loan-amortization-schedule.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Downloads the Stack Method's second-position Seller Finance
+  // amortization schedule as its own CSV. Covers only the seller-
+  // financed balance, never the first-position bank loan.
+  function downloadStackSellerAmortizationCsv() {
+    const lines: string[] = [
+      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Seller Finance Payment,Ending Balance",
+    ];
+    for (const row of stackSellerAmortization.schedule) {
+      lines.push(
+        [
+          row.paymentNumber,
+          row.beginningBalance.toFixed(2),
+          row.principalPaid.toFixed(2),
+          row.interestPaid.toFixed(2),
+          row.totalPayment.toFixed(2),
+          row.endingBalance.toFixed(2),
+        ].join(",")
+      );
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "stack-method-seller-finance-amortization-schedule.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function printSummary() {
     window.print();
   }
@@ -2011,6 +2631,12 @@ export default function SharedHousingCalculator() {
             <p className="font-display text-3xl text-brass-light">
               {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
             </p>
+            {results.cashOnCashReturn === null && financingMode === "stackMethod" && (
+              <p className="mt-2 text-xs text-bone/50 leading-relaxed">
+                This structure models no buyer capital contribution, so a traditional cash-on-cash
+                percentage is not applicable.
+              </p>
+            )}
           </div>
           <div className="border border-brass bg-ink-2 p-6">
             <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
@@ -2262,17 +2888,20 @@ export default function SharedHousingCalculator() {
         <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
           <p className="eyebrow text-brass mb-5">Property and Financing</p>
 
-          {/* Financing Structure: a single-select choice among four
+          {/* Financing Structure: a single-select choice among five
               mutually exclusive options. Subject To and Seller Financing
               can no longer be selected together independently -- a deal
               that combines both uses the dedicated Subject To & Seller
               Finance Hybrid option instead, which has its own inputs and
-              calculations (see below). Selecting any option deselects
-              whichever one was previously active. */}
+              calculations (see below). Stack Method is a fifth,
+              separate option (a first-position bank/DSCR loan combined
+              with second-position seller financing) with its own
+              dedicated inputs and calculations further down. Selecting
+              any option deselects whichever one was previously active. */}
           <div>
             <p className="eyebrow text-brass mb-3">Financing Structure</p>
             <div
-              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2"
               role="group"
               aria-label="Financing Structure"
             >
@@ -2324,6 +2953,18 @@ export default function SharedHousingCalculator() {
               >
                 Subject To &amp; Seller Finance <HybridBadge />
               </button>
+              <button
+                type="button"
+                onClick={() => selectFinancingMode("stackMethod")}
+                aria-pressed={financingMode === "stackMethod"}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  financingMode === "stackMethod"
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Stack Method
+              </button>
             </div>
             <p className="mt-3 text-xs text-ink/50 leading-relaxed">
               Select the financing structure that applies to the proposed acquisition. Only one may be
@@ -2340,10 +2981,11 @@ export default function SharedHousingCalculator() {
           {/* Purchase Price is shared by every financing structure (it
               drives Estimated Equity, Closing Costs, and the printable
               report regardless of mode), so outside of Traditional
-              Financing and Hybrid it lives here, at the top of this
-              section. When Traditional Financing or Hybrid is selected
-              it moves into that structure's dedicated section below
-              instead -- it is still the exact same field either way. */}
+              Financing, Hybrid, and Stack Method it lives here, at the
+              top of this section. When Traditional Financing, Hybrid,
+              or Stack Method is selected it moves into that structure's
+              dedicated section below instead -- it is still the exact
+              same field either way. */}
           {(financingMode === "sellerFinancing" || financingMode === "subjectTo" || financingMode === "") && (
             <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
               <CurrencyField
@@ -2838,6 +3480,537 @@ export default function SharedHousingCalculator() {
             </div>
           )}
 
+          {/* ------------------------------------------------------ */}
+          {/* Stack Method: a two-position creative-finance structure
+              combining a first-position bank/DSCR loan with second-
+              position seller financing carrying the seller's remaining
+              equity. Reproduces the acquisition and cash-to-close
+              formulas reviewed in the attached workbook, plus new
+              monthly-payment calculations needed to feed the combined
+              housing payment into the co-living underwriting below. */}
+          {/* ------------------------------------------------------ */}
+          {financingMode === "stackMethod" && (
+            <div className="mt-8 pt-6 border-t border-line-dark">
+              <p className="eyebrow text-brass mb-3">Stack Method</p>
+              <p className="text-xs text-ink/50 leading-relaxed mb-2">
+                Stack Method is a creative finance structure for sellers who want a big down
+                payment. You split the deal into two parts:
+              </p>
+              <ul className="mb-3 space-y-1.5 text-xs text-ink/50 leading-relaxed list-disc pl-5">
+                <li>A first-position bank or DSCR loan, typically around half of the purchase price</li>
+                <li>The seller carries the remaining balance in second position with seller financing.</li>
+              </ul>
+              <p className="text-xs text-ink/40 leading-relaxed mb-6">
+                Because a lender is involved, the property must appraise and the numbers have to
+                pencil. It is the only creative strategy taught here that requires a bank, which is
+                why it is called a higher-tier skill set. The upside is you can conserve or even
+                eliminate your own out-of-pocket by letting the bank fund most of what the seller
+                wants upfront, while the seller carries the rest on terms.
+              </p>
+
+              <p className="eyebrow text-ink/50 mb-3">Acquisition Data</p>
+              <div className="grid sm:grid-cols-2 gap-5">
+                <CurrencyField
+                  id="purchasePriceStack"
+                  label="Purchase Price"
+                  draft={financingDraft.purchasePrice}
+                  onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
+                  onBlur={() => handleFinancingBlur("purchasePrice")}
+                />
+                <PercentField
+                  id="stackBankLtvPct"
+                  label="Bank Loan-to-Value Percentage"
+                  draft={percentDraft.stackBankLtvPct}
+                  onChange={(raw) => handlePercentChange("stackBankLtvPct", raw)}
+                  onBlur={() => handlePercentBlur("stackBankLtvPct")}
+                  info="The share of the purchase price a bank or DSCR lender is estimated to finance in first position. A higher percentage means a larger first-position loan and a smaller cash-to-close requirement."
+                />
+                <PercentField
+                  id="stackClosingCostPct"
+                  label="Closing Cost Percentage"
+                  draft={percentDraft.stackClosingCostPct}
+                  onChange={(raw) => handlePercentChange("stackClosingCostPct", raw)}
+                  onBlur={() => handlePercentBlur("stackClosingCostPct")}
+                  info="Applied to the purchase price to estimate closing costs for the first-position bank loan."
+                />
+                <PercentField
+                  id="stackAgentCommissionPct"
+                  label="Agent Commission Percentage"
+                  draft={percentDraft.stackAgentCommissionPct}
+                  onChange={(raw) => handlePercentChange("stackAgentCommissionPct", raw)}
+                  onBlur={() => handlePercentBlur("stackAgentCommissionPct")}
+                  info="Applied to the purchase price to estimate agent commission, if any."
+                />
+                <CurrencyField
+                  id="assignmentFeeStack"
+                  label="Assignment Fee"
+                  draft={capitalDraft.assignmentFee}
+                  onChange={(raw) => handleCapitalChange("assignmentFee", raw)}
+                  onBlur={() => handleCapitalBlur("assignmentFee")}
+                  helperText="Shared with the Assignment Fee entered in Total Capital Required below; editing it in either place updates both."
+                />
+                <PercentField
+                  id="stackTransactionalFundingFeePct"
+                  label="Transactional Funding Fee Percentage"
+                  draft={percentDraft.stackTransactionalFundingFeePct}
+                  onChange={(raw) => handlePercentChange("stackTransactionalFundingFeePct", raw)}
+                  onBlur={() => handlePercentBlur("stackTransactionalFundingFeePct")}
+                  info="A short-term funding fee sometimes used to help cover the cash-to-close gap for a brief period. This is an estimate only, not a lending commitment, and not legal, lending, or tax advice."
+                />
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Property Information</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <CurrencyField
+                    id="stackSellerFirstLoanBalance"
+                    label="Seller's Current First Loan Balance"
+                    draft={financingDraft.stackSellerFirstLoanBalance}
+                    onChange={(raw) => handleFinancingChange("stackSellerFirstLoanBalance", raw)}
+                    onBlur={() => handleFinancingBlur("stackSellerFirstLoanBalance")}
+                  />
+                  <CurrencyField
+                    id="stackSellerSecondLien"
+                    label="Existing Second Lien"
+                    draft={financingDraft.stackSellerSecondLien}
+                    onChange={(raw) => handleFinancingChange("stackSellerSecondLien", raw)}
+                    onBlur={() => handleFinancingBlur("stackSellerSecondLien")}
+                  />
+                  <CurrencyField
+                    id="stackMiscLiens"
+                    label="Miscellaneous Liens"
+                    draft={financingDraft.stackMiscLiens}
+                    onChange={(raw) => handleFinancingChange("stackMiscLiens", raw)}
+                    onBlur={() => handleFinancingBlur("stackMiscLiens")}
+                  />
+                  <CurrencyField
+                    id="stackDownPaymentToSeller"
+                    label="Down Payment to Seller"
+                    draft={financingDraft.stackDownPaymentToSeller}
+                    onChange={(raw) => handleFinancingChange("stackDownPaymentToSeller", raw)}
+                    onBlur={() => handleFinancingBlur("stackDownPaymentToSeller")}
+                    helperText="The cash the seller is to receive toward their equity at closing. Not the bank loan down payment."
+                  />
+                </div>
+              </div>
+
+              {financing.stackSellerFirstLoanBalance +
+                financing.stackSellerSecondLien +
+                financing.stackMiscLiens +
+                financing.stackDownPaymentToSeller >
+                financing.purchasePrice && (
+                <p className="mt-4 text-sm text-red-700">
+                  The existing debt, liens, and seller down payment exceed the purchase price. Please
+                  review the entered amounts.
+                </p>
+              )}
+
+              {/* Acquisition Structure */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Acquisition Structure</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <ReadOnlyStat
+                    label="Estimated First-Position Bank Loan"
+                    value={formatWhole(stackBankLoanAmount)}
+                    helperText="Purchase Price x Bank Loan-to-Value Percentage."
+                    info="The primary loan, typically from a bank or DSCR lender, repaid first if the property is ever sold or foreclosed on."
+                  />
+                  <ReadOnlyStat
+                    label="Estimated Seller-Financed Balance"
+                    value={formatWhole(stackSellerFinancedBalance)}
+                    helperText="Purchase Price minus Seller's Current First Loan Balance, Existing Second Lien, Miscellaneous Liens, and Down Payment to Seller. Never falls below $0."
+                    info="Second-position financing provided directly by the seller for the remaining balance, repaid after the first-position loan. Not legal, lending, or tax advice."
+                  />
+                  <ReadOnlyStat label="Total Debt at Acquisition" value={formatWhole(stackTotalDebtAtAcquisition)} />
+                  <ReadOnlyStat
+                    label="Current Leverage Ratio"
+                    value={stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                    helperText="Total Debt at Acquisition divided by Purchase Price. May exceed 100%."
+                    info="Total debt (bank loan plus seller financing) as a percentage of the purchase price. A ratio above 100% means the total financing exceeds the purchase price."
+                  />
+                </div>
+                {stackTotalDebtAtAcquisition > financing.purchasePrice && financing.purchasePrice > 0 && (
+                  <p className="mt-4 text-sm text-amber-700">
+                    This structure creates total acquisition debt above the purchase price. Confirm
+                    that the lender, appraisal, title company, and all parties will permit the
+                    proposed structure.
+                  </p>
+                )}
+              </div>
+
+              {/* Closing Structure */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Closing Structure</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <ReadOnlyStat label="Bank Loan Down Payment" value={formatWhole(stackBankLoanDownPayment)} />
+                  <ReadOnlyStat label="Stack Method Closing Costs" value={formatWhole(stackClosingCosts)} />
+                  <ReadOnlyStat label="Agent Fees" value={formatWhole(stackAgentFees)} />
+                  <ReadOnlyStat label="Assignment Fee" value={formatWhole(capital.assignmentFee)} />
+                  <ReadOnlyStat
+                    label="Cash to Close, Leg 1"
+                    value={formatWhole(stackCashToCloseLeg1)}
+                    helperText="Bank Loan Down Payment + Stack Method Closing Costs + Agent Fees + Assignment Fee. Does not yet include the Transactional Funding Fee."
+                    info="The estimated cash needed to close the first-position bank loan, before the transactional funding fee or the seller-financed proceeds are factored in."
+                  />
+                  <ReadOnlyStat
+                    label="Transactional Funding Fee"
+                    value={formatWhole(stackTransactionalFundingFee)}
+                    helperText="Cash to Close, Leg 1 x Transactional Funding Fee Percentage."
+                  />
+                </div>
+
+                <div className="mt-6 rounded border border-line-dark bg-white p-6">
+                  <p className="eyebrow text-brass mb-1.5">
+                    {stackEstimatedBuyerCashAtClosing < 0
+                      ? "Estimated Buyer Cash Required"
+                      : "Estimated Cash to Buyer at Closing"}
+                  </p>
+                  <p className="font-display text-2xl text-ink">
+                    {formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}
+                  </p>
+                  <p className="mt-2 text-xs text-ink/50 leading-relaxed">
+                    Calculation: Seller-Financed Balance {formatCents(stackSellerFinancedBalance)} minus Cash to
+                    Close, Leg 1 {formatCents(stackCashToCloseLeg1)} minus Transactional Funding Fee{" "}
+                    {formatCents(stackTransactionalFundingFee)} = {formatCents(stackEstimatedBuyerCashAtClosing)}
+                  </p>
+                  <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+                    A positive result is estimated cash available to the buyer at closing after the
+                    modeled costs. $0 means an estimated $0-out-of-pocket structure. A negative result
+                    means the buyer must contribute that amount out of pocket.
+                  </p>
+                </div>
+
+                <div className="mt-4">
+                  <ReadOnlyStat
+                    label="Can this be purchased for an estimated $0 out of pocket?"
+                    value={stackZeroOutOfPocket}
+                  />
+                </div>
+              </div>
+
+              {/* Estimated Seller Cash at Closing + reconciliation */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <ReadOnlyStat
+                  label="Estimated Seller Cash at Closing"
+                  value={formatWhole(stackEstimatedSellerCashAtClosing)}
+                  helperText="Purchase Price minus Seller's Current First Loan Balance minus Estimated Seller-Financed Balance."
+                />
+                <p className="mt-4 mb-2 eyebrow text-ink/50">Seller Cash and Payoff Reconciliation</p>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+                    <span className="text-ink/60">Down Payment to Seller</span>
+                    <span>{formatCents(financing.stackDownPaymentToSeller)}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+                    <span className="text-ink/60">Seller's Current First Loan Payoff</span>
+                    <span>{formatCents(financing.stackSellerFirstLoanBalance)}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+                    <span className="text-ink/60">Existing Second Lien Payoff</span>
+                    <span>{formatCents(financing.stackSellerSecondLien)}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+                    <span className="text-ink/60">Miscellaneous Lien Payoff</span>
+                    <span>{formatCents(financing.stackMiscLiens)}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+                    <span className="text-ink/60">Seller-Financed Balance</span>
+                    <span>{formatCents(stackSellerFinancedBalance)}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-ink/60">Purchase Price</span>
+                    <span>{formatCents(financing.purchasePrice)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Monthly Bank Financing */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">First-Position Bank or DSCR Loan Payment</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <PercentField
+                    id="stackBankInterestRatePct"
+                    label="Bank Interest Rate"
+                    draft={percentDraft.stackBankInterestRatePct}
+                    onChange={(raw) => handlePercentChange("stackBankInterestRatePct", raw)}
+                    onBlur={() => handlePercentBlur("stackBankInterestRatePct")}
+                  />
+                  <IntegerField
+                    id="stackBankAmortizationYears"
+                    label="Bank Amortization Term (Years)"
+                    draft={stackBankAmortizationYearsDraft}
+                    onChange={(raw) => {
+                      setStackBankAmortizationYearsDraft(raw);
+                      setStackBankAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                    }}
+                    onBlur={() =>
+                      setStackBankAmortizationYearsDraft(String(Math.max(1, stackBankAmortizationYears)))
+                    }
+                    info={`${stackBankAmortMonths} monthly payments.`}
+                  />
+                  <CurrencyField
+                    id="annualPropertyTaxesStack"
+                    label="Annual Property Taxes"
+                    draft={financingDraft.annualPropertyTaxes}
+                    onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
+                    onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                  />
+                  <CurrencyField
+                    id="annualPropertyInsuranceStack"
+                    label="Annual Property Insurance"
+                    draft={financingDraft.annualPropertyInsurance}
+                    onChange={(raw) => handleFinancingChange("annualPropertyInsurance", raw)}
+                    onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
+                  />
+                </div>
+                <div className="mt-6 grid sm:grid-cols-2 gap-5">
+                  <ReadOnlyStat
+                    label="Monthly Bank Principal and Interest"
+                    value={formatCents(stackBankMonthlyPI)}
+                  />
+                  <ReadOnlyStat label="Monthly Property Taxes" value={formatCents(stackMonthlyPropertyTaxes)} />
+                  <ReadOnlyStat
+                    label="Monthly Property Insurance"
+                    value={formatCents(stackMonthlyPropertyInsurance)}
+                  />
+                  <ReadOnlyStat
+                    label="Estimated Monthly Bank PITI"
+                    value={formatCents(stackMonthlyBankPITI)}
+                    helperText="Monthly Bank Principal and Interest + Monthly Property Taxes + Monthly Property Insurance."
+                  />
+                </div>
+              </div>
+
+              {/* Seller Financing Terms */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Seller Financing Terms</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <PercentField
+                    id="stackSellerFinanceRatePct"
+                    label="Seller Finance Interest Rate"
+                    draft={percentDraft.stackSellerFinanceRatePct}
+                    onChange={(raw) => handlePercentChange("stackSellerFinanceRatePct", raw)}
+                    onBlur={() => handlePercentBlur("stackSellerFinanceRatePct")}
+                    info="Decimals and 0% are both allowed."
+                  />
+                  <IntegerField
+                    id="stackSellerFinanceAmortizationYears"
+                    label="Seller Finance Amortization Term (Years)"
+                    draft={stackSellerFinanceAmortizationYearsDraft}
+                    onChange={(raw) => {
+                      setStackSellerFinanceAmortizationYearsDraft(raw);
+                      setStackSellerFinanceAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                    }}
+                    onBlur={() =>
+                      setStackSellerFinanceAmortizationYearsDraft(
+                        String(Math.max(1, stackSellerFinanceAmortizationYears))
+                      )
+                    }
+                    info={`${stackSellerAmortMonths} monthly payments.`}
+                  />
+                  <IntegerField
+                    id="stackSellerFinanceBalloonYears"
+                    label="Seller Finance Balloon Term (Years, Optional)"
+                    draft={stackSellerFinanceBalloonYearsDraft}
+                    onChange={(raw) => {
+                      setStackSellerFinanceBalloonYearsDraft(raw);
+                      setStackSellerFinanceBalloonYears(Math.max(0, parseTypedInt(raw)));
+                    }}
+                    onBlur={() =>
+                      setStackSellerFinanceBalloonYearsDraft(String(Math.max(0, stackSellerFinanceBalloonYears)))
+                    }
+                    info="Enter 0 for no balloon (None). The monthly payment is still based on the full amortization term above; only the remaining balance due at the balloon date changes."
+                  />
+                  <ReadOnlyStat
+                    label="Estimated Seller-Financed Balance"
+                    value={formatCents(stackSellerFinancedBalance)}
+                  />
+                </div>
+                <div className="mt-6 rounded border border-brass bg-paper-2 p-6">
+                  <p className="eyebrow text-brass mb-1.5">Estimated Monthly Seller Finance Payment</p>
+                  <p className="font-display text-2xl text-ink">
+                    {formatCents(stackMonthlySellerFinancePayment)}
+                  </p>
+                </div>
+                {stackSellerFinanceBalloonYears > 0 && (
+                  <div className="mt-4">
+                    <ReadOnlyStat
+                      label="Estimated Balloon Remaining Balance"
+                      value={formatCents(stackSellerBalloonRemainingBalance ?? 0)}
+                      helperText={`Estimated seller-financed balance still owed after ${stackSellerFinanceBalloonYears} years of payments at the selected amortization term.`}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Total Monthly Housing Payment */}
+              <div className="mt-8 pt-6 border-t border-line-dark rounded border border-line-dark bg-white p-6">
+                <p className="eyebrow text-brass mb-4">Total Monthly Housing Payment</p>
+                <div className="divide-y divide-line-dark border-t border-b border-line-dark">
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Estimated Monthly Bank PITI</span>
+                    <span>{formatCents(stackMonthlyBankPITI)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Estimated Monthly Seller Finance Payment</span>
+                    <span>{formatCents(stackMonthlySellerFinancePayment)}</span>
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
+                  <span className="eyebrow text-brass">Total Monthly Housing Payment</span>
+                  <span className="font-display text-2xl text-ink">
+                    {formatCents(results.monthlyHousingPayment)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Bank Loan Amortization Schedule */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setStackBankAmortizationOpen((v) => !v)}
+                    aria-expanded={stackBankAmortizationOpen}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    {stackBankAmortizationOpen ? "Hide" : "View"} Bank Loan Amortization Schedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadStackBankAmortizationCsv}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    Download Bank Loan Amortization Schedule as CSV
+                  </button>
+                </div>
+                {stackBankAmortizationOpen && (
+                  <div className="mt-5">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs sm:text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-line-dark text-left text-ink/60">
+                            <th className="py-2 pr-3 font-medium">Payment #</th>
+                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                            <th className="py-2 pr-3 font-medium">Principal</th>
+                            <th className="py-2 pr-3 font-medium">Interest</th>
+                            <th className="py-2 pr-3 font-medium">Principal and Interest Payment</th>
+                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(stackBankAmortizationShowAll
+                            ? stackBankAmortization.schedule
+                            : stackBankAmortization.schedule.slice(0, 12)
+                          ).map((row) => (
+                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {stackBankAmortization.schedule.length > 12 && (
+                      <button
+                        type="button"
+                        onClick={() => setStackBankAmortizationShowAll((v) => !v)}
+                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        {stackBankAmortizationShowAll
+                          ? "Show First 12 Payments"
+                          : `View All ${stackBankAmortization.schedule.length} Payments`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Seller Finance Amortization Schedule */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setStackSellerAmortizationOpen((v) => !v)}
+                    aria-expanded={stackSellerAmortizationOpen}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    {stackSellerAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadStackSellerAmortizationCsv}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    Download Seller Finance Amortization Schedule as CSV
+                  </button>
+                </div>
+                {stackSellerAmortizationOpen && (
+                  <div className="mt-5">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs sm:text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-line-dark text-left text-ink/60">
+                            <th className="py-2 pr-3 font-medium">Payment #</th>
+                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                            <th className="py-2 pr-3 font-medium">Principal</th>
+                            <th className="py-2 pr-3 font-medium">Interest</th>
+                            <th className="py-2 pr-3 font-medium">Seller Finance Payment</th>
+                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(stackSellerAmortizationShowAll
+                            ? stackSellerAmortization.schedule
+                            : stackSellerAmortization.schedule.slice(0, 12)
+                          ).map((row) => (
+                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {stackSellerAmortization.schedule.length > 12 && (
+                      <button
+                        type="button"
+                        onClick={() => setStackSellerAmortizationShowAll((v) => !v)}
+                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        {stackSellerAmortizationShowAll
+                          ? "Show First 12 Payments"
+                          : `View All ${stackSellerAmortization.schedule.length} Payments`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Co-Living Underwriting note: the existing shared-housing
+                  underwriting fields and results immediately below this
+                  section automatically use Total Monthly Housing Payment
+                  as the housing expense -- no financing figures need to
+                  be re-entered. */}
+              {results.totalCapitalRequired === 0 && (
+                <div className="mt-8 pt-6 border-t border-line-dark">
+                  <p className="text-sm text-ink/60 leading-relaxed">
+                    Cash-on-Cash Return: N/A. This structure models no buyer capital contribution, so
+                    a traditional cash-on-cash percentage is not applicable.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {financingMode !== "stackMethod" && (
           <div className="mt-8 pt-6 border-t border-line-dark">
             <ReadOnlyStat
               label="Estimated Equity"
@@ -2861,6 +4034,7 @@ export default function SharedHousingCalculator() {
               </p>
             )}
           </div>
+          )}
         </div>
 
         {/* ---------------------------------------------------------- */}
@@ -3187,6 +4361,23 @@ export default function SharedHousingCalculator() {
                   helperText="Estimated Loan Balance x Traditional Closing Cost Percentage."
                 />
               </>
+            ) : financingMode === "stackMethod" ? (
+              <>
+                <ReadOnlyStat
+                  label="Stack Method Closing Costs and Agent Fees"
+                  value={`${formatCents(stackClosingCosts)} + ${formatCents(stackAgentFees)}`}
+                  helperText="Editable in the Stack Method section above (Closing Cost Percentage and Agent Commission Percentage). Already included in the Net Stack Method Buyer Cash Requirement above, so not added again here."
+                />
+                <CurrencyField
+                  id="agentFeeStackDisabled"
+                  label="Agent Fee"
+                  draft={capitalDraft.agentFee}
+                  onChange={(raw) => handleCapitalChange("agentFee", raw)}
+                  onBlur={() => handleCapitalBlur("agentFee")}
+                  disabled
+                  helperText="Not used for Stack Method. Agent Fees are calculated automatically from the Agent Commission Percentage entered in the Stack Method section above."
+                />
+              </>
             ) : (
               <>
                 <PercentField
@@ -3202,21 +4393,26 @@ export default function SharedHousingCalculator() {
                   value={formatCents(results.closingCosts)}
                   helperText="Calculated using the estimated closing cost percentage entered above."
                 />
+                <CurrencyField
+                  id="agentFee"
+                  label="Agent Fee"
+                  draft={capitalDraft.agentFee}
+                  onChange={(raw) => handleCapitalChange("agentFee", raw)}
+                  onBlur={() => handleCapitalBlur("agentFee")}
+                />
               </>
             )}
-            <CurrencyField
-              id="agentFee"
-              label="Agent Fee"
-              draft={capitalDraft.agentFee}
-              onChange={(raw) => handleCapitalChange("agentFee", raw)}
-              onBlur={() => handleCapitalBlur("agentFee")}
-            />
             <CurrencyField
               id="assignmentFee"
               label="Assignment Fee"
               draft={capitalDraft.assignmentFee}
               onChange={(raw) => handleCapitalChange("assignmentFee", raw)}
               onBlur={() => handleCapitalBlur("assignmentFee")}
+              helperText={
+                financingMode === "stackMethod"
+                  ? "Shared with the Assignment Fee entered in the Stack Method section above; editing it in either place updates both."
+                  : undefined
+              }
             />
           </div>
 
@@ -3600,6 +4796,11 @@ export default function SharedHousingCalculator() {
                       {formatCents(financing.hybridExistingMortgageBalance)}
                     </span>
                   </div>
+                ) : financingMode === "stackMethod" ? (
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">First-Position Bank Loan</span>
+                    <span className="font-medium text-ink">{formatCents(stackBankLoanAmount)}</span>
+                  </div>
                 ) : (
                   financingMode !== "traditional" && (
                     <div className="flex justify-between">
@@ -3726,6 +4927,33 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                   </>
+                ) : financingMode === "stackMethod" ? (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Bank Loan-to-Value Percentage</span>
+                      <span className="font-medium text-ink">{formatPercent(percent.stackBankLtvPct)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller-Financed Balance</span>
+                      <span className="font-medium text-ink">{formatCents(stackSellerFinancedBalance)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Total Debt at Acquisition</span>
+                      <span className="font-medium text-ink">{formatCents(stackTotalDebtAtAcquisition)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Current Leverage Ratio</span>
+                      <span className="font-medium text-ink">
+                        {stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">
+                        {formatCents(results.monthlyHousingPayment)}
+                      </span>
+                    </div>
+                  </>
                 ) : (
                   <>
                     <div className="flex justify-between">
@@ -3770,6 +4998,121 @@ export default function SharedHousingCalculator() {
               </div>
             </div>
           </div>
+
+          {/* Stack Method Financing: a dedicated full-width card covering
+              every acquisition, closing, and monthly-financing figure
+              from the Stack Method calculation, printed only when Stack
+              Method is the selected Financing Structure. */}
+          {financingMode === "stackMethod" && (
+            <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+                <Landmark size={14} className="text-brass" />
+                <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+                  Stack Method Financing
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[9.5pt]">
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Purchase Price</span>
+                  <span className="text-ink">{formatCents(financing.purchasePrice)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Bank Loan-to-Value Percentage</span>
+                  <span className="text-ink">{formatPercent(percent.stackBankLtvPct)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">First-Position Bank Loan</span>
+                  <span className="text-ink">{formatCents(stackBankLoanAmount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Bank Interest Rate</span>
+                  <span className="text-ink">{formatPercent(percent.stackBankInterestRatePct)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Bank Amortization</span>
+                  <span className="text-ink">
+                    {stackBankAmortizationYears} Years ({stackBankAmortMonths} Monthly Payments)
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Monthly Bank Principal and Interest</span>
+                  <span className="text-ink">{formatCents(stackBankMonthlyPI)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Annual Property Taxes</span>
+                  <span className="text-ink">{formatCents(financing.annualPropertyTaxes)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Annual Property Insurance</span>
+                  <span className="text-ink">{formatCents(financing.annualPropertyInsurance)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Estimated Monthly Bank PITI</span>
+                  <span className="text-ink">{formatCents(stackMonthlyBankPITI)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Down Payment to Seller</span>
+                  <span className="text-ink">{formatCents(financing.stackDownPaymentToSeller)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Estimated Seller-Financed Balance</span>
+                  <span className="text-ink">{formatCents(stackSellerFinancedBalance)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Seller Finance Interest Rate</span>
+                  <span className="text-ink">{formatPercent(percent.stackSellerFinanceRatePct)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Seller Finance Amortization</span>
+                  <span className="text-ink">
+                    {stackSellerFinanceAmortizationYears} Years ({stackSellerAmortMonths} Monthly Payments)
+                  </span>
+                </div>
+                {stackSellerFinanceBalloonYears > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Seller Finance Balloon Term</span>
+                    <span className="text-ink">{stackSellerFinanceBalloonYears} Years</span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Estimated Monthly Seller Finance Payment</span>
+                  <span className="text-ink">{formatCents(stackMonthlySellerFinancePayment)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Cash to Close, Leg 1</span>
+                  <span className="text-ink">{formatCents(stackCashToCloseLeg1)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Transactional Funding Fee</span>
+                  <span className="text-ink">{formatCents(stackTransactionalFundingFee)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">
+                    {stackEstimatedBuyerCashAtClosing < 0
+                      ? "Estimated Buyer Cash Required"
+                      : "Estimated Cash to Buyer at Closing"}
+                  </span>
+                  <span className="text-ink">{formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Total Debt at Acquisition</span>
+                  <span className="text-ink">{formatCents(stackTotalDebtAtAcquisition)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Current Leverage Ratio</span>
+                  <span className="text-ink">
+                    {stackLeverageRatio === null ? "N/A" : formatPercent(stackLeverageRatio)}
+                  </span>
+                </div>
+              </div>
+              <div className="mt-3 flex justify-between items-center rounded-lg bg-ink text-white px-3 py-2.5">
+                <span className="text-[9.5pt] font-semibold uppercase tracking-wide">
+                  Total Monthly Housing Payment
+                </span>
+                <span className="text-[13pt] font-bold">{formatCents(results.monthlyHousingPayment)}</span>
+              </div>
+            </div>
+          )}
 
           {/* Rental Income card: Gross and Effective Monthly Rent called
               out as large highlight tiles (Effective Monthly Rent uses a
@@ -3899,29 +5242,38 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/60">Appliances</span>
                 <span className="text-ink">{formatCents(capital.appliances)}</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-ink/60">
-                  {financingMode === "traditional"
-                    ? `Traditional Closing Cost Percentage (${formatPercent(percent.traditionalClosingCostPct)})`
-                    : `Closing Costs (${formatPercent(percent.closingCostPct)})`}
-                </span>
-                <span className="text-ink">{formatCents(results.closingCosts)}</span>
-              </div>
+              {financingMode === "stackMethod" ? (
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Closing Costs, Agent Fees, and Assignment Fee</span>
+                  <span className="text-ink">Included above</span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">
+                      {financingMode === "traditional"
+                        ? `Traditional Closing Cost Percentage (${formatPercent(percent.traditionalClosingCostPct)})`
+                        : `Closing Costs (${formatPercent(percent.closingCostPct)})`}
+                    </span>
+                    <span className="text-ink">{formatCents(results.closingCosts)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Agent Fee</span>
+                    <span className="text-ink">{formatCents(capital.agentFee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Assignment Fee</span>
+                    <span className="text-ink">{formatCents(capital.assignmentFee)}</span>
+                  </div>
+                </>
+              )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Photos</span>
                 <span className="text-ink">{formatCents(capital.photos)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-ink/60">Agent Fee</span>
-                <span className="text-ink">{formatCents(capital.agentFee)}</span>
-              </div>
-              <div className="flex justify-between">
                 <span className="text-ink/60">Holding Costs</span>
                 <span className="text-ink">{formatCents(results.holdingCosts)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-ink/60">Assignment Fee</span>
-                <span className="text-ink">{formatCents(capital.assignmentFee)}</span>
               </div>
             </div>
             <div
