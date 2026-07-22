@@ -53,11 +53,6 @@ const MAX_PROPERTY_IMAGES = 6;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const MAX_IMAGE_DIMENSION = 1600;
 
-// Floor Plan: a single optional file, processed and stored entirely
-// client-side like Property Images. Accepts image formats plus PDF,
-// since floor plans are commonly distributed as PDFs.
-const ACCEPTED_FLOOR_PLAN_TYPES = [...ACCEPTED_IMAGE_TYPES, "application/pdf"];
-
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
 // ---------------------------------------------------------------------
@@ -173,10 +168,11 @@ function getGalleryLayout(count: number): { gridClass: string; imgHeightClass: s
   return { gridClass: "grid-cols-3", imgHeightClass: "h-[1.3in]" };
 }
 
-// Floor Plan file: either a processed image data URL or a PDF read
-// directly as a data URL (PDFs are not resized/compressed, only images
-// are, since canvas-based processing cannot rasterize a PDF).
-type FloorPlanFile = { dataUrl: string; name: string; isImage: boolean };
+// Floor Plan file: a single optional image, processed exactly like a
+// Property Image (resized, orientation-corrected, and stored as a data
+// URL) so it can be previewed on screen and embedded directly, as an
+// actual image, in the printable report.
+type FloorPlanFile = { dataUrl: string; name: string };
 
 // A lightweight, non-blocking check that the Video Walkthrough Link
 // looks like a real web address. Empty is treated as valid since the
@@ -707,33 +703,26 @@ export default function SharedHousingCalculator() {
     }
   }
 
-  // Floor Plan handler: a single optional file, processed entirely
-  // client-side. Images are resized/compressed like Property Images;
-  // PDFs are read directly as a data URL (no canvas processing, since a
-  // PDF cannot be rasterized that way). Uploading a new file always
-  // replaces whatever floor plan was there before.
+  // Floor Plan handler: a single optional image, processed entirely
+  // client-side exactly like a Property Image (resized/compressed and
+  // orientation-corrected via processImageFile), so it always renders as
+  // an actual image both on screen and in the printable report.
+  // Uploading a new file always replaces whatever floor plan was there
+  // before.
   async function handleFloorPlanFile(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
-    if (!ACCEPTED_FLOOR_PLAN_TYPES.includes(file.type)) {
-      setFloorPlanError("That file is not supported. Please choose a JPG, PNG, WEBP, or PDF file.");
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setFloorPlanError("That file is not supported. Please choose a JPG, PNG, or WEBP image.");
       return;
     }
     setFloorPlanError("");
     setProcessingFloorPlan(true);
     try {
-      const isImage = ACCEPTED_IMAGE_TYPES.includes(file.type);
-      const dataUrl = isImage
-        ? await processImageFile(file)
-        : await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result));
-            reader.onerror = () => reject(new Error("Could not read the selected file."));
-            reader.readAsDataURL(file);
-          });
-      setFloorPlan({ dataUrl, name: file.name, isImage });
+      const dataUrl = await processImageFile(file);
+      setFloorPlan({ dataUrl, name: file.name });
     } catch {
-      setFloorPlanError("That file could not be processed. Please try a different file.");
+      setFloorPlanError("That image could not be processed. Please try a different file.");
     } finally {
       setProcessingFloorPlan(false);
     }
@@ -1152,7 +1141,7 @@ export default function SharedHousingCalculator() {
         ],
       },
       {
-        title: "Upfront Capital Required",
+        title: "Capital Required",
         rows: [
           { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
           { label: "Arrears", value: formatCents(capital.arrears) },
@@ -1422,24 +1411,19 @@ export default function SharedHousingCalculator() {
 
           {floorPlan ? (
             <div className="border border-line-dark bg-white p-3 max-w-sm">
-              {floorPlan.isImage ? (
+              <div className="flex items-center justify-center bg-paper-2">
                 <img
                   src={floorPlan.dataUrl}
                   alt={floorPlan.name || "Floor plan"}
                   className="w-full h-40 object-contain"
                 />
-              ) : (
-                <div className="py-6 px-2">
-                  <span className="text-sm text-ink/70 break-all">{floorPlan.name}</span>
-                  <p className="mt-1 text-xs text-ink/50">PDF floor plan</p>
-                </div>
-              )}
+              </div>
               <div className="mt-2 flex items-center justify-between gap-2">
                 <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
                   Replace
                   <input
                     type="file"
-                    accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                    accept="image/jpeg,image/jpg,image/png,image/webp"
                     className="hidden"
                     onChange={(e) => {
                       handleFloorPlanFile(e.target.files);
@@ -1468,7 +1452,7 @@ export default function SharedHousingCalculator() {
               <input
                 id="floorPlanInput"
                 type="file"
-                accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                accept="image/jpeg,image/jpg,image/png,image/webp"
                 className="hidden"
                 disabled={processingFloorPlan}
                 onChange={(e) => {
@@ -1486,7 +1470,7 @@ export default function SharedHousingCalculator() {
           )}
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-            Supported formats: JPG, PNG, WEBP, and PDF. One floor plan.
+            Supported formats: JPG, PNG, and WEBP. One floor plan.
             Appears at the bottom of the printable underwriting summary.
           </p>
         </div>
@@ -2112,18 +2096,22 @@ export default function SharedHousingCalculator() {
           </div>
 
           {/* 6. Video Walkthrough, only if a link was entered. No video
-              player is embedded; the label is a clickable hyperlink in
-              saved PDF versions, with the full URL printed beneath it so
-              the link is still usable from a physical printed copy. */}
+              player is embedded and no raw URL is printed; the only visible
+              text is a "View Video Walkthrough" hyperlink, which stays
+              clickable in a saved PDF. */}
           {videoWalkthroughLink.trim() !== "" && (
             <div className="mb-6 print:break-inside-avoid-page">
               <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
                 Video Walkthrough
               </p>
-              <a href={videoWalkthroughLink.trim()} className="text-[11pt] font-semibold text-brass underline">
-                View Property Walkthrough
+              <a
+                href={videoWalkthroughLink.trim()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[11pt] font-semibold text-brass underline"
+              >
+                View Video Walkthrough
               </a>
-              <p className="mt-1 text-[9pt] text-ink/60 break-all">{videoWalkthroughLink.trim()}</p>
             </div>
           )}
 
@@ -2205,8 +2193,7 @@ export default function SharedHousingCalculator() {
           </div>
 
           {/* 9-13. Property and Financing, Rental Income, Monthly
-              Operating Expenses, Upfront Capital Required, Estimated
-              Returns */}
+              Operating Expenses, Capital Required, Estimated Returns */}
           {printSections.map((section) => (
             <div key={section.title} className="mb-4 print:break-inside-avoid-page">
               <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-1.5 print:break-after-avoid-page">
@@ -2226,33 +2213,26 @@ export default function SharedHousingCalculator() {
             </div>
           ))}
 
-          {/* 14. Floor Plan, only if one was uploaded. Uses object-contain
-              (not object-cover, unlike the photo gallery) so the plan is
-              never cropped or stretched, and print:break-inside-avoid-page
-              keeps it from splitting across two pages, which naturally
-              pushes it onto a new page if it does not fit on the current
-              one. PDF floor plans cannot be reliably embedded inline
-              across browsers, so they are shown as a clearly labeled,
-              clickable file link instead. */}
+          {/* 14. Floor Plan, only if one was uploaded, displayed as an actual
+              image (never a filename or file link), just like the property
+              photo gallery above. Uses object-contain (not object-cover)
+              so the plan's full aspect ratio is preserved and nothing is
+              cropped or stretched, is centered and uses the full print
+              width available, and print:break-inside-avoid-page keeps it
+              from splitting across two pages, which naturally pushes it
+              onto a new page if it does not fit on the current one. */}
           {floorPlan && (
             <div className="mt-6 print:break-inside-avoid-page">
               <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
                 Floor Plan
               </p>
-              {floorPlan.isImage ? (
+              <div className="flex justify-center bg-paper-2 rounded border border-ink/15 p-2">
                 <img
                   src={floorPlan.dataUrl}
                   alt={floorPlan.name || "Floor plan"}
-                  className="w-full h-auto max-h-[8.5in] object-contain rounded border border-ink/15"
+                  className="w-full h-auto max-h-[8.5in] object-contain"
                 />
-              ) : (
-                <div className="border border-ink/25 bg-paper-2 rounded px-4 py-4">
-                  <p className="text-[10pt] text-ink break-all">{floorPlan.name}</p>
-                  <a href={floorPlan.dataUrl} className="mt-1 inline-block text-[9pt] text-brass underline">
-                    Open Floor Plan PDF
-                  </a>
-                </div>
-              )}
+              </div>
             </div>
           )}
         </div>
