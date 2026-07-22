@@ -2462,15 +2462,6 @@ export default function SharedHousingCalculator() {
   // principal and rate.
   // ---------------------------------------------------------------------
 
-  // Estimated Equity = Purchase Price - Existing Mortgage Balance (the
-  // total equity in the property, independent of how the remainder --
-  // the Seller-Financed Balance below -- is financed).
-  const hybridEquityRaw = useMemo(
-    () => financing.purchasePrice - financing.hybridExistingMortgageBalance,
-    [financing.purchasePrice, financing.hybridExistingMortgageBalance]
-  );
-  const hybridEquity = Math.max(0, round2(hybridEquityRaw));
-
   // Suggested Seller-Financed Balance = Purchase Price - Existing
   // Mortgage Balance - Seller Down Payment, never allowed below $0. This
   // is only a suggestion -- see hybridSellerFinancedBalanceUsed below
@@ -2496,6 +2487,21 @@ export default function SharedHousingCalculator() {
   const hybridSellerFinancedBalanceUsed = hybridSellerFinancedBalanceIsManual
     ? hybridSellerFinancedBalanceOverride!
     : hybridSuggestedSellerFinancedBalance;
+
+  // Estimated Equity = Purchase Price - Existing Mortgage Balance -
+  // Seller-Financed Balance Used. The seller-financed balance is a lien
+  // against the property, not buyer equity, so it must always be
+  // subtracted here just like the existing mortgage balance -- always
+  // using the actual negotiated Seller-Financed Balance Used (including
+  // any manual override), never the Suggested Seller-Financed Balance.
+  // Never floored at $0: negative equity is a real, meaningful result
+  // (the property is over-leveraged relative to its purchase price) and
+  // must be displayed as a negative value rather than hidden.
+  const hybridEquityRaw = useMemo(
+    () =>
+      financing.purchasePrice - financing.hybridExistingMortgageBalance - hybridSellerFinancedBalanceUsed,
+    [financing.purchasePrice, financing.hybridExistingMortgageBalance, hybridSellerFinancedBalanceUsed]
+  );
 
   // Keeps the Seller-Financed Balance Used field showing (and using) the
   // live suggested calculation as long as the field hasn't been
@@ -3215,14 +3221,15 @@ export default function SharedHousingCalculator() {
     // Estimated Loan Balance (which, since Loan Balance = Purchase Price
     // - Estimated Down Payment, ordinarily equals the calculated Down
     // Payment amount). For Hybrid: Purchase Price - Existing Mortgage
-    // Balance (the total equity in the property, independent of how the
-    // remainder is seller-financed). For Seller Financing / Subject To,
-    // the existing calculation is preserved: Purchase Price - Loan
-    // Balance. The Seller Down Payment (or, for Traditional Financing,
-    // the Estimated Down Payment) is a separate cash requirement (used
-    // in Total Capital Required) and is not subtracted here, and is
-    // never added to Total Capital Required a second time as part of
-    // equity.
+    // Balance - Seller-Financed Balance Used (both liens against the
+    // property are subtracted, since the seller-financed balance is
+    // debt, not buyer equity -- see hybridEquityRaw above). For Seller
+    // Financing / Subject To, the existing calculation is preserved:
+    // Purchase Price - Loan Balance. The Seller Down Payment (or, for
+    // Traditional Financing, the Estimated Down Payment) is a separate
+    // cash requirement (used in Total Capital Required) and is not
+    // subtracted here, and is never added to Total Capital Required a
+    // second time as part of equity.
     const equityRaw =
       financingMode === "traditional"
         ? financing.purchasePrice - traditionalLoanBalance
@@ -3231,7 +3238,14 @@ export default function SharedHousingCalculator() {
           : financingMode === "stackMethod"
             ? financing.purchasePrice - stackTotalDebtAtAcquisition
             : financing.purchasePrice - financing.loanBalance;
-    const equity = Math.max(0, round2(equityRaw));
+    // Hybrid's Estimated Equity is never floored at $0 -- a negative
+    // result is a real, meaningful outcome (the existing mortgage plus
+    // the seller-financed balance exceed the purchase price) and must be
+    // displayed as entered, not hidden behind a $0 floor. Every other
+    // financing structure keeps its original floor-at-$0 behavior,
+    // unchanged.
+    const equity =
+      financingMode === "hybrid" ? round2(equityRaw) : Math.max(0, round2(equityRaw));
     const equityIsNegative = equityRaw < 0;
 
     // Holding Costs default to the automatic three-month calculation
@@ -6259,7 +6273,7 @@ export default function SharedHousingCalculator() {
                 financingMode === "traditional"
                   ? "Estimated equity is calculated by subtracting the estimated loan balance from the purchase price."
                   : financingMode === "hybrid"
-                    ? "Estimated equity is calculated by subtracting the existing mortgage balance from the purchase price."
+                    ? "Estimated equity is calculated by subtracting the existing mortgage balance and the Seller-Financed Balance Used from the purchase price."
                     : "Estimated equity is calculated by subtracting the loan balance from the purchase price."
               }
             />
@@ -6270,7 +6284,8 @@ export default function SharedHousingCalculator() {
             )}
             {financingMode === "hybrid" && results.equityIsNegative && (
               <p className="mt-3 text-sm text-red-700">
-                The existing mortgage balance exceeds the purchase price.
+                The existing mortgage balance and Seller-Financed Balance Used exceed the purchase
+                price.
               </p>
             )}
           </div>
