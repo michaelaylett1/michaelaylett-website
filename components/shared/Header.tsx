@@ -14,7 +14,6 @@ const LINKS = [
   { href: "/shared-housing-calculator", label: "Shared Housing Calculator" },
   { href: "/ecomranx", label: "EcomRanx" },
   { href: "/about", label: "About" },
-  { href: "/contact", label: "Contact" },
 ];
 
 export default function Header() {
@@ -58,7 +57,7 @@ export default function Header() {
           </nav>
 
           <Link
-            href="/contact"
+            href="/sellers#contact-form"
             className="hidden lg:inline-flex items-center gap-2 border border-brass/60 px-4 py-2 eyebrow text-brass-light hover:bg-brass hover:text-ink transition-colors"
           >
             Get in Touch
@@ -89,7 +88,7 @@ export default function Header() {
               </Link>
             ))}
             <Link
-              href="/contact"
+              href="/sellers#contact-form"
               className="inline-flex w-fit items-center gap-2 border border-brass/60 px-4 py-2 eyebrow text-brass-light"
             >
               Get in Touch

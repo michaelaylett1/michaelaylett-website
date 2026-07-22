@@ -7,11 +7,11 @@
  * and emails a "New Capital Partner Submission" notification to
  * michael@michaelaylett.com. See lib/forms/ for the shared implementation.
  *
- * This is the single implementation used by both the "Capital Partnership"
- * tab on /contact (embedded, `standalone={false}`) and the bottom of the
- * /capital-partners page (`standalone={true}`, the default), so field
- * changes, validation, uploads, and submission logic only need to be
- * updated here.
+ * This is the single implementation used at the bottom of the
+ * /capital-partners page (`standalone={true}`, the default). The
+ * `standalone={false}` embedded mode is kept for reuse inside another
+ * page's own layout if needed, so field changes, validation, uploads, and
+ * submission logic only need to be updated here.
  */
 
 import { useState } from "react";
@@ -59,9 +59,8 @@ type CapitalPartnerFormProps = {
    * in Partnering?" heading/intro copy above the form.
    *
    * When false, renders just the `<form>` itself with no outer section or
-   * heading, so it can be embedded inside another page's own layout (the
-   * "Capital Partnership" tab on `/contact`, whose ContactSelector already
-   * provides the surrounding section, padding, and tab label).
+   * heading, so it can be embedded inside another page's own layout that
+   * already provides the surrounding section, padding, and heading.
    */
   standalone?: boolean;
 };

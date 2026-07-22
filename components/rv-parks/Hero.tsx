@@ -30,7 +30,7 @@ export default function RVParksHero() {
             Submit an RV Park
           </a>
           <a
-            href="/contact"
+            href="#rv-form"
             className="inline-flex justify-center items-center border border-line px-7 py-3.5 text-bone hover:border-brass/60 transition-colors"
           >
             Discuss a Property

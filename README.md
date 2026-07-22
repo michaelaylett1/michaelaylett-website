@@ -32,15 +32,17 @@ Aylett: professional real estate investor and founder of EcomRanx.
 - **`/about`**: background and story, from Amazon account management to
   real estate ownership, with a professional headshot and a property
   photo.
-- **`/contact`**: a topic selector (Selling a Property, RV Park, or
-  Capital Partnership, in that order, with Selling a Property selected
-  by default) that swaps in the right form. The RV Park and Capital
-  Partnership tabs render the exact same form components used on
-  `/rv-parks` and `/capital-partners` (see "Shared form components"
-  below), so there is only one implementation of each form on the whole
-  site. There is no Amazon Consulting option on this page; EcomRanx has
-  its own page at `/ecomranx` and is out of scope for the real estate
-  contact form.
+- **`/shared-housing-calculator`**: a password-protected underwriting
+  calculator for shared-housing (co-living) deals. See "Shared Housing
+  Calculator access gate" below.
+
+There is no standalone `/contact` page. It duplicated the Sellers page's
+own contact form, so it was removed; every "Get in Touch" style button
+across the site now points to the most relevant existing form instead
+(the Sellers form, the RV Park form, or the Capital Partner form,
+depending on which page it's on), and a permanent redirect sends any old
+`/contact` link to the Sellers form. See "Removed: standalone Contact
+page" below.
 
 ## Shared form components
 
@@ -51,15 +53,47 @@ default renders the component's own section, heading, and intro copy;
 page's layout):
 
 - `components/sellers/SellerForm.tsx`: used on `/sellers` only.
-- `components/rv-parks/RVParkForm.tsx`: used standalone on `/rv-parks`
-  and embedded (`standalone={false}`) in the "RV Park" tab on
-  `/contact`.
-- `components/capital/CapitalPartnerForm.tsx`: used standalone at the
-  bottom of `/capital-partners` and embedded (`standalone={false}`) in
-  the "Capital Partnership" tab on `/contact`.
+- `components/rv-parks/RVParkForm.tsx`: used on `/rv-parks`. The
+  `standalone={false}` embedded mode still exists for reuse elsewhere if
+  needed, but nothing currently embeds it.
+- `components/capital/CapitalPartnerForm.tsx`: used at the bottom of
+  `/capital-partners`. The `standalone={false}` embedded mode still
+  exists for reuse elsewhere if needed, but nothing currently embeds it.
 
 Updating a field, validation rule, or submission behavior in one of
 these files updates it everywhere that form appears.
+
+## Removed: standalone Contact page
+
+An earlier version of this site had a `/contact` page (a topic selector
+with Selling a Property, RV Park, and Capital Partnership tabs) that
+duplicated forms already living on `/sellers`, `/rv-parks`, and
+`/capital-partners`. It has been removed: `app/contact/`,
+`components/contact/`, and `app/api/forms/contact/route.ts` are gone,
+and `next.config.js` adds a permanent redirect from `/contact` to
+`/sellers#contact-form` so any old, bookmarked, or previously-indexed
+link still lands on a working page instead of a 404. Every button that
+used to point to `/contact` (Header and Footer "Get in Touch", the RV
+Parks page's "Discuss a Property", and the Capital Partners page's
+"Get in Touch") now points directly at the relevant page's own form
+section.
+
+## Shared Housing Calculator access gate
+
+`/shared-housing-calculator` is gated behind a password
+(`components/underwriting/SharedHousingAccessGate.tsx`). The password
+itself is only ever compared server-side, in
+`app/api/shared-housing-auth/route.ts`, so it is never shipped in any
+client-side JavaScript bundle; the client component only stores whether
+access was **granted**, in `sessionStorage` (not `localStorage`), so a
+visitor stays unlocked for the rest of that browser tab/session,
+including across a refresh, but a new browser session requires the
+password again. A "Lock Calculator" button clears that session flag.
+The default password is `padsplit`; set the
+`SHARED_HOUSING_CALCULATOR_PASSWORD` environment variable to change it
+without a code change. As with any client-visible gate, treat this as a
+casual-visitor deterrent, not real access control for confidential
+information.
 
 ## Getting started
 
@@ -72,15 +106,13 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Before you launch
 
-1. **Environment variables**: the four real estate forms (Seller,
-   Capital Partner, RV Park, and the general Contact page) need
-   `RESEND_API_KEY` set before they can send email, and the Capital
-   Partner and RV Park forms need a private Blob store connected before
-   file uploads work. See "Email notifications and file uploads" below.
-   The Amazon Consulting tab on `/contact` still uses a plain `mailto:`
-   link to `michael@ecomranx.com`, since it belongs to the separate
-   EcomRanx business rather than the real estate lead pipeline; update
-   that address in `components/contact/ContactSelector.tsx` if needed.
+1. **Environment variables**: the three real estate forms (Seller,
+   Capital Partner, and RV Park) need `RESEND_API_KEY` set before they
+   can send email, and the Capital Partner and RV Park forms need a
+   private Blob store connected before file uploads work. See "Email
+   notifications and file uploads" below. Set
+   `SHARED_HOUSING_CALCULATOR_PASSWORD` if you want to change the
+   Shared Housing Calculator's password from its default (`padsplit`).
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -147,7 +179,7 @@ single image above the fold on a page should use `priority`.
 
 ## Email notifications and file uploads
 
-Four real estate forms submit directly to this site's own API routes,
+Three real estate forms submit directly to this site's own API routes,
 which validate the submission server-side, upload any attached files to
 private storage, and send a notification email via
 [Resend](https://resend.com) to **michael@michaelaylett.com**:
@@ -155,14 +187,12 @@ private storage, and send a notification email via
 | Form | Page | Route | Email subject |
 | --- | --- | --- | --- |
 | Seller Property Inquiry | `/sellers` | `app/api/forms/seller/route.ts` | New Seller Property Inquiry |
-| General Contact (Selling a Property tab) | `/contact` | `app/api/forms/contact/route.ts` | New Website Contact |
-| Capital Partner | `/contact` (Capital Partnership tab) | `app/api/forms/capital-partner/route.ts` | New Capital Partner Submission |
+| Capital Partner | `/capital-partners` | `app/api/forms/capital-partner/route.ts` | New Capital Partner Submission |
 | RV Park Submission | `/rv-parks` | `app/api/forms/rv-park/route.ts` | New RV Park Opportunity |
 
-The Amazon Consulting tab on `/contact` is intentionally excluded: it
-belongs to the separate EcomRanx business, not real estate, and still
-uses a simple `mailto:` link. No EcomRanx-specific contact form or
-backend was added.
+EcomRanx (the separate Amazon consulting business) is intentionally
+excluded from this pipeline: its own page, `/ecomranx`, links out to
+ecomranx.com rather than embedding a form here.
 
 Shared logic lives in `lib/forms/`:
 
@@ -295,8 +325,7 @@ it's easy to find:
    dedicated tab for it).
 3. Filter or search for `[forms:`. Every diagnostic message this
    project logs is prefixed `[forms:email]`, `[forms:blob]`,
-   `[forms:seller]`, `[forms:contact]`, `[forms:capital-partner]`, or
-   `[forms:rv-park]`.
+   `[forms:seller]`, `[forms:capital-partner]`, or `[forms:rv-park]`.
 4. Reproduce the failing submission, then refresh the logs. You can also
    use the Vercel CLI: `vercel logs <deployment-url>` (or `vercel logs
    --follow` while you submit a test form) streams the same logs to your
@@ -311,7 +340,7 @@ file extension, error type, and Resend's own error message/name).
 
 | Symptom | Likely cause | Where to look |
 | --- | --- | --- |
-| Seller/Contact/Capital Partner/RV Park form: "Something went wrong while sending your submission" | `RESEND_API_KEY` missing or invalid in this environment, sending domain not verified, or `RESEND_FROM_EMAIL` not on a verified domain | Vercel log line starting `[forms:email]`. A missing key logs `RESEND_API_KEY is not set in this environment`. A Resend-side rejection (bad key, unverified domain, invalid from address) logs `Resend API error (<name>): <message>` with the exact reason from Resend. |
+| Seller/Capital Partner/RV Park form: "Something went wrong while sending your submission" | `RESEND_API_KEY` missing or invalid in this environment, sending domain not verified, or `RESEND_FROM_EMAIL` not on a verified domain | Vercel log line starting `[forms:email]`. A missing key logs `RESEND_API_KEY is not set in this environment`. A Resend-side rejection (bad key, unverified domain, invalid from address) logs `Resend API error (<name>): <message>` with the exact reason from Resend. |
 | Capital Partner/RV Park form: "Failed to securely store [filename]" | No private Blob store connected to this project/environment, connected but not redeployed since, or the store was created as Public instead of Private | Vercel log line starting `[forms:blob] upload failed`, which names the specific error (for example `BlobStoreNotFoundError` or `BlobAccessError`) and a one-line hint on what to check |
 | "[filename] was uploaded but a secure link could not be generated" | The file itself stored successfully, but generating the signed link failed (transient Vercel Blob issue, or a store/credential problem that only affects signing) | `[forms:blob] sign-token failed` in the logs |
 | Form works locally but not in production | Environment variables set locally (`.env.local`) but not added in Vercel, or added but not redeployed | Compare `.env.local` against Vercel's Environment Variables list; redeploy after adding anything |
@@ -338,16 +367,13 @@ section and confirming you redeployed:
   message without navigating away, and that michael@michaelaylett.com
   receives a "New Seller Property Inquiry" email with every field you
   entered.
-- **General contact**: visit `/contact`, stay on the default "Selling a
-  Property" tab, fill it in, and submit. Confirm success on-page and a
-  "New Website Contact" email.
-- **Capital partner**: visit `/contact`, switch to "Capital
-  Partnership", fill in the required fields, check the acknowledgment
-  box, and submit three times, once each with a small PNG, a JPG, and a
-  PDF attached. Confirm success on-page each time and a "New Capital
-  Partner Submission" email each time, with a working, clickable secure
-  link to the uploaded file (opening it should show the document; it
-  should not be a plain public Blob URL).
+- **Capital partner**: visit `/capital-partners`, scroll to the
+  questionnaire at the bottom, fill in the required fields, check the
+  acknowledgment box, and submit three times, once each with a small
+  PNG, a JPG, and a PDF attached. Confirm success on-page each time and
+  a "New Capital Partner Submission" email each time, with a working,
+  clickable secure link to the uploaded file (opening it should show the
+  document; it should not be a plain public Blob URL).
 - **RV park**: visit `/rv-parks`, fill in the submission form and attach
   a document (any allowed type), and submit. Confirm success on-page and
   a "New RV Park Opportunity" email with a working secure file link.
@@ -356,8 +382,7 @@ For every form, also confirm: leaving a required field blank shows an
 inline validation message instead of submitting; the submit button
 disables and shows a "Sending..."/"Submitting..." state while the
 request is in flight; the page never navigates away or refreshes; and no
-form on the site (other than the Amazon Consulting tab, which is
-intentionally out of scope) opens your email client.
+form on the site opens your email client.
 
 Never commit uploaded financial documents, API keys, or `.env.local` to
 this repository.

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import SharedHousingCalculator from "@/components/underwriting/SharedHousingCalculator";
+import SharedHousingAccessGate from "@/components/underwriting/SharedHousingAccessGate";
 
 export const metadata: Metadata = {
   title: "Shared Housing Calculator | Michael Aylett",
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
 
 export default function SharedHousingCalculatorPage() {
   return (
-    <>
+    <SharedHousingAccessGate>
       <section className="relative overflow-hidden bg-ink bg-noise pt-32 pb-16 md:pt-40 md:pb-20">
         <div
           className="pointer-events-none absolute inset-0 opacity-[0.06]"
@@ -35,6 +36,6 @@ export default function SharedHousingCalculatorPage() {
       </section>
 
       <SharedHousingCalculator />
-    </>
+    </SharedHousingAccessGate>
   );
 }

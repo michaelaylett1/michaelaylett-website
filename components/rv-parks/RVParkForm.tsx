@@ -41,11 +41,11 @@ type RVParkFormProps = {
    * copy above the form.
    *
    * When false, renders just the `<form>` itself with no outer section or
-   * heading, so it can be embedded inside another page's own layout (for
-   * example the "RV Park" tab on `/contact`, whose ContactSelector already
-   * provides the surrounding section, padding, and tab label). This is the
-   * single form implementation used by both pages, so field changes,
-   * validation, uploads, and submission logic only need to be updated here.
+   * heading, so it can be embedded inside another page's own layout that
+   * already provides the surrounding section, padding, and heading. This
+   * is the single form implementation used across the site, so field
+   * changes, validation, uploads, and submission logic only need to be
+   * updated here.
    */
   standalone?: boolean;
 };

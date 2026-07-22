@@ -42,7 +42,7 @@ export default function WorkWithPartners() {
               future acquisition, reach out and we&apos;ll set up a time to talk.
             </p>
             <Link
-              href="/contact"
+              href="#capital-partner-form"
               className="mt-8 inline-flex items-center bg-brass text-ink px-7 py-3.5 font-medium hover:bg-brass-light transition-colors"
             >
               Get in Touch

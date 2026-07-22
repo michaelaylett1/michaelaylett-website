@@ -65,10 +65,23 @@ function round2(n: number) {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * Parses a free-typed currency string into a number, preserving decimal
+ * cents rather than stripping the decimal point. "1922.46" must parse to
+ * 1922.46, not 192246: the previous version of this function stripped
+ * every non-digit character (including the decimal point itself), which
+ * silently multiplied any value with cents by 100. Only the first
+ * decimal point is kept (a second one a visitor might type by accident
+ * is dropped), and the result is never negative, NaN, or Infinite.
+ */
 function parseTypedAmount(raw: string): number {
-  const digitsOnly = raw.replace(/[^0-9]/g, "");
-  if (!digitsOnly) return 0;
-  const n = Number(digitsOnly);
+  let cleaned = raw.replace(/[^0-9.]/g, "");
+  const firstDot = cleaned.indexOf(".");
+  if (firstDot !== -1) {
+    cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "");
+  }
+  if (!cleaned || cleaned === ".") return 0;
+  const n = Number(cleaned);
   if (!Number.isFinite(n) || n < 0) return 0;
   return n;
 }
@@ -105,8 +118,8 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   loanBalance: 270000,
   sellerDownPayment: 21000,
   monthlyPayment: 2000,
-  annualPropertyTaxes: 4000,
-  annualPropertyInsurance: 2500,
+  annualPropertyTaxes: 0,
+  annualPropertyInsurance: 0,
 };
 
 type CapitalKey =
@@ -124,12 +137,12 @@ type CapitalKey =
 const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   arrears: 0,
   renovationCost: 50000,
-  furniture: 10000,
+  furniture: 13000,
   appliances: 3000,
-  photos: 500,
-  upfrontInsurance: 2500,
-  acquisitionFee: 5000,
-  tcAndLlc: 1500,
+  photos: 300,
+  upfrontInsurance: 3000,
+  acquisitionFee: 10000,
+  tcAndLlc: 2000,
   agentFee: 0,
   assignmentFee: 0,
 };
@@ -151,10 +164,16 @@ const BEDROOM_DEFAULTS = {
 type PaymentType = "piti" | "pi";
 const PAYMENT_TYPE_DEFAULT: PaymentType = "piti";
 
+// Editable currency fields always display and reformat with cents (see
+// CurrencyField below), so drafts are built with formatCents, not
+// formatWhole, to keep the displayed value consistent with what was
+// typed (e.g. a default of $300,000 still needs to show as
+// "$300,000.00" once the field is blurred, and a typed "1922.46" must
+// come back as "$1,922.46", not get rounded down to whole dollars).
 function makeDraft<K extends string>(values: Record<K, number>): Record<K, string> {
   const draft = {} as Record<K, string>;
   (Object.keys(values) as K[]).forEach((k) => {
-    draft[k] = formatWhole(values[k]);
+    draft[k] = formatCents(values[k]);
   });
   return draft;
 }
@@ -219,7 +238,7 @@ function CurrencyField({
         <input
           id={id}
           type="text"
-          inputMode="numeric"
+          inputMode="decimal"
           value={draft}
           onChange={(e) => onChange(e.target.value)}
           onBlur={onBlur}
@@ -378,7 +397,7 @@ export default function SharedHousingCalculator() {
     BEDROOM_DEFAULTS.weeklySharedBathRent
   );
   const [weeklySharedBathRentDraft, setWeeklySharedBathRentDraft] = useState(
-    formatWhole(BEDROOM_DEFAULTS.weeklySharedBathRent)
+    formatCents(BEDROOM_DEFAULTS.weeklySharedBathRent)
   );
   const [ensuiteBedrooms, setEnsuiteBedrooms] = useState(BEDROOM_DEFAULTS.ensuiteBedrooms);
   const [ensuiteBedroomsDraft, setEnsuiteBedroomsDraft] = useState(
@@ -386,7 +405,7 @@ export default function SharedHousingCalculator() {
   );
   const [weeklyEnsuiteRent, setWeeklyEnsuiteRent] = useState(BEDROOM_DEFAULTS.weeklyEnsuiteRent);
   const [weeklyEnsuiteRentDraft, setWeeklyEnsuiteRentDraft] = useState(
-    formatWhole(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
+    formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
   );
 
   const [breakdownOpen, setBreakdownOpen] = useState(false);
@@ -398,8 +417,8 @@ export default function SharedHousingCalculator() {
   }
   function handleFinancingBlur(key: FinancingKey) {
     setFinancing((prev) => {
-      const clamped = Math.max(0, prev[key]);
-      setFinancingDraft((d) => ({ ...d, [key]: formatWhole(clamped) }));
+      const clamped = round2(Math.max(0, prev[key]));
+      setFinancingDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
       return { ...prev, [key]: clamped };
     });
   }
@@ -410,8 +429,8 @@ export default function SharedHousingCalculator() {
   }
   function handleCapitalBlur(key: CapitalKey) {
     setCapital((prev) => {
-      const clamped = Math.max(0, prev[key]);
-      setCapitalDraft((d) => ({ ...d, [key]: formatWhole(clamped) }));
+      const clamped = round2(Math.max(0, prev[key]));
+      setCapitalDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
       return { ...prev, [key]: clamped };
     });
   }
@@ -442,11 +461,11 @@ export default function SharedHousingCalculator() {
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
     setSharedBathBedroomsDraft(String(BEDROOM_DEFAULTS.sharedBathBedrooms));
     setWeeklySharedBathRent(BEDROOM_DEFAULTS.weeklySharedBathRent);
-    setWeeklySharedBathRentDraft(formatWhole(BEDROOM_DEFAULTS.weeklySharedBathRent));
+    setWeeklySharedBathRentDraft(formatCents(BEDROOM_DEFAULTS.weeklySharedBathRent));
     setEnsuiteBedrooms(BEDROOM_DEFAULTS.ensuiteBedrooms);
     setEnsuiteBedroomsDraft(String(BEDROOM_DEFAULTS.ensuiteBedrooms));
     setWeeklyEnsuiteRent(BEDROOM_DEFAULTS.weeklyEnsuiteRent);
-    setWeeklyEnsuiteRentDraft(formatWhole(BEDROOM_DEFAULTS.weeklyEnsuiteRent));
+    setWeeklyEnsuiteRentDraft(formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent));
   }
 
   // ---------------------------------------------------------------------
@@ -642,13 +661,13 @@ export default function SharedHousingCalculator() {
         { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
         { label: "Estimated Seller-Carried Equity", value: formatWhole(results.sellerCarriedEquity) },
         { label: "Monthly Payment Type", value: paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
-        { label: monthlyPaymentLabel, value: formatWhole(financing.monthlyPayment) },
+        { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
         { label: "Shared-Bath Bedrooms", value: String(sharedBathBedrooms) },
-        { label: "Weekly Shared-Bath Rent", value: formatWhole(weeklySharedBathRent) },
+        { label: "Weekly Shared-Bath Rent", value: formatCents(weeklySharedBathRent) },
         { label: "Ensuite Bedrooms", value: String(ensuiteBedrooms) },
-        { label: "Weekly Ensuite Rent", value: formatWhole(weeklyEnsuiteRent) },
+        { label: "Weekly Ensuite Rent", value: formatCents(weeklyEnsuiteRent) },
         { label: "Total Bedrooms", value: String(results.totalBedrooms) },
         { label: "Vacancy", value: formatPercent(percent.vacancyPct) },
         { label: "Local Property Manager", value: formatPercent(percent.propertyManagementPct) },
@@ -883,9 +902,9 @@ export default function SharedHousingCalculator() {
                 setWeeklySharedBathRent(parseTypedAmount(raw));
               }}
               onBlur={() => {
-                const clamped = Math.max(0, weeklySharedBathRent);
+                const clamped = round2(Math.max(0, weeklySharedBathRent));
                 setWeeklySharedBathRent(clamped);
-                setWeeklySharedBathRentDraft(formatWhole(clamped));
+                setWeeklySharedBathRentDraft(formatCents(clamped));
               }}
             />
             <IntegerField
@@ -907,9 +926,9 @@ export default function SharedHousingCalculator() {
                 setWeeklyEnsuiteRent(parseTypedAmount(raw));
               }}
               onBlur={() => {
-                const clamped = Math.max(0, weeklyEnsuiteRent);
+                const clamped = round2(Math.max(0, weeklyEnsuiteRent));
                 setWeeklyEnsuiteRent(clamped);
-                setWeeklyEnsuiteRentDraft(formatWhole(clamped));
+                setWeeklyEnsuiteRentDraft(formatCents(clamped));
               }}
             />
           </div>
