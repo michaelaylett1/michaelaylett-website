@@ -237,6 +237,14 @@ function getFinancingStructureLabel(mode: FinancingMode): string {
   }
 }
 
+// Strips characters that are invalid in filenames on Windows/macOS (and
+// awkward on most other systems) from the auto-generated print/PDF
+// filename, replacing each run with a single hyphen so addresses like
+// "7027 Hunnicut Rd, Dallas, TX 75227" still read cleanly.
+function sanitizeForFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]+/g, "-").trim();
+}
+
 // A small brass badge used to visually emphasize the word "Hybrid"
 // everywhere the Subject To & Seller Finance Hybrid structure's name is
 // displayed on screen or in the printable report (never in the CSV
@@ -2172,6 +2180,16 @@ export default function SharedHousingCalculator() {
           ? "Monthly PITI Payment"
           : "Monthly Housing Payment";
 
+  // Print-only label: the printable report shows "Total PITI" wherever
+  // the on-page/CSV label would read "Total Monthly Housing Payment"
+  // (Hybrid and Stack Method). Every other mode's label (e.g. "Estimated
+  // Monthly PITI", "Monthly Housing Payment") is unchanged in print. This
+  // is deliberately separate from housingPaymentLabel, which continues to
+  // drive the on-page Monthly Expense Summary and the CSV/on-page Full
+  // Underwriting Breakdown unchanged.
+  const printHousingPaymentLabel =
+    housingPaymentLabel === "Total Monthly Housing Payment" ? "Total PITI" : housingPaymentLabel;
+
   // Financing Structure is a single-select mode (see getFinancingStructureLabel
   // above), computed once here so the breakdown, CSV, and print report
   // all read the same label.
@@ -2909,7 +2927,27 @@ export default function SharedHousingCalculator() {
     URL.revokeObjectURL(url);
   }
 
+  // Browsers that offer "Save as PDF" in the print dialog (Chrome, Edge,
+  // etc.) suggest document.title as the default filename. Setting it just
+  // before print, then restoring the page's normal title once the print
+  // dialog closes (via the "afterprint" event), gives every saved PDF a
+  // predictable name without ever changing the browser tab title outside
+  // of the print flow itself. The ".pdf" extension is intentionally left
+  // off of document.title, since browsers that use this behavior already
+  // append it automatically -- including it here would risk a
+  // "....pdf.pdf" filename in those browsers.
   function printSummary() {
+    const originalTitle = document.title;
+    const addressPart = propertyAddress.trim();
+    const rawFileTitle = addressPart
+      ? `Underwriting - ${financingStructureLabel} - ${addressPart}`
+      : `Underwriting - ${financingStructureLabel}`;
+    document.title = sanitizeForFilename(rawFileTitle);
+    const restoreTitle = () => {
+      document.title = originalTitle;
+      window.removeEventListener("afterprint", restoreTitle);
+    };
+    window.addEventListener("afterprint", restoreTitle);
     window.print();
   }
 
@@ -4996,11 +5034,11 @@ export default function SharedHousingCalculator() {
             duplicates space for fixed-position elements unpredictably
             during print pagination, so a single static footer is the
             reliable choice here. */}
-        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6">
+        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug pt-6 px-6 pb-2">
           {/* Report header: brand lockup, title, and a meta row with
               property address (if entered), bedroom count, financing
               structure, generated date, and source. */}
-          <div className="mb-6 print:break-inside-avoid-page">
+          <div className="mb-4 print:break-inside-avoid-page">
             <div className="flex items-start justify-between gap-6 pb-4 border-b-4 border-brass">
               <div className="flex items-center gap-3">
                 <div className="h-11 w-11 rounded-lg border-2 border-brass flex items-center justify-center flex-shrink-0">
@@ -5059,7 +5097,7 @@ export default function SharedHousingCalculator() {
               gallery thumbnails, plus a Video Walkthrough button, if
               either was provided. Omitted entirely when neither exists. */}
           {(propertyImages.length > 0 || videoWalkthroughLink.trim() !== "") && (
-            <div className="mb-6 print:break-inside-avoid-page grid grid-cols-3 gap-3">
+            <div className="mb-4 print:break-inside-avoid-page grid grid-cols-3 gap-3">
               {propertyImages.length > 0 && (
                 <div className={videoWalkthroughLink.trim() !== "" ? "col-span-2" : "col-span-3"}>
                   <div className="rounded-xl overflow-hidden border border-ink/15 h-[2.6in]">
@@ -5114,7 +5152,7 @@ export default function SharedHousingCalculator() {
               Required and Estimated Cash-on-Cash Return are the strongest
               visual elements, with the COCR card always using the same
               bright-green (#00FF00) treatment regardless of the value. */}
-          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-5 gap-2 items-stretch">
+          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-5 gap-2 items-stretch">
             <PrintKpiCard
               icon={<Home size={16} />}
               label="Purchase Price"
@@ -5145,7 +5183,7 @@ export default function SharedHousingCalculator() {
 
           {/* Investment Highlights: a concise, scannable card summarizing
               the deal before the detailed sections below. */}
-          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
             <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-1 pb-2 border-b border-brass/40">
               Investment Highlights
             </p>
@@ -5193,7 +5231,7 @@ export default function SharedHousingCalculator() {
           {/* Charts: Income vs. Expenses (bar) and Capital Allocation
               (donut), generated automatically from the calculator's own
               figures via pure SVG, no charting library involved. */}
-          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-2 gap-4">
+          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
             <div className="rounded-xl border border-ink/15 bg-white p-4">
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-3 pb-2 border-b border-brass/40">
                 Income vs. Expenses (Monthly)
@@ -5241,7 +5279,7 @@ export default function SharedHousingCalculator() {
               conditional logic: PITI shows a single combined payment line,
               Principal and Interest Only shows the payment plus taxes,
               insurance, and the full monthly housing payment. */}
-          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-2 gap-4">
+          <div className="mb-4 print:break-inside-avoid-page grid grid-cols-2 gap-4">
             <div className="rounded-xl border border-ink/15 bg-white p-4">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
                 <Home size={14} className="text-brass" />
@@ -5384,7 +5422,7 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">Total PITI</span>
                       <span className="font-semibold text-ink">
                         {formatCents(results.monthlyHousingPayment)}
                       </span>
@@ -5411,7 +5449,7 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
-                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">Total PITI</span>
                       <span className="font-semibold text-ink">
                         {formatCents(results.monthlyHousingPayment)}
                       </span>
@@ -5467,7 +5505,7 @@ export default function SharedHousingCalculator() {
               from the Stack Method calculation, printed only when Stack
               Method is the selected Financing Structure. */}
           {financingMode === "stackMethod" && (
-            <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+            <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
                 <Landmark size={14} className="text-brass" />
                 <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
@@ -5617,7 +5655,7 @@ export default function SharedHousingCalculator() {
               </div>
               <div className="mt-2 flex justify-between items-center rounded-lg bg-ink text-white px-3 py-2.5">
                 <span className="text-[9.5pt] font-semibold uppercase tracking-wide">
-                  Total Monthly Housing Payment
+                  Total PITI
                 </span>
                 <span className="text-[13pt] font-bold">{formatCents(results.monthlyHousingPayment)}</span>
               </div>
@@ -5628,7 +5666,7 @@ export default function SharedHousingCalculator() {
               out as large highlight tiles (Effective Monthly Rent uses a
               subtle green tint, since it is the positive, spendable
               figure), with the supporting line items below. */}
-          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
             <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
               <DollarSign size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Rental Income</p>
@@ -5663,7 +5701,7 @@ export default function SharedHousingCalculator() {
 
           {/* Monthly Operating Expenses card: alternating row backgrounds,
               Total Monthly Operating Expenses called out at the bottom. */}
-          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
             <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
               <Wallet size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
@@ -5672,7 +5710,7 @@ export default function SharedHousingCalculator() {
             </div>
             <div className="text-[9.5pt]">
               {[
-                { label: housingPaymentLabel, value: results.monthlyHousingPayment },
+                { label: printHousingPaymentLabel, value: results.monthlyHousingPayment },
                 {
                   label: `Platform Fees (${formatPercent(percent.platformFeePct)})`,
                   value: results.platformFees,
@@ -5710,7 +5748,7 @@ export default function SharedHousingCalculator() {
               up the Total Capital Required calculation, laid out as a
               two-column list with Total Capital Required called out
               below. */}
-          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+          <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
             <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
               <PiggyBank size={14} className="text-brass" />
               <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Capital Required</p>
@@ -5900,7 +5938,7 @@ export default function SharedHousingCalculator() {
               Floor Plan image onto a stray extra page). A single static
               footer here is reliable and does not affect layout above
               it. */}
-          <div className="hidden print:flex mt-8 items-center justify-between px-4 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60 print:break-inside-avoid-page">
+          <div className="hidden print:flex mt-4 items-center justify-between px-4 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60 print:break-inside-avoid-page">
             <span className="font-semibold text-ink">Michael Aylett</span>
             <span>Co-Living Investment Analysis</span>
             <span>michaelaylett.com</span>
