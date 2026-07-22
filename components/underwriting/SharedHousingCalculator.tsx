@@ -12,14 +12,17 @@
  * numbers you see in every one of those places guaranteed to match, and
  * means a future formula change only has to happen in one function.
  *
- * Fixed assumptions (not user-editable, per the calculator's design):
- *   - Platform fees: 15% of effective rent after vacancy (estimated
- *     PadSplit-style platform fees; actual charges may vary)
+ * Fixed, non-editable amounts:
  *   - Annual maintenance: $4,800 ($400/month)
  *   - Utilities: $80 per bedroom per month
- *   - Cleaning and lawn care: $205 per month
- *   - Reserves: $10,000
- *   - Closing costs: 1.5% of purchase price
+ *   - Reserves: $10,000, an estimate set aside for the property
+ *
+ * Defaults that remain fully editable (the figure below is only the
+ * starting value shown on load and after "Reset to Defaults"):
+ *   - Platform fees: defaults to 15% of effective rent after vacancy
+ *     (estimated PadSplit-style platform fees; actual charges may vary)
+ *   - Cleaning and lawn care: defaults to $205 per month
+ *   - Closing costs: defaults to 1.5% of purchase price
  *   - Holding costs: defaults to 3 months of the full monthly housing
  *     payment, automatically recalculated whenever the payment type,
  *     PITI/P&I payment, taxes, or insurance change, but the field itself
@@ -30,15 +33,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Info } from "lucide-react";
 
 // ---------------------------------------------------------------------
-// Fixed assumptions
+// Fixed, non-editable amounts. Platform fees, cleaning and lawn care,
+// and the closing cost percentage used to be here too, but are now
+// editable defaults tracked in component state instead (see
+// PERCENT_DEFAULTS and CLEANING_LAWN_DEFAULT below).
 // ---------------------------------------------------------------------
-const PLATFORM_FEE_RATE = 0.15;
 const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
-const CLEANING_LAWN_MONTHLY = 205;
-const RESERVES_FIXED = 10000;
-const CLOSING_COST_RATE = 0.015;
+const RESERVES_AMOUNT = 10000;
 const HOLDING_MONTHS = 3;
+const CLEANING_LAWN_DEFAULT = 205;
 
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
@@ -140,7 +144,7 @@ type CapitalKey =
 
 const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   arrears: 0,
-  renovationCost: 50000,
+  renovationCost: 0,
   furniture: 13000,
   appliances: 3000,
   photos: 300,
@@ -151,11 +155,13 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   assignmentFee: 0,
 };
 
-type PercentKey = "vacancyPct" | "propertyManagementPct";
+type PercentKey = "vacancyPct" | "propertyManagementPct" | "platformFeePct" | "closingCostPct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
   propertyManagementPct: 8,
+  platformFeePct: 15,
+  closingCostPct: 1.5,
 };
 
 const BEDROOM_DEFAULTS = {
@@ -391,6 +397,8 @@ export default function SharedHousingCalculator() {
   const [percentDraft, setPercentDraft] = useState<Record<PercentKey, string>>({
     vacancyPct: PERCENT_DEFAULTS.vacancyPct.toFixed(2),
     propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
+    platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
+    closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
   });
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -410,6 +418,14 @@ export default function SharedHousingCalculator() {
   const [weeklyEnsuiteRent, setWeeklyEnsuiteRent] = useState(BEDROOM_DEFAULTS.weeklyEnsuiteRent);
   const [weeklyEnsuiteRentDraft, setWeeklyEnsuiteRentDraft] = useState(
     formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
+  );
+
+  // Cleaning and Lawn Care: defaults to $205/month but stays editable,
+  // following the same draft-string + parsed-number pattern as every
+  // other currency field in this calculator (not a fixed assumption).
+  const [cleaningLawnCost, setCleaningLawnCost] = useState(CLEANING_LAWN_DEFAULT);
+  const [cleaningLawnCostDraft, setCleaningLawnCostDraft] = useState(
+    formatCents(CLEANING_LAWN_DEFAULT)
   );
 
   // Holding Costs: initially and automatically calculated (3 months of
@@ -462,6 +478,18 @@ export default function SharedHousingCalculator() {
     });
   }
 
+  function handleCleaningLawnChange(raw: string) {
+    setCleaningLawnCostDraft(raw);
+    setCleaningLawnCost(parseTypedAmount(raw));
+  }
+  function handleCleaningLawnBlur() {
+    setCleaningLawnCost((prev) => {
+      const clamped = round2(Math.max(0, prev));
+      setCleaningLawnCostDraft(formatCents(clamped));
+      return clamped;
+    });
+  }
+
   // Holding Costs input handlers. Typing into the field marks it as a
   // manual override immediately (parsed the same way every other
   // currency field is, so decimals work correctly); the automatic
@@ -493,7 +521,11 @@ export default function SharedHousingCalculator() {
     setPercentDraft({
       vacancyPct: PERCENT_DEFAULTS.vacancyPct.toFixed(2),
       propertyManagementPct: PERCENT_DEFAULTS.propertyManagementPct.toFixed(2),
+      platformFeePct: PERCENT_DEFAULTS.platformFeePct.toFixed(2),
+      closingCostPct: PERCENT_DEFAULTS.closingCostPct.toFixed(2),
     });
+    setCleaningLawnCost(CLEANING_LAWN_DEFAULT);
+    setCleaningLawnCostDraft(formatCents(CLEANING_LAWN_DEFAULT));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
     setSharedBathBedroomsDraft(String(BEDROOM_DEFAULTS.sharedBathBedrooms));
     setWeeklySharedBathRent(BEDROOM_DEFAULTS.weeklySharedBathRent);
@@ -568,15 +600,18 @@ export default function SharedHousingCalculator() {
     const effectiveRentAfterVacancy = round2(grossMonthlyRent - vacancyExpense);
 
     // Platform Fees are an estimate of PadSplit-style platform charges,
-    // fixed at 15% of effective monthly rent after vacancy. Actual
-    // platform charges may vary; this is not presented as exact.
-    const platformFees = round2(effectiveRentAfterVacancy * PLATFORM_FEE_RATE);
+    // defaulting to 15% of effective monthly rent after vacancy but
+    // fully editable (percent.platformFeePct). Actual platform charges
+    // may vary; this is not presented as exact or fixed.
+    const platformFees = round2(effectiveRentAfterVacancy * (percent.platformFeePct / 100));
     const propertyManagementFee = round2(
       effectiveRentAfterVacancy * (percent.propertyManagementPct / 100)
     );
     const maintenanceMonthly = round2(MAINTENANCE_ANNUAL / 12);
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
-    const cleaningLawnMonthly = CLEANING_LAWN_MONTHLY;
+    // Cleaning and Lawn Care defaults to $205/month but is a fully
+    // editable field (cleaningLawnCost), not a fixed assumption.
+    const cleaningLawnMonthly = cleaningLawnCost;
 
     const totalMonthlyOperatingExpenses = round2(
       monthlyHousingPayment +
@@ -600,7 +635,9 @@ export default function SharedHousingCalculator() {
     // the visitor's manually entered value once the field is overridden.
     const holdingCosts = effectiveHoldingCosts;
 
-    const closingCosts = round2(financing.purchasePrice * CLOSING_COST_RATE);
+    // Closing Costs default to 1.5% of the purchase price but use
+    // whatever Closing Cost Percentage the visitor has entered.
+    const closingCosts = round2(financing.purchasePrice * (percent.closingCostPct / 100));
 
     const totalCapitalRequired = round2(
       financing.sellerDownPayment +
@@ -610,7 +647,7 @@ export default function SharedHousingCalculator() {
         capital.appliances +
         capital.photos +
         holdingCosts +
-        RESERVES_FIXED +
+        RESERVES_AMOUNT +
         capital.upfrontInsurance +
         capital.acquisitionFee +
         capital.tcAndLlc +
@@ -659,6 +696,7 @@ export default function SharedHousingCalculator() {
     weeklySharedBathRent,
     ensuiteBedrooms,
     weeklyEnsuiteRent,
+    cleaningLawnCost,
     monthlyHousingPayment,
     effectiveHoldingCosts,
     calculatedHoldingCosts,
@@ -699,6 +737,7 @@ export default function SharedHousingCalculator() {
         title: "Expenses",
         rows: [
           { label: "Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+          { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
           { label: "Platform Fees", value: formatCents(results.platformFees) },
           { label: "Property Management", value: formatCents(results.propertyManagementFee) },
           { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
@@ -721,10 +760,11 @@ export default function SharedHousingCalculator() {
           { label: "Appliances", value: formatCents(capital.appliances) },
           { label: "Photos", value: formatCents(capital.photos) },
           { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-          { label: "Reserves", value: formatCents(RESERVES_FIXED) },
+          { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
           { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
           { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
           { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
+          { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
           { label: "Closing Costs", value: formatCents(results.closingCosts) },
           { label: "Agent Fee", value: formatCents(capital.agentFee) },
           { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
@@ -748,7 +788,7 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing, capital]
+    [results, financing, capital, percent]
   );
 
   const inputsSection: BreakdownSection = useMemo(
@@ -769,14 +809,17 @@ export default function SharedHousingCalculator() {
         { label: "Weekly Ensuite Rent", value: formatCents(weeklyEnsuiteRent) },
         { label: "Total Bedrooms", value: String(results.totalBedrooms) },
         { label: "Vacancy", value: formatPercent(percent.vacancyPct) },
+        { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
         { label: "Local Property Manager", value: formatPercent(percent.propertyManagementPct) },
+        { label: "Cleaning and Lawn Care", value: formatCents(cleaningLawnCost) },
+        { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
         {
           label: "Holding Costs Source",
           value: results.holdingCostsIsManual ? "Manually overridden" : "Automatically calculated",
         },
       ],
     }),
-    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent]
+    [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent, cleaningLawnCost]
   );
 
   const csvSections = [inputsSection, ...breakdownSections];
@@ -1072,10 +1115,9 @@ export default function SharedHousingCalculator() {
             <PercentField
               id="platformFeePct"
               label="Platform Fees"
-              draft="15.00"
-              onChange={() => {}}
-              onBlur={() => {}}
-              fixed
+              draft={percentDraft.platformFeePct}
+              onChange={(raw) => handlePercentChange("platformFeePct", raw)}
+              onBlur={() => handlePercentBlur("platformFeePct")}
               info="Estimated PadSplit platform fees. Actual platform charges may vary based on the applicable agreement, services, property, and market."
             />
             <PercentField
@@ -1085,6 +1127,14 @@ export default function SharedHousingCalculator() {
               onChange={(raw) => handlePercentChange("propertyManagementPct", raw)}
               onBlur={() => handlePercentBlur("propertyManagementPct")}
               info="Applied to effective rent after vacancy."
+            />
+            <CurrencyField
+              id="cleaningLawnCost"
+              label="Cleaning and Lawn Care"
+              draft={cleaningLawnCostDraft}
+              onChange={handleCleaningLawnChange}
+              onBlur={handleCleaningLawnBlur}
+              helperText="Defaults to $205 per month and may be adjusted as needed."
             />
           </div>
 
@@ -1230,7 +1280,11 @@ export default function SharedHousingCalculator() {
                 </button>
               )}
             </div>
-            <ReadOnlyStat label="Reserves" value={formatWhole(RESERVES_FIXED)} helperText="Fixed." />
+            <ReadOnlyStat
+              label="Reserves"
+              value={formatWhole(RESERVES_AMOUNT)}
+              helperText="Estimated reserve funds set aside for the property."
+            />
             <CurrencyField
               id="upfrontInsurance"
               label="Upfront Insurance"
@@ -1254,10 +1308,18 @@ export default function SharedHousingCalculator() {
               onBlur={() => handleCapitalBlur("tcAndLlc")}
               helperText="Transaction coordination and entity formation costs."
             />
+            <PercentField
+              id="closingCostPct"
+              label="Estimated Closing Cost Percentage"
+              draft={percentDraft.closingCostPct}
+              onChange={(raw) => handlePercentChange("closingCostPct", raw)}
+              onBlur={() => handlePercentBlur("closingCostPct")}
+              info="Applied to the purchase price to estimate closing costs."
+            />
             <ReadOnlyStat
               label="Closing Costs"
               value={formatCents(results.closingCosts)}
-              helperText="Fixed at 1.5% of the purchase price."
+              helperText="Calculated using the estimated closing cost percentage entered above."
             />
             <CurrencyField
               id="agentFee"
