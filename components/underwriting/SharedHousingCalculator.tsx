@@ -13,22 +13,26 @@
  * means a future formula change only has to happen in one function.
  *
  * Fixed assumptions (not user-editable, per the calculator's design):
- *   - Marketing fees: 15% of effective rent after vacancy
+ *   - Platform fees: 15% of effective rent after vacancy (estimated
+ *     PadSplit-style platform fees; actual charges may vary)
  *   - Annual maintenance: $4,800 ($400/month)
  *   - Utilities: $80 per bedroom per month
  *   - Cleaning and lawn care: $205 per month
  *   - Reserves: $10,000
  *   - Closing costs: 1.5% of purchase price
- *   - Holding costs: 3 months of the full monthly housing payment
+ *   - Holding costs: defaults to 3 months of the full monthly housing
+ *     payment, automatically recalculated whenever the payment type,
+ *     PITI/P&I payment, taxes, or insurance change, but the field itself
+ *     stays editable so a visitor can override the estimate
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Info } from "lucide-react";
 
 // ---------------------------------------------------------------------
 // Fixed assumptions
 // ---------------------------------------------------------------------
-const MARKETING_FEE_RATE = 0.15;
+const PLATFORM_FEE_RATE = 0.15;
 const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
 const CLEANING_LAWN_MONTHLY = 205;
@@ -114,10 +118,10 @@ type FinancingKey =
   | "annualPropertyInsurance";
 
 const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
-  purchasePrice: 300000,
-  loanBalance: 270000,
-  sellerDownPayment: 21000,
-  monthlyPayment: 2000,
+  purchasePrice: 0,
+  loanBalance: 0,
+  sellerDownPayment: 0,
+  monthlyPayment: 0,
   annualPropertyTaxes: 0,
   annualPropertyInsurance: 0,
 };
@@ -155,10 +159,10 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
 };
 
 const BEDROOM_DEFAULTS = {
-  sharedBathBedrooms: 7,
-  weeklySharedBathRent: 190,
-  ensuiteBedrooms: 2,
-  weeklyEnsuiteRent: 250,
+  sharedBathBedrooms: 0,
+  weeklySharedBathRent: 0,
+  ensuiteBedrooms: 0,
+  weeklyEnsuiteRent: 0,
 };
 
 type PaymentType = "piti" | "pi";
@@ -408,6 +412,17 @@ export default function SharedHousingCalculator() {
     formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
   );
 
+  // Holding Costs: initially and automatically calculated (3 months of
+  // the complete monthly housing payment), but the field stays editable.
+  // `holdingCostsOverride` is null while the field is following the
+  // automatic calculation, and becomes a number the moment a visitor
+  // types into it, at which point that manually entered value is used
+  // everywhere (Total Capital Required, the breakdown, CSV, and print)
+  // instead of the calculated amount, until "Reset to Calculated Amount"
+  // is clicked or the whole calculator is reset to defaults.
+  const [holdingCostsOverride, setHoldingCostsOverride] = useState<number | null>(null);
+  const [holdingCostsDraft, setHoldingCostsDraft] = useState(formatCents(0));
+
   const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
@@ -447,6 +462,27 @@ export default function SharedHousingCalculator() {
     });
   }
 
+  // Holding Costs input handlers. Typing into the field marks it as a
+  // manual override immediately (parsed the same way every other
+  // currency field is, so decimals work correctly); the automatic
+  // three-month calculation resumes only via resetHoldingCostsToCalculated
+  // or resetToDefaults.
+  function handleHoldingCostsChange(raw: string) {
+    setHoldingCostsDraft(raw);
+    setHoldingCostsOverride(parseTypedAmount(raw));
+  }
+  function handleHoldingCostsBlur() {
+    setHoldingCostsOverride((prev) => {
+      const clamped = round2(Math.max(0, prev ?? 0));
+      setHoldingCostsDraft(formatCents(clamped));
+      return clamped;
+    });
+  }
+  function resetHoldingCostsToCalculated() {
+    setHoldingCostsOverride(null);
+    setHoldingCostsDraft(formatCents(calculatedHoldingCosts));
+  }
+
   function resetToDefaults() {
     setPaymentType(PAYMENT_TYPE_DEFAULT);
     setFinancing(FINANCING_DEFAULTS);
@@ -466,7 +502,54 @@ export default function SharedHousingCalculator() {
     setEnsuiteBedroomsDraft(String(BEDROOM_DEFAULTS.ensuiteBedrooms));
     setWeeklyEnsuiteRent(BEDROOM_DEFAULTS.weeklyEnsuiteRent);
     setWeeklyEnsuiteRentDraft(formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent));
+    // Every default above is $0, so the automatic Holding Costs
+    // calculation resets to $0 too; clearing the override lets the
+    // field follow that calculation again instead of keeping a stale
+    // manually entered amount.
+    setHoldingCostsOverride(null);
+    setHoldingCostsDraft(formatCents(0));
   }
+
+  // ---------------------------------------------------------------------
+  // Monthly housing payment and the automatically calculated Holding
+  // Costs are broken out of the main underwriting engine below (rather
+  // than computed inline) so the Holding Costs override effect further
+  // down can depend on them directly, without duplicating the PITI vs.
+  // P&I-plus-taxes-and-insurance formula in two places.
+  // ---------------------------------------------------------------------
+  const monthlyHousingPayment = useMemo(() => {
+    // Prevents taxes/insurance from ever being counted twice: PITI
+    // already includes them, so only Principal-and-Interest-Only adds
+    // them separately.
+    return paymentType === "piti"
+      ? financing.monthlyPayment
+      : round2(
+          financing.monthlyPayment +
+            financing.annualPropertyTaxes / 12 +
+            financing.annualPropertyInsurance / 12
+        );
+  }, [paymentType, financing.monthlyPayment, financing.annualPropertyTaxes, financing.annualPropertyInsurance]);
+
+  // Calculated Holding Costs = complete monthly housing payment x 3.
+  const calculatedHoldingCosts = useMemo(
+    () => round2(monthlyHousingPayment * HOLDING_MONTHS),
+    [monthlyHousingPayment]
+  );
+
+  const holdingCostsIsManual = holdingCostsOverride !== null;
+  const effectiveHoldingCosts = holdingCostsIsManual ? holdingCostsOverride! : calculatedHoldingCosts;
+
+  // Keeps the Holding Costs field showing (and using) the live automatic
+  // calculation whenever PITI, P&I, taxes, insurance, or payment type
+  // change, as long as the field hasn't been manually overridden. Once a
+  // visitor types into the field, holdingCostsOverride stops being null
+  // and this effect leaves their entry alone.
+  useEffect(() => {
+    if (!holdingCostsIsManual) {
+      setHoldingCostsDraft(formatCents(calculatedHoldingCosts));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calculatedHoldingCosts, holdingCostsIsManual]);
 
   // ---------------------------------------------------------------------
   // The underwriting engine: every number shown anywhere on this page,
@@ -484,7 +567,10 @@ export default function SharedHousingCalculator() {
     const vacancyExpense = round2(grossMonthlyRent * (percent.vacancyPct / 100));
     const effectiveRentAfterVacancy = round2(grossMonthlyRent - vacancyExpense);
 
-    const marketingFees = round2(effectiveRentAfterVacancy * MARKETING_FEE_RATE);
+    // Platform Fees are an estimate of PadSplit-style platform charges,
+    // fixed at 15% of effective monthly rent after vacancy. Actual
+    // platform charges may vary; this is not presented as exact.
+    const platformFees = round2(effectiveRentAfterVacancy * PLATFORM_FEE_RATE);
     const propertyManagementFee = round2(
       effectiveRentAfterVacancy * (percent.propertyManagementPct / 100)
     );
@@ -492,38 +578,27 @@ export default function SharedHousingCalculator() {
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
     const cleaningLawnMonthly = CLEANING_LAWN_MONTHLY;
 
-    // Prevents taxes/insurance from ever being counted twice: PITI
-    // already includes them, so only Principal-and-Interest-Only adds
-    // them separately.
-    const monthlyHousingPayment =
-      paymentType === "piti"
-        ? financing.monthlyPayment
-        : round2(
-            financing.monthlyPayment +
-              financing.annualPropertyTaxes / 12 +
-              financing.annualPropertyInsurance / 12
-          );
-
     const totalMonthlyOperatingExpenses = round2(
       monthlyHousingPayment +
         vacancyExpense +
-        marketingFees +
+        platformFees +
         propertyManagementFee +
         maintenanceMonthly +
         utilitiesMonthly +
         cleaningLawnMonthly
     );
 
-    const sellerCarriedEquityRaw =
-      financing.purchasePrice - financing.loanBalance - financing.sellerDownPayment;
-    const sellerCarriedEquity = Math.max(0, round2(sellerCarriedEquityRaw));
-    const sellerCarriedEquityNegative = sellerCarriedEquityRaw < 0;
+    // Estimated Equity = Purchase Price - Loan Balance. The Seller Down
+    // Payment is a separate cash requirement (used in Total Capital
+    // Required) and is not subtracted here.
+    const equityRaw = financing.purchasePrice - financing.loanBalance;
+    const equity = Math.max(0, round2(equityRaw));
+    const equityIsNegative = equityRaw < 0;
 
-    // Holding costs use the exact same monthly housing payment formula
-    // (PITI, or P&I plus taxes and insurance) so there is only ever one
-    // definition of "the full monthly housing expense" in this file.
-    const holdingCostMonthly = monthlyHousingPayment;
-    const holdingCosts = round2(holdingCostMonthly * HOLDING_MONTHS);
+    // Holding Costs default to the automatic three-month calculation
+    // (monthlyHousingPayment x HOLDING_MONTHS, computed above) but use
+    // the visitor's manually entered value once the field is overridden.
+    const holdingCosts = effectiveHoldingCosts;
 
     const closingCosts = round2(financing.purchasePrice * CLOSING_COST_RATE);
 
@@ -558,34 +633,58 @@ export default function SharedHousingCalculator() {
       annualGrossRent,
       vacancyExpense,
       effectiveRentAfterVacancy,
-      marketingFees,
+      platformFees,
       propertyManagementFee,
       maintenanceMonthly,
       utilitiesMonthly,
       cleaningLawnMonthly,
       monthlyHousingPayment,
       totalMonthlyOperatingExpenses,
-      sellerCarriedEquity,
-      sellerCarriedEquityNegative,
+      equity,
+      equityIsNegative,
       holdingCosts,
+      calculatedHoldingCosts,
+      holdingCostsIsManual,
       closingCosts,
       totalCapitalRequired,
       monthlyCashFlow,
       annualCashFlow,
       cashOnCashReturn,
     };
-  }, [paymentType, financing, capital, percent, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent]);
+  }, [
+    financing,
+    capital,
+    percent,
+    sharedBathBedrooms,
+    weeklySharedBathRent,
+    ensuiteBedrooms,
+    weeklyEnsuiteRent,
+    monthlyHousingPayment,
+    effectiveHoldingCosts,
+    calculatedHoldingCosts,
+    holdingCostsIsManual,
+  ]);
 
   const monthlyPaymentLabel =
     paymentType === "piti" ? "Monthly PITI Payment" : "Monthly Principal and Interest Payment";
 
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
-  // table uses these four sections directly. The CSV/print summary uses
-  // the same four sections with an "Inputs" section prepended.
+  // table uses these five sections directly. The CSV/print summary uses
+  // the same five sections with an "Inputs" section prepended.
   // ---------------------------------------------------------------------
   const breakdownSections: BreakdownSection[] = useMemo(
     () => [
+      {
+        title: "Property and Financing",
+        rows: [
+          { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+          { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+          { label: "Estimated Equity", value: formatCents(results.equity) },
+          { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+          { label: "Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+        ],
+      },
       {
         title: "Income",
         rows: [
@@ -597,10 +696,10 @@ export default function SharedHousingCalculator() {
         ],
       },
       {
-        title: "Monthly Expenses",
+        title: "Expenses",
         rows: [
           { label: "Housing Payment", value: formatCents(results.monthlyHousingPayment) },
-          { label: "Marketing", value: formatCents(results.marketingFees) },
+          { label: "Platform Fees", value: formatCents(results.platformFees) },
           { label: "Property Management", value: formatCents(results.propertyManagementFee) },
           { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
           { label: "Utilities", value: formatCents(results.utilitiesMonthly) },
@@ -649,7 +748,7 @@ export default function SharedHousingCalculator() {
         ],
       },
     ],
-    [results, financing.sellerDownPayment, capital]
+    [results, financing, capital]
   );
 
   const inputsSection: BreakdownSection = useMemo(
@@ -659,7 +758,7 @@ export default function SharedHousingCalculator() {
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
         { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
-        { label: "Estimated Seller-Carried Equity", value: formatWhole(results.sellerCarriedEquity) },
+        { label: "Estimated Equity", value: formatWhole(results.equity) },
         { label: "Monthly Payment Type", value: paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
         { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
@@ -671,6 +770,10 @@ export default function SharedHousingCalculator() {
         { label: "Total Bedrooms", value: String(results.totalBedrooms) },
         { label: "Vacancy", value: formatPercent(percent.vacancyPct) },
         { label: "Local Property Manager", value: formatPercent(percent.propertyManagementPct) },
+        {
+          label: "Holding Costs Source",
+          value: results.holdingCostsIsManual ? "Manually overridden" : "Automatically calculated",
+        },
       ],
     }),
     [financing, results, paymentType, monthlyPaymentLabel, sharedBathBedrooms, weeklySharedBathRent, ensuiteBedrooms, weeklyEnsuiteRent, percent]
@@ -732,7 +835,7 @@ export default function SharedHousingCalculator() {
           <div className="border border-brass bg-ink-2 p-6">
             <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
               Total Capital Required
-              <InfoTip text="Every cash cost paid at or around closing: down payment, holding costs, reserves, renovation, and the other upfront items below. Does not include the loan balance, seller-carried equity, or purchase price." />
+              <InfoTip text="Every cash cost paid at or around closing: down payment, holding costs, reserves, renovation, and the other upfront items below. Does not include the loan balance, equity, or purchase price." />
             </p>
             <p className="font-display text-3xl text-brass-light">
               {formatCents(results.totalCapitalRequired)}
@@ -863,15 +966,13 @@ export default function SharedHousingCalculator() {
 
           <div className="mt-8 pt-6 border-t border-line-dark">
             <ReadOnlyStat
-              label="Estimated Seller-Carried Equity"
-              value={formatWhole(results.sellerCarriedEquity)}
-              info="Purchase price minus the loan balance minus the seller down payment. Financed, not paid in cash at closing, so it is not part of Total Capital Required."
-              helperText="This estimates the remaining portion of the purchase price after subtracting the existing or new loan balance and the cash paid to the seller at closing."
+              label="Estimated Equity"
+              value={formatWhole(results.equity)}
+              helperText="Estimated equity is calculated by subtracting the loan balance from the purchase price."
             />
-            {results.sellerCarriedEquityNegative && (
+            {results.equityIsNegative && (
               <p className="mt-3 text-sm text-red-700">
-                The loan balance and down payment exceed the purchase
-                price, so seller-carried equity is shown as $0.
+                The loan balance exceeds the purchase price.
               </p>
             )}
           </div>
@@ -969,13 +1070,13 @@ export default function SharedHousingCalculator() {
               info="Applied to Estimated Monthly Gross Rent to account for months the property may sit unrented."
             />
             <PercentField
-              id="marketingFeePct"
-              label="Marketing Fees"
+              id="platformFeePct"
+              label="Platform Fees"
               draft="15.00"
               onChange={() => {}}
               onBlur={() => {}}
               fixed
-              info="Fixed at 15% of effective rent after vacancy."
+              info="Estimated PadSplit platform fees. Actual platform charges may vary based on the applicable agreement, services, property, and market."
             />
             <PercentField
               id="propertyManagementPct"
@@ -999,8 +1100,11 @@ export default function SharedHousingCalculator() {
                 <span className="font-display">{formatCents(results.vacancyExpense)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
-                <span className="text-ink/70">Marketing Fees</span>
-                <span className="font-display">{formatCents(results.marketingFees)}</span>
+                <span className="text-ink/70 inline-flex items-center">
+                  Platform Fees
+                  <InfoTip text="Estimated PadSplit platform fees. Actual platform charges may vary based on the applicable agreement, services, property, and market." />
+                </span>
+                <span className="font-display">{formatCents(results.platformFees)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
                 <span className="text-ink/70">Property Management</span>
@@ -1084,12 +1188,48 @@ export default function SharedHousingCalculator() {
               onChange={(raw) => handleCapitalChange("photos", raw)}
               onBlur={() => handleCapitalBlur("photos")}
             />
-            <ReadOnlyStat
-              label="Holding Costs"
-              value={formatCents(results.holdingCosts)}
-              info="Three months of the full monthly housing payment (PITI, or principal and interest plus taxes and insurance)."
-              helperText="Calculated automatically as 3 months of the monthly housing payment."
-            />
+            <div>
+              <label htmlFor="holdingCosts" className="block mb-2">
+                <FieldLabel info="Three months of the full monthly housing payment (PITI, or principal and interest plus taxes and insurance). Editable: you may override this estimate.">
+                  Holding Costs
+                </FieldLabel>
+                {holdingCostsIsManual && (
+                  <span className="ml-2 inline-block eyebrow text-[10px] text-brass border border-brass/50 px-1.5 py-0.5 align-middle">
+                    Manual override
+                  </span>
+                )}
+              </label>
+              <div className="relative">
+                <span
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/40"
+                  aria-hidden="true"
+                >
+                  $
+                </span>
+                <input
+                  id="holdingCosts"
+                  type="text"
+                  inputMode="decimal"
+                  value={holdingCostsDraft}
+                  onChange={(e) => handleHoldingCostsChange(e.target.value)}
+                  onBlur={handleHoldingCostsBlur}
+                  className="w-full bg-white border border-line-dark pl-7 pr-3 py-2.5 text-ink outline-none focus:border-brass"
+                />
+              </div>
+              <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
+                Defaults to three months of the complete monthly housing
+                payment. You may override this estimate.
+              </p>
+              {holdingCostsIsManual && (
+                <button
+                  type="button"
+                  onClick={resetHoldingCostsToCalculated}
+                  className="mt-2 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                >
+                  Reset to Calculated Amount
+                </button>
+              )}
+            </div>
             <ReadOnlyStat label="Reserves" value={formatWhole(RESERVES_FIXED)} helperText="Fixed." />
             <CurrencyField
               id="upfrontInsurance"
@@ -1138,7 +1278,7 @@ export default function SharedHousingCalculator() {
           <div className="mt-8 pt-6 border-t border-brass flex items-center justify-between">
             <span className="eyebrow text-brass inline-flex items-center">
               Total Capital Required
-              <InfoTip text="Every cash cost paid at or around closing. Does not include the loan balance, seller-carried equity, or purchase price." />
+              <InfoTip text="Every cash cost paid at or around closing. Does not include the loan balance, equity, or purchase price." />
             </span>
             <span className="font-display text-3xl text-brass">
               {formatCents(results.totalCapitalRequired)}
