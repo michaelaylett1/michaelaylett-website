@@ -32,7 +32,21 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Info, Upload } from "lucide-react";
+import {
+  Info,
+  Upload,
+  Home,
+  MapPin,
+  Users,
+  Calendar,
+  Landmark,
+  Play,
+  DollarSign,
+  TrendingUp,
+  Percent,
+  Wallet,
+  PiggyBank,
+} from "lucide-react";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -195,6 +209,181 @@ function getFinancingStructureLabel(sellerFinancing: boolean, subjectTo: boolean
   if (subjectTo) return "Subject To";
   if (sellerFinancing) return "Seller Financing";
   return "Not Specified";
+}
+
+// ---------------------------------------------------------------------
+// Printable report presentation components. These are purely
+// presentational (props in, JSX out): they read no state and perform no
+// calculations of their own, so the printed report's figures always
+// come straight from the same `results`/`financing`/`capital` values
+// used everywhere else in this component.
+// ---------------------------------------------------------------------
+
+// A single large KPI card for the print report's executive-summary row.
+// `highlight` is used only for the Estimated Cash-on-Cash Return card,
+// which always renders with the same bright-green (#00FF00) treatment,
+// a bold dark border, and bold dark text so the figure stays readable
+// even if a printer omits background colors.
+function PrintKpiCard({
+  icon,
+  label,
+  value,
+  highlight,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  highlight?: boolean;
+}) {
+  if (highlight) {
+    return (
+      <div
+        className="rounded-xl border-4 border-ink p-4 flex flex-col items-center text-center"
+        style={{ backgroundColor: "#00FF00" }}
+      >
+        <div className="h-9 w-9 rounded-full bg-ink text-white flex items-center justify-center mb-2">
+          {icon}
+        </div>
+        <p className="text-[7.5pt] font-bold uppercase tracking-wide text-ink">{label}</p>
+        <p className="mt-1 text-[22pt] font-bold text-ink leading-none">{value}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-ink/15 bg-white p-4 flex flex-col items-center text-center">
+      <div className="h-9 w-9 rounded-full bg-ink text-white flex items-center justify-center mb-2">
+        {icon}
+      </div>
+      <p className="text-[7.5pt] font-semibold uppercase tracking-wide text-ink/60">{label}</p>
+      <p className="mt-1 text-[15pt] font-bold text-ink leading-none">{value}</p>
+    </div>
+  );
+}
+
+// One row of the Investment Highlights card: an icon badge, a bold
+// headline, and a short supporting detail line.
+function HighlightBullet({
+  icon,
+  label,
+  detail,
+  accent,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  detail: string;
+  accent?: "brass" | "green";
+}) {
+  const badgeClass = accent === "brass" ? "bg-brass" : "bg-ink";
+  const badgeStyle = accent === "green" ? { backgroundColor: "#1E8E3E" } : undefined;
+  return (
+    <div className="flex items-start gap-3 py-2.5 border-b border-ink/10 last:border-b-0">
+      <div
+        className={`h-7 w-7 flex-shrink-0 rounded-full text-white flex items-center justify-center ${
+          accent === "green" ? "" : badgeClass
+        }`}
+        style={badgeStyle}
+      >
+        {icon}
+      </div>
+      <div>
+        <p className="text-[9.5pt] font-semibold text-ink leading-snug">{label}</p>
+        <p className="text-[8.5pt] text-ink/60 leading-snug">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+// A simple SVG bar chart (Income vs. Expenses) generated directly from
+// the calculator's own computed figures. Pure SVG, no charting library,
+// so it renders crisply and reliably in print/PDF output.
+function IncomeExpenseChart({
+  effectiveRent,
+  operatingExpenses,
+  cashFlow,
+}: {
+  effectiveRent: number;
+  operatingExpenses: number;
+  cashFlow: number;
+}) {
+  const bars = [
+    { label: "Effective Rent", value: Math.max(0, effectiveRent), color: "#12181C" },
+    { label: "Operating Expenses", value: Math.max(0, operatingExpenses), color: "#C08A3E" },
+    { label: "Cash Flow", value: Math.max(0, cashFlow), color: "#1E8E3E" },
+  ];
+  const max = Math.max(1, ...bars.map((b) => b.value));
+  const chartHeight = 130;
+  const barWidth = 54;
+  const gap = 34;
+  const width = bars.length * barWidth + (bars.length + 1) * gap;
+  const totalHeight = chartHeight + 46;
+  return (
+    <svg viewBox={`0 0 ${width} ${totalHeight}`} className="w-full h-auto" role="img" aria-label="Income versus expenses chart">
+      {bars.map((b, i) => {
+        const h = (b.value / max) * chartHeight;
+        const x = gap + i * (barWidth + gap);
+        const y = 20 + (chartHeight - h);
+        return (
+          <g key={b.label}>
+            <text x={x + barWidth / 2} y={14} textAnchor="middle" fontSize="10" fontWeight="700" fill="#12181C">
+              {formatCents(b.value)}
+            </text>
+            <rect x={x} y={y} width={barWidth} height={h} rx="5" fill={b.color} />
+            <text x={x + barWidth / 2} y={chartHeight + 38} textAnchor="middle" fontSize="8" fill="#12181C" opacity="0.6">
+              {b.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// A pure-SVG donut chart for Capital Allocation, built with the classic
+// stroke-dasharray technique (no charting library). `segments` should
+// already sum to the exact Total Capital Required figure; this
+// component only visualizes the same numbers, it never recalculates
+// them.
+function CapitalAllocationDonut({
+  segments,
+}: {
+  segments: { label: string; value: number; color: string }[];
+}) {
+  const total = segments.reduce((sum, s) => sum + s.value, 0);
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+  let offsetAccum = 0;
+  return (
+    <div className="relative w-[140px] h-[140px] flex-shrink-0">
+      <svg viewBox="0 0 140 140" className="w-full h-full" role="img" aria-label="Capital allocation donut chart">
+        <g transform="translate(70,70) rotate(-90)">
+          <circle r={radius} fill="none" stroke="#EAE3D3" strokeWidth="20" />
+          {total > 0 &&
+            segments.map((s) => {
+              const fraction = s.value / total;
+              const dash = fraction * circumference;
+              const seg = (
+                <circle
+                  key={s.label}
+                  r={radius}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth="20"
+                  strokeDasharray={`${dash} ${circumference - dash}`}
+                  strokeDashoffset={-offsetAccum}
+                />
+              );
+              offsetAccum += dash;
+              return seg;
+            })}
+        </g>
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="h-10 w-10 rounded-full bg-paper flex items-center justify-center border border-ink/10">
+          <Home size={16} className="text-brass" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------
@@ -1079,106 +1268,36 @@ export default function SharedHousingCalculator() {
 
   const csvSections = [inputsSection, ...breakdownSections];
 
-  // ---------------------------------------------------------------------
-  // Dedicated print-report data: a self-contained set of sections built
-  // specifically for the printed/PDF underwriting summary rendered near
-  // the end of this component. Deliberately separate from
-  // breakdownSections/inputsSection (which drive the on-page breakdown
-  // toggle and the CSV export): the printed report only shows
-  // calculated figures, never input controls, and Annual Property Taxes
-  // and Annual Property Insurance appear only when the payment type is
-  // Principal and Interest Only. PITI already includes taxes and
-  // insurance in the single monthly payment, so the report shows just
-  // the Monthly PITI Payment in that case, with no separate tax/
-  // insurance lines and no note about them being included.
-  // ---------------------------------------------------------------------
-  const printSections: BreakdownSection[] = useMemo(() => {
-    const propertyAndFinancingRows: BreakdownRow[] = [
-      { label: "Financing Structure", value: financingStructureLabel },
-      { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-      { label: "Loan Balance", value: formatCents(financing.loanBalance) },
-      { label: "Estimated Equity", value: formatCents(results.equity) },
-      { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-      ...(paymentType === "piti"
-        ? [{ label: "Monthly PITI Payment", value: formatCents(financing.monthlyPayment) }]
-        : [
-            { label: "Monthly Principal and Interest Payment", value: formatCents(financing.monthlyPayment) },
-            { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
-            { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
-            { label: "Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
-          ]),
-    ];
 
+  // Capital Allocation donut chart data for the printable report: the
+  // same figures that make up Total Capital Required (see the
+  // totalCapitalRequired calculation above), grouped into six visual
+  // categories rather than fourteen individual line items. "Other
+  // Costs" is the sum of every remaining capital line item, so the six
+  // values here always add up to exactly results.totalCapitalRequired.
+  // Zero-value categories are omitted so the chart and legend only show
+  // what is actually part of this deal's capital stack.
+  const capitalAllocationSegments = useMemo(() => {
+    const otherCosts = round2(
+      capital.arrears +
+        capital.furniture +
+        capital.appliances +
+        capital.photos +
+        results.holdingCosts +
+        capital.tcAndLlc +
+        results.closingCosts +
+        capital.agentFee +
+        capital.assignmentFee
+    );
     return [
-      { title: "Property and Financing", rows: propertyAndFinancingRows },
-      {
-        title: "Rental Income",
-        rows: [
-          { label: "Shared-Bath Bedroom Income", value: formatCents(results.monthlySharedBathRent) },
-          { label: "Ensuite Bedroom Income", value: formatCents(results.monthlyEnsuiteRent) },
-          { label: "Gross Monthly Rent", value: formatCents(results.grossMonthlyRent) },
-          { label: "Vacancy", value: formatCents(results.vacancyExpense) },
-          { label: "Effective Monthly Rent", value: formatCents(results.effectiveRentAfterVacancy) },
-        ],
-      },
-      {
-        title: "Monthly Operating Expenses",
-        rows: [
-          { label: "Housing Payment", value: formatCents(results.monthlyHousingPayment) },
-          { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
-          { label: "Platform Fees", value: formatCents(results.platformFees) },
-          { label: "Property Management", value: formatCents(results.propertyManagementFee) },
-          { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
-          { label: "Utilities", value: formatCents(results.utilitiesMonthly) },
-          { label: "Cleaning", value: formatCents(results.cleaningMonthly) },
-          { label: "Lawn Care", value: formatCents(results.lawnCareMonthly) },
-          { label: "Pest Control", value: formatCents(results.pestControlMonthly) },
-          {
-            label: "Total Monthly Operating Expenses",
-            value: formatCents(results.totalMonthlyOperatingExpenses),
-            isTotal: true,
-          },
-        ],
-      },
-      {
-        title: "Capital Required",
-        rows: [
-          { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-          { label: "Arrears", value: formatCents(capital.arrears) },
-          { label: "Renovation Cost", value: formatCents(capital.renovationCost) },
-          { label: "Furniture", value: formatCents(capital.furniture) },
-          { label: "Appliances", value: formatCents(capital.appliances) },
-          { label: "Photos", value: formatCents(capital.photos) },
-          { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-          { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
-          { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
-          { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
-          { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
-          { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
-          { label: "Closing Costs", value: formatCents(results.closingCosts) },
-          { label: "Agent Fee", value: formatCents(capital.agentFee) },
-          { label: "Assignment Fee", value: formatCents(capital.assignmentFee) },
-          {
-            label: "Total Capital Required",
-            value: formatCents(results.totalCapitalRequired),
-            isTotal: true,
-          },
-        ],
-      },
-      {
-        title: "Estimated Returns",
-        rows: [
-          { label: "Estimated Monthly Cash Flow", value: formatCents(results.monthlyCashFlow) },
-          { label: "Estimated Annual Cash Flow", value: formatCents(results.annualCashFlow) },
-          {
-            label: "Estimated Cash-on-Cash Return",
-            value: results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn),
-            isTotal: true,
-          },
-        ],
-      },
-    ];
-  }, [paymentType, financing, capital, percent, results, financingStructureLabel]);
+      { label: "Seller Down Payment", value: financing.sellerDownPayment, color: "#12181C" },
+      { label: "Acquisition Fee", value: capital.acquisitionFee, color: "#C08A3E" },
+      { label: "Renovation", value: capital.renovationCost, color: "#4E9C6C" },
+      { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
+      { label: "Upfront Insurance", value: capital.upfrontInsurance, color: "#8B9795" },
+      { label: "Other Costs", value: otherCosts, color: "#C9BFA6" },
+    ].filter((segment) => segment.value > 0);
+  }, [financing.sellerDownPayment, capital, results.holdingCosts, results.closingCosts]);
 
   function downloadCsv() {
     const lines: string[] = ["Section,Field,Value"];
@@ -2052,181 +2171,541 @@ export default function SharedHousingCalculator() {
         </p>
 
         {/* Printable underwriting summary: hidden on screen, shown only
-            when printing or saving as PDF from the print dialog. Titled
-            "Co-Living Underwriting Summary", styled with the site's
-            cream/charcoal/brass identity, and ordered exactly as required:
-            title, property address (if entered), financing structure,
-            source, generated date, video walkthrough (if entered), property
-            photo gallery (if uploaded), investment and return summary
-            cards, then the five printSections (Property and Financing,
-            Rental Income, Monthly Operating Expenses, Upfront Capital
-            Required, Estimated Returns), and finally the floor plan (if
-            uploaded) at the very bottom. The illustrative-use disclaimer is
-            intentionally not printed here; it still appears on the
-            interactive calculator page above. Built from printSections
-            (defined above) rather than the on-page breakdown or CSV data,
-            since this report has its own rules: only calculated figures,
-            no input controls, tooltips, or buttons, and Annual Property
-            Taxes/Insurance appear only for Principal and Interest Only
-            (see printSections). */}
-        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6">
-          {/* 1-5. Report header: title, property address (if entered),
-              financing structure, source, generated date */}
-          <div className="mb-6 print:break-inside-avoid-page border-b-4 border-brass pb-4">
-            <h1 className="text-[20pt] font-display font-semibold leading-tight text-ink">
-              Co-Living Underwriting Summary
-            </h1>
-            {propertyAddress.trim() && (
-              <p className="mt-2 text-[10pt] text-ink/80">
-                Property Address: {propertyAddress.trim()}
-              </p>
-            )}
-            <p className="mt-1 text-[9pt] text-ink/80">
-              Financing Structure: {financingStructureLabel}
-            </p>
-            <p className="mt-1 text-[9pt] text-ink/60">Source: michaelaylett.com</p>
-            <p className="text-[9pt] text-ink/60">
-              Generated:{" "}
-              {new Date().toLocaleDateString("en-US", {
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })}
-            </p>
+            when printing or saving as PDF from the print dialog. Redesigned
+            as a polished, brochure-style investment presentation (brand
+            header, listing-style media, large KPI cards, an Investment
+            Highlights card, SVG bar/donut charts, and card-based detail
+            sections) rather than a plain data table. Every figure below is
+            read directly from `results`/`financing`/`capital`/`percent`, the
+            exact same values driving the on-page calculator, the CSV
+            export, and the underwriting breakdown -- this redesign only
+            changes how the numbers are presented, never how they are
+            calculated. The illustrative-use disclaimer is intentionally
+            not printed here; it still appears on the interactive
+            calculator page above. PITI vs. Principal and Interest Only
+            handling is preserved exactly: Annual Property Taxes/Insurance
+            appear only for Principal and Interest Only. The Floor Plan (if uploaded) is pushed onto its own page
+            with print:break-before-page. A repeating branded footer uses
+            position:fixed so it appears on every printed page in Chrome;
+            Chrome's print engine has no supported way to render a dynamic
+            "page X of Y" total outside of a paged-media polyfill, so the
+            footer intentionally omits a page counter rather than showing
+            an inaccurate one. */}
+        <div className="hidden print:block bg-paper text-ink text-[10.5pt] leading-snug p-6 pb-14">
+          {/* Report header: brand lockup, title, and a meta row with
+              property address (if entered), bedroom count, financing
+              structure, generated date, and source. */}
+          <div className="mb-6 print:break-inside-avoid-page">
+            <div className="flex items-start justify-between gap-6 pb-4 border-b-4 border-brass">
+              <div className="flex items-center gap-3">
+                <div className="h-11 w-11 rounded-lg border-2 border-brass flex items-center justify-center flex-shrink-0">
+                  <Home size={22} className="text-brass" />
+                </div>
+                <div>
+                  <p className="text-[11pt] font-display font-semibold text-ink leading-tight">
+                    MICHAEL AYLETT
+                  </p>
+                  <p className="text-[7pt] tracking-widest uppercase text-brass">
+                    Real Estate Investments
+                  </p>
+                </div>
+              </div>
+              <h1 className="text-[22pt] font-display font-bold leading-tight text-ink text-right">
+                Co-Living Underwriting Summary
+              </h1>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-[8.5pt] text-ink/70">
+              {propertyAddress.trim() && (
+                <span className="inline-flex items-center gap-1.5">
+                  <MapPin size={12} className="text-brass" />
+                  {propertyAddress.trim()}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1.5">
+                <Users size={12} className="text-brass" />
+                {results.totalBedrooms} Bedrooms
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Landmark size={12} className="text-brass" />
+                Financing Structure: {financingStructureLabel}
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Calendar size={12} className="text-brass" />
+                Generated{" "}
+                {new Date().toLocaleDateString("en-US", {
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </span>
+              <span className="text-ink/50">Source: michaelaylett.com</span>
+            </div>
           </div>
 
-          {/* 6. Video Walkthrough, only if a link was entered. No video
-              player is embedded and no raw URL is printed; the only visible
-              text is a "View Video Walkthrough" hyperlink, which stays
-              clickable in a saved PDF. */}
-          {videoWalkthroughLink.trim() !== "" && (
-            <div className="mb-6 print:break-inside-avoid-page">
-              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
-                Video Walkthrough
-              </p>
-              <a
-                href={videoWalkthroughLink.trim()}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[11pt] font-semibold text-brass underline"
-              >
-                View Video Walkthrough
-              </a>
-            </div>
-          )}
-
-          {/* 7. Property photo gallery, only if images were uploaded */}
-          {propertyImages.length > 0 && (
-            <div className="mb-6 print:break-inside-avoid-page">
-              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
-                Property Photos
-              </p>
-              <div className={`grid ${getGalleryLayout(propertyImages.length).gridClass} gap-2`}>
-                {propertyImages.map((img) => (
-                  <div
-                    key={img.id}
-                    className={`overflow-hidden rounded border border-ink/15 print:break-inside-avoid ${
-                      getGalleryLayout(propertyImages.length).imgHeightClass
-                    }`}
-                  >
+          {/* Listing-brochure media: a large featured photo with smaller
+              gallery thumbnails, plus a Video Walkthrough button, if
+              either was provided. Omitted entirely when neither exists. */}
+          {(propertyImages.length > 0 || videoWalkthroughLink.trim() !== "") && (
+            <div className="mb-6 print:break-inside-avoid-page grid grid-cols-3 gap-3">
+              {propertyImages.length > 0 && (
+                <div className={videoWalkthroughLink.trim() !== "" ? "col-span-2" : "col-span-3"}>
+                  <div className="rounded-xl overflow-hidden border border-ink/15 h-[2.6in]">
                     <img
-                      src={img.dataUrl}
-                      alt={img.name || "Property photo"}
+                      src={propertyImages[0].dataUrl}
+                      alt={propertyImages[0].name || "Featured property photo"}
                       className="w-full h-full object-cover"
                     />
                   </div>
-                ))}
-              </div>
+                  {propertyImages.length > 1 && (
+                    <div className="mt-2 grid grid-cols-4 gap-2">
+                      {propertyImages.slice(1, 5).map((img) => (
+                        <div
+                          key={img.id}
+                          className="rounded-lg overflow-hidden border border-ink/15 h-[0.9in]"
+                        >
+                          <img
+                            src={img.dataUrl}
+                            alt={img.name || "Property photo"}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {videoWalkthroughLink.trim() !== "" && (
+                <a
+                  href={videoWalkthroughLink.trim()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`${
+                    propertyImages.length > 0 ? "col-span-1" : "col-span-3"
+                  } h-full flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-brass bg-white text-center px-3 py-6`}
+                >
+                  <div className="h-10 w-10 rounded-full bg-brass text-white flex items-center justify-center">
+                    <Play size={16} fill="currentColor" />
+                  </div>
+                  <p className="text-[7.5pt] font-semibold uppercase tracking-wide text-ink/60">
+                    Video Walkthrough
+                  </p>
+                  <p className="text-[10pt] font-semibold text-brass underline">
+                    View Video Walkthrough
+                  </p>
+                </a>
+              )}
             </div>
           )}
 
-          {/* 8. Investment and return summary: the five headline figures,
-              with Total Capital Required and Estimated Cash-on-Cash Return
-              made the most visually prominent. The Cash-on-Cash Return card
-              always uses the same bright-green treatment regardless of the
-              value, with a bold dark border and bold, very dark text so the
-              figure stays readable even if the printer omits background
-              colors. */}
-          <div className="mb-6 print:break-inside-avoid-page">
-            <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
-              Investment and Return Summary
+          {/* Executive summary: five large KPI cards. Total Capital
+              Required and Estimated Cash-on-Cash Return are the strongest
+              visual elements, with the COCR card always using the same
+              bright-green (#00FF00) treatment regardless of the value. */}
+          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-5 gap-2.5">
+            <PrintKpiCard
+              icon={<Home size={16} />}
+              label="Purchase Price"
+              value={formatCents(financing.purchasePrice)}
+            />
+            <PrintKpiCard
+              icon={<Wallet size={16} />}
+              label="Total Capital Required"
+              value={formatCents(results.totalCapitalRequired)}
+            />
+            <PrintKpiCard
+              icon={<TrendingUp size={16} />}
+              label="Est. Monthly Cash Flow"
+              value={formatCents(results.monthlyCashFlow)}
+            />
+            <PrintKpiCard
+              icon={<Calendar size={16} />}
+              label="Est. Annual Cash Flow"
+              value={formatCents(results.annualCashFlow)}
+            />
+            <PrintKpiCard
+              icon={<Percent size={16} />}
+              label="Est. Cash-on-Cash Return"
+              value={results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+              highlight
+            />
+          </div>
+
+          {/* Investment Highlights: a concise, scannable card summarizing
+              the deal before the detailed sections below. */}
+          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+            <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-1 pb-2 border-b border-brass/40">
+              Investment Highlights
             </p>
-            <div className="grid grid-cols-3 gap-2 mb-2">
-              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-ink/60">Purchase Price</p>
-                <p className="text-[13pt] font-semibold text-ink">{formatCents(financing.purchasePrice)}</p>
-              </div>
-              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
-                  Estimated Monthly Cash Flow
-                </p>
-                <p className="text-[13pt] font-semibold text-ink">{formatCents(results.monthlyCashFlow)}</p>
-              </div>
-              <div className="border border-ink/25 bg-paper-2 rounded px-3 py-2">
-                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
-                  Estimated Annual Cash Flow
-                </p>
-                <p className="text-[13pt] font-semibold text-ink">{formatCents(results.annualCashFlow)}</p>
+            <div>
+              <HighlightBullet
+                icon={<Users size={13} />}
+                label={`${results.totalBedrooms} Bedrooms`}
+                detail="Co-living layout with per-bedroom rental income."
+              />
+              <HighlightBullet
+                icon={<Landmark size={13} />}
+                label={financingStructureLabel}
+                detail="Proposed financing structure for this acquisition."
+              />
+              <HighlightBullet
+                icon={<DollarSign size={13} />}
+                label={`${formatCents(results.grossMonthlyRent)} Estimated Monthly Rent`}
+                detail={`${formatCents(results.grossMonthlyRent)} gross / ${formatCents(
+                  results.effectiveRentAfterVacancy
+                )} effective after vacancy`}
+              />
+              <HighlightBullet
+                icon={<TrendingUp size={13} />}
+                label={`${formatCents(results.monthlyCashFlow)} Estimated Monthly Cash Flow`}
+                detail={`${formatCents(results.annualCashFlow)} estimated annually`}
+              />
+              <HighlightBullet
+                icon={<Percent size={13} />}
+                label={`${
+                  results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)
+                } Estimated Cash-on-Cash Return`}
+                detail="Annual cash flow relative to total capital invested."
+                accent="green"
+              />
+              <HighlightBullet
+                icon={<Wallet size={13} />}
+                label={`${formatCents(results.totalCapitalRequired)} Capital Required`}
+                detail="Total cash needed to acquire and stabilize the property."
+              />
+            </div>
+          </div>
+
+          {/* Charts: Income vs. Expenses (bar) and Capital Allocation
+              (donut), generated automatically from the calculator's own
+              figures via pure SVG, no charting library involved. */}
+          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-2 gap-4">
+            <div className="rounded-xl border border-ink/15 bg-white p-4">
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-3 pb-2 border-b border-brass/40">
+                Income vs. Expenses (Monthly)
+              </p>
+              <IncomeExpenseChart
+                effectiveRent={results.effectiveRentAfterVacancy}
+                operatingExpenses={results.totalMonthlyOperatingExpenses}
+                cashFlow={results.monthlyCashFlow}
+              />
+            </div>
+            <div className="rounded-xl border border-ink/15 bg-white p-4">
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink mb-3 pb-2 border-b border-brass/40">
+                Capital Allocation
+              </p>
+              <div className="flex items-center gap-4">
+                <CapitalAllocationDonut segments={capitalAllocationSegments} />
+                <div className="flex-1 space-y-1.5 text-[8pt]">
+                  {capitalAllocationSegments.map((segment) => {
+                    const pct =
+                      results.totalCapitalRequired > 0
+                        ? (segment.value / results.totalCapitalRequired) * 100
+                        : 0;
+                    return (
+                      <div key={segment.label} className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-ink/70">
+                          <span
+                            className="h-2 w-2 rounded-full inline-block flex-shrink-0"
+                            style={{ backgroundColor: segment.color }}
+                          />
+                          {segment.label}
+                        </span>
+                        <span className="text-ink font-medium">{pct.toFixed(1)}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="border-2 border-brass bg-white rounded px-3 py-3">
-                <p className="text-[8pt] uppercase tracking-wide text-ink/60">
-                  Total Capital Required
-                </p>
-                <p className="text-[20pt] font-bold text-ink">
-                  {formatCents(results.totalCapitalRequired)}
+          </div>
+
+          {/* Property and Financing, presented as two side-by-side cards.
+              Reads financing/results/paymentType/financingStructureLabel
+              directly, and keeps the exact same PITI vs. Principal and
+              Interest Only
+              conditional logic: PITI shows a single combined payment line,
+              Principal and Interest Only shows the payment plus taxes,
+              insurance, and the full monthly housing payment. */}
+          <div className="mb-6 print:break-inside-avoid-page grid grid-cols-2 gap-4">
+            <div className="rounded-xl border border-ink/15 bg-white p-4">
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+                <Home size={14} className="text-brass" />
+                <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Property</p>
+              </div>
+              <div className="space-y-1.5 text-[9.5pt]">
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Purchase Price</span>
+                  <span className="font-medium text-ink">{formatCents(financing.purchasePrice)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Loan Balance</span>
+                  <span className="font-medium text-ink">{formatCents(financing.loanBalance)}</span>
+                </div>
+                <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                  <span className="font-semibold text-ink">Estimated Equity</span>
+                  <span className="font-semibold text-ink">{formatCents(results.equity)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-xl border border-ink/15 bg-white p-4">
+              <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+                <Landmark size={14} className="text-brass" />
+                <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Financing</p>
+              </div>
+              <div className="space-y-1.5 text-[9.5pt]">
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Financing Structure</span>
+                  <span className="font-medium text-ink">{financingStructureLabel}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink/60">Seller Down Payment</span>
+                  <span className="font-medium text-ink">{formatCents(financing.sellerDownPayment)}</span>
+                </div>
+                {paymentType === "piti" ? (
+                  <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                    <span className="font-semibold text-ink">Monthly PITI Payment</span>
+                    <span className="font-semibold text-ink">{formatCents(financing.monthlyPayment)}</span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Monthly Principal and Interest</span>
+                      <span className="font-medium text-ink">{formatCents(financing.monthlyPayment)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Annual Property Taxes</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.annualPropertyTaxes)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Annual Property Insurance</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.annualPropertyInsurance)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">
+                        {formatCents(results.monthlyHousingPayment)}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Rental Income card: Gross and Effective Monthly Rent called
+              out as large highlight tiles (Effective Monthly Rent uses a
+              subtle green tint, since it is the positive, spendable
+              figure), with the supporting line items below. */}
+          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+              <DollarSign size={14} className="text-brass" />
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Rental Income</p>
+            </div>
+            <div className="grid grid-cols-2 gap-4 mb-3">
+              <div className="rounded-lg bg-paper-2 px-3 py-2.5">
+                <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">Gross Monthly Rent</p>
+                <p className="text-[14pt] font-bold text-ink">{formatCents(results.grossMonthlyRent)}</p>
+              </div>
+              <div className="rounded-lg px-3 py-2.5" style={{ backgroundColor: "#E4F3E8" }}>
+                <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">Effective Monthly Rent</p>
+                <p className="text-[14pt] font-bold" style={{ color: "#1E8E3E" }}>
+                  {formatCents(results.effectiveRentAfterVacancy)}
                 </p>
               </div>
+            </div>
+            <div className="space-y-1.5 text-[9.5pt]">
+              <div className="flex justify-between">
+                <span className="text-ink/60">Shared-Bath Bedroom Income</span>
+                <span className="text-ink">{formatCents(results.monthlySharedBathRent)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Ensuite Bedroom Income</span>
+                <span className="text-ink">{formatCents(results.monthlyEnsuiteRent)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Vacancy ({formatPercent(percent.vacancyPct)})</span>
+                <span className="text-ink">-{formatCents(results.vacancyExpense)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Monthly Operating Expenses card: alternating row backgrounds,
+              Total Monthly Operating Expenses called out at the bottom. */}
+          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+              <Wallet size={14} className="text-brass" />
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+                Monthly Operating Expenses
+              </p>
+            </div>
+            <div className="text-[9.5pt]">
+              {[
+                { label: "Housing Payment", value: results.monthlyHousingPayment },
+                {
+                  label: `Platform Fees (${formatPercent(percent.platformFeePct)})`,
+                  value: results.platformFees,
+                },
+                {
+                  label: `Property Management (${formatPercent(percent.propertyManagementPct)})`,
+                  value: results.propertyManagementFee,
+                },
+                { label: "Maintenance", value: results.maintenanceMonthly },
+                { label: "Utilities", value: results.utilitiesMonthly },
+                { label: "Cleaning", value: results.cleaningMonthly },
+                { label: "Lawn Care", value: results.lawnCareMonthly },
+                { label: "Pest Control", value: results.pestControlMonthly },
+              ].map((row, i) => (
+                <div
+                  key={row.label}
+                  className={`flex justify-between px-2 py-1.5 rounded ${i % 2 === 1 ? "bg-paper-2" : ""}`}
+                >
+                  <span className="text-ink/70">{row.label}</span>
+                  <span className="text-ink">{formatCents(row.value)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-2 flex justify-between items-center rounded-lg bg-ink text-white px-3 py-2.5">
+              <span className="text-[9.5pt] font-semibold uppercase tracking-wide">
+                Total Monthly Operating Expenses
+              </span>
+              <span className="text-[13pt] font-bold">
+                {formatCents(results.totalMonthlyOperatingExpenses)}
+              </span>
+            </div>
+          </div>
+
+          {/* Capital Required card: the same fourteen line items that make
+              up the Total Capital Required calculation, laid out as a
+              two-column list with Total Capital Required called out
+              below. */}
+          <div className="mb-6 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-4">
+            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-brass/40">
+              <PiggyBank size={14} className="text-brass" />
+              <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Capital Required</p>
+            </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[9.5pt]">
+              <div className="flex justify-between">
+                <span className="text-ink/60">Seller Down Payment</span>
+                <span className="text-ink">{formatCents(financing.sellerDownPayment)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Reserves</span>
+                <span className="text-ink">{formatCents(RESERVES_AMOUNT)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Arrears</span>
+                <span className="text-ink">{formatCents(capital.arrears)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Upfront Insurance</span>
+                <span className="text-ink">{formatCents(capital.upfrontInsurance)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Renovation Cost</span>
+                <span className="text-ink">{formatCents(capital.renovationCost)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Acquisition Fee</span>
+                <span className="text-ink">{formatCents(capital.acquisitionFee)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Furniture</span>
+                <span className="text-ink">{formatCents(capital.furniture)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">TC and LLC</span>
+                <span className="text-ink">{formatCents(capital.tcAndLlc)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Appliances</span>
+                <span className="text-ink">{formatCents(capital.appliances)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Closing Costs ({formatPercent(percent.closingCostPct)})</span>
+                <span className="text-ink">{formatCents(results.closingCosts)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Photos</span>
+                <span className="text-ink">{formatCents(capital.photos)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Agent Fee</span>
+                <span className="text-ink">{formatCents(capital.agentFee)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Holding Costs</span>
+                <span className="text-ink">{formatCents(results.holdingCosts)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink/60">Assignment Fee</span>
+                <span className="text-ink">{formatCents(capital.assignmentFee)}</span>
+              </div>
+            </div>
+            <div
+              className="mt-3 flex justify-between items-center rounded-lg px-3 py-3"
+              style={{ backgroundColor: "#FBEBC7" }}
+            >
+              <span className="text-[10pt] font-bold uppercase tracking-wide text-ink">
+                Total Capital Required
+              </span>
+              <span className="text-[16pt] font-bold text-ink">
+                {formatCents(results.totalCapitalRequired)}
+              </span>
+            </div>
+          </div>
+
+          {/* Estimated Returns: Monthly and Annual Cash Flow as supporting
+              cards, Estimated Cash-on-Cash Return repeated as a large
+              green summary card, matching the executive-summary treatment. */}
+          <div className="mb-2 print:break-inside-avoid-page">
+            <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1.5 mb-3">
+              Estimated Returns
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-xl border border-ink/15 bg-white p-4 text-center">
+                <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
+                  Estimated Monthly Cash Flow
+                </p>
+                <p className="mt-1 text-[16pt] font-bold text-ink">{formatCents(results.monthlyCashFlow)}</p>
+              </div>
+              <div className="rounded-xl border border-ink/15 bg-white p-4 text-center">
+                <p className="text-[7.5pt] uppercase tracking-wide text-ink/60">
+                  Estimated Annual Cash Flow
+                </p>
+                <p className="mt-1 text-[16pt] font-bold text-ink">{formatCents(results.annualCashFlow)}</p>
+              </div>
               <div
-                className="border-4 border-ink rounded px-3 py-3"
+                className="rounded-xl border-4 border-ink p-4 text-center"
                 style={{ backgroundColor: "#00FF00" }}
               >
-                <p className="text-[8pt] uppercase tracking-wide text-ink font-bold">
+                <p className="text-[7.5pt] font-bold uppercase tracking-wide text-ink">
                   Estimated Cash-on-Cash Return
                 </p>
-                <p className="text-[20pt] font-bold text-ink">
+                <p className="mt-1 text-[22pt] font-bold text-ink">
                   {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* 9-13. Property and Financing, Rental Income, Monthly
-              Operating Expenses, Capital Required, Estimated Returns */}
-          {printSections.map((section) => (
-            <div key={section.title} className="mb-4 print:break-inside-avoid-page">
-              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-1.5 print:break-after-avoid-page">
-                {section.title}
-              </p>
-              {section.rows.map((row) => (
-                <div
-                  key={row.label}
-                  className={`flex justify-between gap-4 text-[10pt] py-0.5 print:break-inside-avoid ${
-                    row.isTotal ? "font-semibold border-t border-brass/50 mt-1 pt-1 text-ink" : "text-ink/85"
-                  }`}
-                >
-                  <span>{row.label}</span>
-                  <span>{row.value}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-
-          {/* 14. Floor Plan, only if one was uploaded, displayed as an actual
-              image (never a filename or file link), just like the property
-              photo gallery above. Uses object-contain (not object-cover)
-              so the plan's full aspect ratio is preserved and nothing is
-              cropped or stretched, is centered and uses the full print
-              width available, and print:break-inside-avoid-page keeps it
-              from splitting across two pages, which naturally pushes it
-              onto a new page if it does not fit on the current one. */}
+          {/* Floor Plan, only if one was uploaded, on its own page. Shown
+              as an actual image (never a filename or file link), centered
+              with generous margins, using object-contain so the plan's
+              full aspect ratio is preserved and nothing is cropped or
+              stretched. print:break-before-page starts it on a fresh page
+              every time, and print:break-inside-avoid-page keeps it from
+              splitting if it is taller than a single page. */}
           {floorPlan && (
-            <div className="mt-6 print:break-inside-avoid-page">
-              <p className="text-[10pt] font-semibold uppercase tracking-wide text-ink border-b border-brass/60 pb-1 mb-2 print:break-after-avoid-page">
+            <div className="print:break-before-page print:break-inside-avoid-page pt-6">
+              <p className="text-[16pt] font-display font-bold text-ink mb-4 pb-2 border-b-4 border-brass">
                 Floor Plan
               </p>
-              <div className="flex justify-center bg-paper-2 rounded border border-ink/15 p-2">
+              <div className="flex justify-center items-center bg-paper-2 rounded-xl border border-ink/15 p-6">
                 <img
                   src={floorPlan.dataUrl}
                   alt={floorPlan.name || "Floor plan"}
@@ -2235,6 +2714,15 @@ export default function SharedHousingCalculator() {
               </div>
             </div>
           )}
+
+          {/* Repeating branded footer. position:fixed causes it to appear
+              on every printed page in Chrome; see the note at the top of
+              this block regarding the page-count limitation. */}
+          <div className="hidden print:flex fixed bottom-0 inset-x-0 items-center justify-between px-6 py-2 border-t border-ink/15 bg-paper text-[7.5pt] text-ink/60">
+            <span className="font-semibold text-ink">Michael Aylett</span>
+            <span>Co-Living Investment Analysis</span>
+            <span>michaelaylett.com</span>
+          </div>
         </div>
       </div>
     </section>
