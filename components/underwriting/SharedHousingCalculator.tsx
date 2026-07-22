@@ -61,7 +61,6 @@ import {
 // ---------------------------------------------------------------------
 const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
-const RESERVES_AMOUNT = 10000;
 const HOLDING_MONTHS = 3;
 
 // Property Images: processed and stored entirely client-side (never
@@ -202,6 +201,14 @@ function getGalleryLayout(count: number): { gridClass: string; imgHeightClass: s
 // URL) so it can be previewed on screen and embedded directly, as an
 // actual image, in the printable report.
 type FloorPlanFile = { dataUrl: string; name: string };
+
+// One Scope of Work line item: a free-text work item name and its
+// estimated cost, tracked as both a parsed number (for the running
+// total) and a draft string (so decimals and in-progress typing behave
+// exactly like every other currency field in this calculator). Shared
+// across every financing structure -- not tied to financingMode -- so
+// it never disappears when the selected structure changes.
+type ScopeOfWorkItem = { id: string; name: string; cost: number; costDraft: string };
 
 // A lightweight, non-blocking check that the Video Walkthrough Link
 // looks like a real web address. Empty is treated as valid since the
@@ -1304,6 +1311,7 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
 type CapitalKey =
   | "arrears"
   | "renovationCost"
+  | "reserves"
   | "furniture"
   | "appliances"
   | "photos"
@@ -1322,6 +1330,11 @@ type CapitalKey =
 const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   arrears: 0,
   renovationCost: 0,
+  // Reserves: editable per financing structure, defaulting to $10,000
+  // for every one of them (Traditional Financing, Subject To, Seller
+  // Financing, Subject To & Seller Finance Hybrid, and Stack Method).
+  // Replaces the previous fixed, non-editable RESERVES_AMOUNT constant.
+  reserves: 10000,
   furniture: 10000,
   appliances: 3000,
   photos: 300,
@@ -1666,6 +1679,16 @@ export default function SharedHousingCalculator() {
     makeDraft(CAPITAL_DEFAULTS)
   );
 
+  // Scope of Work: an optional itemized breakdown of Renovation Cost,
+  // shared across every financing structure. useItemizedScopeOfWork
+  // defaults to Yes (true), matching the spec's default -- while true,
+  // Renovation Cost is kept in sync with the Scope of Work Total by the
+  // effect below; while false, Renovation Cost is a normal, freely
+  // editable currency field and the Scope of Work Total is shown only
+  // for reference.
+  const [scopeOfWorkItems, setScopeOfWorkItems] = useState<ScopeOfWorkItem[]>([]);
+  const [useItemizedScopeOfWork, setUseItemizedScopeOfWork] = useState(true);
+
   const [percent, setPercent] = useState<Record<PercentKey, number>>(PERCENT_DEFAULTS);
   const [percentDraft, setPercentDraft] = useState<Record<PercentKey, string>>(
     makePercentDraft(PERCENT_DEFAULTS)
@@ -1819,6 +1842,15 @@ export default function SharedHousingCalculator() {
   const [floorPlan, setFloorPlan] = useState<FloorPlanFile | null>(null);
   const [floorPlanError, setFloorPlanError] = useState("");
   const [processingFloorPlan, setProcessingFloorPlan] = useState(false);
+  // PadSplit Rental Data Screenshot: a single optional supporting image
+  // (comparable PadSplit rental data or room-rate research), processed
+  // and stored exactly like the Floor Plan above -- entirely
+  // client-side, never automatically read or used in any calculation.
+  // Shared across every financing structure (not tied to financingMode)
+  // so it never disappears when the selected structure changes.
+  const [padSplitScreenshot, setPadSplitScreenshot] = useState<FloorPlanFile | null>(null);
+  const [padSplitScreenshotError, setPadSplitScreenshotError] = useState("");
+  const [processingPadSplitScreenshot, setProcessingPadSplitScreenshot] = useState(false);
   // Financing Structure is a single-select choice among four mutually
   // exclusive modes, each with its own inputs and calculations: only one
   // may ever be active. "" means no structure has been selected yet
@@ -1882,6 +1914,38 @@ export default function SharedHousingCalculator() {
       setCapitalDraft((d) => ({ ...d, [key]: formatCents(clamped) }));
       return { ...prev, [key]: clamped };
     });
+  }
+
+  // Scope of Work line item handlers. Each item is added with a blank
+  // name and $0 cost -- the user must type a custom name and amount;
+  // nothing is pre-filled or hard-coded as required. Costs use the same
+  // draft-string/parsed-number/blur-clamp pattern as every other
+  // currency field in this calculator.
+  function handleAddScopeOfWorkItem() {
+    setScopeOfWorkItems((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, name: "", cost: 0, costDraft: "0.00" },
+    ]);
+  }
+  function handleRemoveScopeOfWorkItem(id: string) {
+    setScopeOfWorkItems((prev) => prev.filter((item) => item.id !== id));
+  }
+  function handleScopeOfWorkNameChange(id: string, name: string) {
+    setScopeOfWorkItems((prev) => prev.map((item) => (item.id === id ? { ...item, name } : item)));
+  }
+  function handleScopeOfWorkCostChange(id: string, raw: string) {
+    setScopeOfWorkItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, costDraft: raw, cost: parseTypedAmount(raw) } : item))
+    );
+  }
+  function handleScopeOfWorkCostBlur(id: string) {
+    setScopeOfWorkItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const clamped = round2(Math.max(0, item.cost));
+        return { ...item, cost: clamped, costDraft: formatCents(clamped) };
+      })
+    );
   }
 
   function handlePercentChange(key: PercentKey, raw: string) {
@@ -1978,7 +2042,7 @@ export default function SharedHousingCalculator() {
     const invalid = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type));
 
     if (invalid.length > 0) {
-      setImageError("Some files were not added. Only JPG, PNG, and WEBP images are supported.");
+      setImageError("Please upload a PNG, JPG, JPEG, or WEBP image.");
     }
     if (valid.length === 0) return;
 
@@ -2041,7 +2105,7 @@ export default function SharedHousingCalculator() {
     const file = fileList?.[0];
     if (!file) return;
     if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setImageError("That file is not a supported image type. Please choose a JPG, PNG, or WEBP image.");
+      setImageError("Please upload a PNG, JPG, JPEG, or WEBP image.");
       return;
     }
     setImageError("");
@@ -2086,6 +2150,35 @@ export default function SharedHousingCalculator() {
   function handleRemoveFloorPlan() {
     setFloorPlan(null);
     setFloorPlanError("");
+  }
+
+  // PadSplit Rental Data Screenshot handler: a single optional image,
+  // processed exactly like the Floor Plan above. Supporting
+  // documentation only -- never read or used in any calculation, and
+  // uploading a new file always replaces whatever screenshot was there
+  // before.
+  async function handlePadSplitScreenshotFile(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file) return;
+    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+      setPadSplitScreenshotError("Please upload a PNG, JPG, JPEG, or WEBP image.");
+      return;
+    }
+    setPadSplitScreenshotError("");
+    setProcessingPadSplitScreenshot(true);
+    try {
+      const dataUrl = await processImageFile(file);
+      setPadSplitScreenshot({ dataUrl, name: file.name });
+    } catch {
+      setPadSplitScreenshotError("That image could not be processed. Please try a different file.");
+    } finally {
+      setProcessingPadSplitScreenshot(false);
+    }
+  }
+
+  function handleRemovePadSplitScreenshot() {
+    setPadSplitScreenshot(null);
+    setPadSplitScreenshotError("");
   }
 
   function resetToDefaults() {
@@ -2161,6 +2254,14 @@ export default function SharedHousingCalculator() {
     setVideoWalkthroughLink("");
     setFloorPlan(null);
     setFloorPlanError("");
+    setPadSplitScreenshot(null);
+    setPadSplitScreenshotError("");
+    // Scope of Work: clears every line item and restores the standard
+    // itemized-by-default Renovation Cost behavior (Yes). Renovation
+    // Cost itself is already reset to its $0 default above via
+    // setCapital(CAPITAL_DEFAULTS).
+    setScopeOfWorkItems([]);
+    setUseItemizedScopeOfWork(true);
     // Financing Structure resets to its default of no selection, which
     // also clears the Traditional Financing and Hybrid inputs (Purchase
     // Price and the Hybrid Existing Mortgage Balance / Subject-To PITI
@@ -2939,6 +3040,31 @@ export default function SharedHousingCalculator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calculatedHoldingCosts, holdingCostsIsManual]);
 
+  // Scope of Work Total = sum of every line item's cost, using
+  // unrounded internal values (round2 only rounds for currency display
+  // purposes, matching every other total in this calculator). Only cost
+  // changes affect this total -- editing a line item's name never
+  // changes it.
+  const scopeOfWorkTotal = useMemo(
+    () => round2(scopeOfWorkItems.reduce((sum, item) => sum + item.cost, 0)),
+    [scopeOfWorkItems]
+  );
+
+  // Keeps Renovation Cost synced to the Scope of Work Total whenever
+  // itemized calculation is active (the default, Yes) -- updating
+  // immediately whenever a line item is added, removed, or its cost is
+  // edited. Selecting manual override (useItemizedScopeOfWork = No)
+  // stops this sync, so Renovation Cost becomes a normal, freely
+  // editable field again while the Scope of Work Total continues to be
+  // shown for reference only.
+  useEffect(() => {
+    if (useItemizedScopeOfWork) {
+      setCapital((prev) => ({ ...prev, renovationCost: scopeOfWorkTotal }));
+      setCapitalDraft((prev) => ({ ...prev, renovationCost: formatCents(scopeOfWorkTotal) }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeOfWorkTotal, useItemizedScopeOfWork]);
+
   // ---------------------------------------------------------------------
   // The underwriting engine: every number shown anywhere on this page,
   // in the breakdown table, the CSV, and the print summary comes from
@@ -3064,7 +3190,7 @@ export default function SharedHousingCalculator() {
         capital.appliances +
         capital.photos +
         holdingCosts +
-        RESERVES_AMOUNT +
+        capital.reserves +
         capital.acquisitionFee +
         capital.stackTcFee +
         capital.stackLlcFee
@@ -3101,7 +3227,7 @@ export default function SharedHousingCalculator() {
               capital.appliances +
               capital.photos +
               holdingCosts +
-              RESERVES_AMOUNT +
+              capital.reserves +
               (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
               capital.acquisitionFee +
               tcAndLlcTotal +
@@ -3421,7 +3547,7 @@ export default function SharedHousingCalculator() {
                 { label: "Appliances", value: formatCents(capital.appliances) },
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-                { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
+                { label: "Reserves", value: formatCents(capital.reserves) },
                 { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
                 { label: "TC Fee", value: formatCents(capital.stackTcFee) },
                 { label: "LLC Entity Formation Cost", value: formatCents(capital.stackLlcFee) },
@@ -3454,7 +3580,7 @@ export default function SharedHousingCalculator() {
                 { label: "Appliances", value: formatCents(capital.appliances) },
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-                { label: "Reserves", value: formatCents(RESERVES_AMOUNT) },
+                { label: "Reserves", value: formatCents(capital.reserves) },
                 ...(financingMode === "traditional"
                   ? []
                   : [{ label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) }]),
@@ -3555,6 +3681,11 @@ export default function SharedHousingCalculator() {
       rows: [
         { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
         { label: "Video Walkthrough Link", value: videoWalkthroughLink.trim() || "Not entered" },
+        { label: "Property Photo Count", value: String(propertyImages.length) },
+        {
+          label: "PadSplit Rental Data Screenshot Uploaded",
+          value: padSplitScreenshot ? "Yes" : "No",
+        },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         ...(financingMode === "traditional"
           ? [
@@ -3765,6 +3896,19 @@ export default function SharedHousingCalculator() {
           label: "Holding Costs Source",
           value: results.holdingCostsIsManual ? "Manually overridden" : "Automatically calculated",
         },
+        ...scopeOfWorkItems.flatMap((item, index) => [
+          { label: `Scope of Work Item ${index + 1} Name`, value: item.name.trim() || "Untitled Item" },
+          { label: `Scope of Work Item ${index + 1} Cost`, value: formatCents(item.cost) },
+        ]),
+        { label: "Total Scope of Work", value: formatCents(scopeOfWorkTotal) },
+        {
+          label: "Use Itemized Scope of Work Total",
+          value: useItemizedScopeOfWork ? "Yes" : "No",
+        },
+        {
+          label: "Renovation Cost Used in Underwriting",
+          value: formatCents(capital.renovationCost),
+        },
       ],
     }),
     [
@@ -3807,6 +3951,11 @@ export default function SharedHousingCalculator() {
       traditionalSelectedLtvPct,
       traditionalEffectiveDownPaymentPct,
       traditionalPITIAt80,
+      propertyImages,
+      padSplitScreenshot,
+      scopeOfWorkItems,
+      scopeOfWorkTotal,
+      useItemizedScopeOfWork,
     ]
   );
 
@@ -3867,7 +4016,7 @@ export default function SharedHousingCalculator() {
         { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
         { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
         { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
-        { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
+        { label: "Reserves", value: capital.reserves, color: "#7C9070" },
         { label: "TC Fee", value: capital.stackTcFee, color: "#C08A3E" },
         { label: "LLC Entity Formation Cost", value: capital.stackLlcFee, color: "#C08A3E" },
         { label: "Other Applicable Costs", value: otherApplicableCosts, color: "#C9BFA6" },
@@ -3897,7 +4046,7 @@ export default function SharedHousingCalculator() {
       { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
       { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
       { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
-      { label: "Reserves", value: RESERVES_AMOUNT, color: "#7C9070" },
+      { label: "Reserves", value: capital.reserves, color: "#7C9070" },
       ...tcAndLlcBars,
       { label: "Closing Costs", value: results.closingCosts, color: "#C08A3E" },
       { label: "Agent Fee", value: capital.agentFee, color: "#C08A3E" },
@@ -5973,6 +6122,85 @@ export default function SharedHousingCalculator() {
               value={formatCents(results.annualGrossRent)}
             />
           </div>
+
+          {/* PadSplit Rental Data Screenshot: a single optional
+              supporting image, shared across every financing structure
+              (not cleared by switching financing modes), processed
+              exactly like the Floor Plan upload. Never read or used in
+              any calculation -- documentation only. */}
+          <div className="mt-8 pt-6 border-t border-line-dark">
+            <p className="eyebrow text-brass mb-2">PadSplit Rental Data Screenshot</p>
+            <p className="text-sm text-ink/60 leading-relaxed mb-5">
+              Upload a screenshot of comparable PadSplit rental data or room-rate research.
+            </p>
+
+            {padSplitScreenshot ? (
+              <div className="border border-line-dark bg-white p-3 max-w-sm">
+                <div className="flex items-center justify-center bg-paper-2">
+                  <img
+                    src={padSplitScreenshot.dataUrl}
+                    alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
+                    className="w-full h-40 object-contain"
+                  />
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
+                    Replace
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        handlePadSplitScreenshotFile(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleRemovePadSplitScreenshot}
+                    className="text-xs text-ink/50 hover:text-red-700 transition-colors"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <label
+                htmlFor="padSplitScreenshotInput"
+                className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 min-h-[128px] max-w-sm p-4 text-center cursor-pointer hover:border-brass transition-colors"
+              >
+                <Upload size={18} className="text-ink/40" aria-hidden="true" />
+                <span className="text-xs text-ink/60">
+                  {processingPadSplitScreenshot ? "Processing..." : "Add Screenshot"}
+                </span>
+                <input
+                  id="padSplitScreenshotInput"
+                  type="file"
+                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  className="hidden"
+                  disabled={processingPadSplitScreenshot}
+                  onChange={(e) => {
+                    handlePadSplitScreenshotFile(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            )}
+
+            {padSplitScreenshotError && (
+              <p role="alert" className="mt-4 text-sm text-red-700">
+                {padSplitScreenshotError}
+              </p>
+            )}
+
+            <p className="mt-4 text-xs text-ink/50 leading-relaxed">
+              Supported formats: PNG, JPG, JPEG, and WEBP. One screenshot. Supporting
+              documentation only -- room rates are never automatically read or calculated from
+              this image. Appears in the printable underwriting summary near the Rental Income
+              section when uploaded.
+            </p>
+          </div>
         </div>
 
         {/* ---------------------------------------------------------- */}
@@ -6132,13 +6360,22 @@ export default function SharedHousingCalculator() {
                 onBlur={() => handleCapitalBlur("arrears")}
               />
             )}
-            <CurrencyField
-              id="renovationCost"
-              label="Renovation Cost"
-              draft={capitalDraft.renovationCost}
-              onChange={(raw) => handleCapitalChange("renovationCost", raw)}
-              onBlur={() => handleCapitalBlur("renovationCost")}
-            />
+            {useItemizedScopeOfWork ? (
+              <ReadOnlyStat
+                label="Renovation Cost"
+                value={formatWhole(capital.renovationCost)}
+                helperText="Automatically calculated from the Scope of Work Total below. Select No under Use Itemized Scope of Work Total to enter this manually instead."
+              />
+            ) : (
+              <CurrencyField
+                id="renovationCost"
+                label="Renovation Cost"
+                draft={capitalDraft.renovationCost}
+                onChange={(raw) => handleCapitalChange("renovationCost", raw)}
+                onBlur={() => handleCapitalBlur("renovationCost")}
+                helperText="Entered manually. The Scope of Work Total below is shown for reference only."
+              />
+            )}
             <CurrencyField
               id="furniture"
               label="Furniture"
@@ -6202,10 +6439,13 @@ export default function SharedHousingCalculator() {
                 </button>
               )}
             </div>
-            <ReadOnlyStat
+            <CurrencyField
+              id="reserves"
               label="Reserves"
-              value={formatWhole(RESERVES_AMOUNT)}
-              helperText="Estimated reserve funds set aside for the property."
+              draft={capitalDraft.reserves}
+              onChange={(raw) => handleCapitalChange("reserves", raw)}
+              onBlur={() => handleCapitalBlur("reserves")}
+              helperText="Estimated reserve funds set aside for the property. Defaults to $10,000, fully editable."
             />
             {financingMode !== "stackMethod" && financingMode !== "traditional" && (
               <CurrencyField
@@ -6357,6 +6597,119 @@ export default function SharedHousingCalculator() {
                   : undefined
               }
             />
+          </div>
+
+          {/* Scope of Work: an optional itemized breakdown of Renovation
+              Cost, shared across every financing structure. When Use
+              Itemized Scope of Work Total is Yes (the default),
+              Renovation Cost above is automatically kept equal to the
+              Total Scope of Work; when No, Renovation Cost is entered
+              manually and this total is shown for reference only. */}
+          <div className="mt-8 pt-6 border-t border-line-dark">
+            <p className="eyebrow text-brass mb-1">Scope of Work</p>
+            <p className="text-xs text-ink/50 leading-relaxed mb-5">
+              Add each renovation item and its estimated cost. The total will automatically
+              populate the Renovation Cost.
+            </p>
+
+            <div className="mb-2">
+              <FieldLabel>Use Itemized Scope of Work Total</FieldLabel>
+            </div>
+            <div
+              className="grid grid-cols-2 gap-2 max-w-sm"
+              role="group"
+              aria-label="Use Itemized Scope of Work Total"
+            >
+              <button
+                type="button"
+                onClick={() => setUseItemizedScopeOfWork(false)}
+                aria-pressed={!useItemizedScopeOfWork}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  !useItemizedScopeOfWork
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={() => setUseItemizedScopeOfWork(true)}
+                aria-pressed={useItemizedScopeOfWork}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  useItemizedScopeOfWork
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Yes
+              </button>
+            </div>
+
+            {scopeOfWorkItems.length > 0 && (
+              <div className="mt-6 space-y-3">
+                {scopeOfWorkItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex flex-col sm:flex-row sm:items-end gap-3 border border-line-dark bg-white p-3 max-w-full overflow-hidden"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <label
+                        htmlFor={`scopeOfWorkName-${item.id}`}
+                        className="block text-xs uppercase tracking-wide text-ink/50 mb-1.5"
+                      >
+                        Work Item
+                      </label>
+                      <input
+                        id={`scopeOfWorkName-${item.id}`}
+                        type="text"
+                        value={item.name}
+                        onChange={(e) => handleScopeOfWorkNameChange(item.id, e.target.value)}
+                        placeholder="e.g. Interior Paint"
+                        className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+                      />
+                    </div>
+                    <div className="sm:w-48 flex-shrink-0">
+                      <CurrencyField
+                        id={`scopeOfWorkCost-${item.id}`}
+                        label="Estimated Cost"
+                        draft={item.costDraft}
+                        onChange={(raw) => handleScopeOfWorkCostChange(item.id, raw)}
+                        onBlur={() => handleScopeOfWorkCostBlur(item.id)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveScopeOfWorkItem(item.id)}
+                      className="flex-shrink-0 text-xs text-ink/50 hover:text-red-700 transition-colors sm:pb-3 self-start sm:self-auto"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleAddScopeOfWorkItem}
+              className="mt-4 inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+            >
+              Add Line Item
+            </button>
+
+            <div className="mt-6 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
+              <span className="eyebrow text-brass">Total Scope of Work</span>
+              <span className="font-display text-2xl text-ink">{formatCents(scopeOfWorkTotal)}</span>
+            </div>
+
+            {!useItemizedScopeOfWork &&
+              Math.round(capital.renovationCost * 100) !== Math.round(scopeOfWorkTotal * 100) && (
+                <p className="mt-3 text-sm text-amber-700">
+                  The manually entered renovation cost differs from the itemized scope of work
+                  total.
+                </p>
+              )}
           </div>
 
           <div className="mt-8 pt-6 border-t border-brass flex items-center justify-between">
@@ -7166,6 +7519,29 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
+          {/* PadSplit Rental Data screenshot: supporting documentation
+              only, rendered only when one was actually uploaded so no
+              blank or near-blank section is ever created. object-contain
+              preserves the screenshot's original aspect ratio without
+              cropping or stretching. */}
+          {padSplitScreenshot && (
+            <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+              <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+                <DollarSign size={14} className="text-brass" />
+                <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+                  PadSplit Rental Data
+                </p>
+              </div>
+              <div className="flex justify-center bg-paper-2 rounded-lg border border-ink/15 p-2">
+                <img
+                  src={padSplitScreenshot.dataUrl}
+                  alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
+                  className="w-full h-auto max-h-[3.4in] object-contain"
+                />
+              </div>
+            </div>
+          )}
+
           {/* Monthly Operating Expenses card: alternating row backgrounds,
               Total Monthly Operating Expenses called out at the bottom. */}
           <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
@@ -7229,7 +7605,7 @@ export default function SharedHousingCalculator() {
               )}
               <div className="flex justify-between">
                 <span className="text-ink/60">Reserves</span>
-                <span className="text-ink">{formatCents(RESERVES_AMOUNT)}</span>
+                <span className="text-ink">{formatCents(capital.reserves)}</span>
               </div>
               {financingMode !== "stackMethod" && (
                 <div className="flex justify-between">
@@ -7369,6 +7745,48 @@ export default function SharedHousingCalculator() {
               </span>
             </div>
           </div>
+
+          {/* Scope of Work: rendered only when at least one line item was
+              entered, so no blank or near-blank section is ever created.
+              Each row stays intact (print:break-inside-avoid-page) rather
+              than splitting across a page break. */}
+          {scopeOfWorkItems.length > 0 && (
+            <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+              <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+                <PiggyBank size={14} className="text-brass" />
+                <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Scope of Work</p>
+              </div>
+              <table className="w-full text-[9.5pt] border-collapse">
+                <thead>
+                  <tr className="text-left text-ink/60 border-b border-ink/15">
+                    <th className="py-1.5 font-medium">Work Item</th>
+                    <th className="py-1.5 font-medium text-right">Estimated Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scopeOfWorkItems.map((item) => (
+                    <tr key={item.id} className="border-b border-ink/10 print:break-inside-avoid-page">
+                      <td className="py-1.5 text-ink">{item.name.trim() || "Untitled Item"}</td>
+                      <td className="py-1.5 text-ink text-right">{formatCents(item.cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-2 pt-2 border-t border-ink/10 flex justify-between text-[9.5pt]">
+                <span className="text-ink/60 font-semibold">Total Scope of Work</span>
+                <span className="text-ink font-semibold">{formatCents(scopeOfWorkTotal)}</span>
+              </div>
+              <div className="mt-1 flex justify-between text-[9.5pt]">
+                <span className="text-ink/60">Renovation Cost Used in Underwriting</span>
+                <span className="text-ink">{formatCents(capital.renovationCost)}</span>
+              </div>
+              {Math.round(capital.renovationCost * 100) !== Math.round(scopeOfWorkTotal * 100) && (
+                <p className="mt-2 text-[8.5pt] text-amber-700">
+                  Renovation Cost was manually overridden.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Estimated Returns: Monthly and Annual Cash Flow as supporting
               cards, Estimated Cash-on-Cash Return repeated as a large
