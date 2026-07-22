@@ -202,22 +202,51 @@ function isLikelyValidUrl(value: string): boolean {
   }
 }
 
-// Financing Structure: Seller Financing and Subject To are independent
-// toggles and may be combined. Traditional Financing is mutually
-// exclusive with both of them (it requires different inputs and
-// calculations -- see the Traditional Financing section below), so a
-// visitor may select either "Seller Financing and/or Subject To" or
-// "Traditional Financing", never both at once.
-function getFinancingStructureLabel(
-  sellerFinancing: boolean,
-  subjectTo: boolean,
-  traditional: boolean
-): string {
-  if (traditional) return "Traditional Financing";
-  if (sellerFinancing && subjectTo) return "Subject To and Seller Financing";
-  if (subjectTo) return "Subject To";
-  if (sellerFinancing) return "Seller Financing";
-  return "Not Specified";
+// Financing Structure is a single-select choice among four mutually
+// exclusive modes (see the FinancingMode type below): Traditional
+// Financing, Subject To, Seller Financing, and the Subject To & Seller
+// Finance Hybrid, which replaces the older behavior of selecting
+// Subject To and Seller Financing independently at the same time.
+function getFinancingStructureLabel(mode: FinancingMode): string {
+  switch (mode) {
+    case "traditional":
+      return "Traditional Financing";
+    case "subjectTo":
+      return "Subject To";
+    case "sellerFinancing":
+      return "Seller Financing";
+    case "hybrid":
+      return "Subject To & Seller Finance Hybrid";
+    default:
+      return "Not Specified";
+  }
+}
+
+// A small brass badge used to visually emphasize the word "Hybrid"
+// everywhere the Subject To & Seller Finance Hybrid structure's name is
+// displayed on screen or in the printable report (never in the CSV
+// export or other plain-text contexts, where the plain label from
+// getFinancingStructureLabel is used instead).
+function HybridBadge() {
+  return (
+    <span className="inline-flex items-center rounded bg-brass px-1.5 py-0.5 text-ink font-bold tracking-wide align-middle">
+      Hybrid
+    </span>
+  );
+}
+
+// Renders the current Financing Structure label as JSX, with the word
+// "Hybrid" visually emphasized via HybridBadge when that structure is
+// selected. Every other mode renders as plain text (getFinancingStructureLabel).
+function FinancingStructureLabelDisplay({ mode }: { mode: FinancingMode }) {
+  if (mode === "hybrid") {
+    return (
+      <>
+        Subject To &amp; Seller Finance <HybridBadge />
+      </>
+    );
+  }
+  return <>{getFinancingStructureLabel(mode)}</>;
 }
 
 // ---------------------------------------------------------------------
@@ -527,7 +556,9 @@ type FinancingKey =
   | "sellerDownPayment"
   | "monthlyPayment"
   | "annualPropertyTaxes"
-  | "annualPropertyInsurance";
+  | "annualPropertyInsurance"
+  | "hybridExistingMortgageBalance"
+  | "hybridSubjectToPITI";
 
 const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   purchasePrice: 0,
@@ -536,6 +567,8 @@ const FINANCING_DEFAULTS: Record<FinancingKey, number> = {
   monthlyPayment: 0,
   annualPropertyTaxes: 0,
   annualPropertyInsurance: 0,
+  hybridExistingMortgageBalance: 0,
+  hybridSubjectToPITI: 0,
 };
 
 type CapitalKey =
@@ -570,7 +603,8 @@ type PercentKey =
   | "closingCostPct"
   | "traditionalDownPaymentPct"
   | "traditionalInterestRatePct"
-  | "traditionalClosingCostPct";
+  | "traditionalClosingCostPct"
+  | "hybridSellerFinanceRatePct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
@@ -580,6 +614,7 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   traditionalDownPaymentPct: 20,
   traditionalInterestRatePct: 7,
   traditionalClosingCostPct: 5,
+  hybridSellerFinanceRatePct: 2,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -602,6 +637,11 @@ const BEDROOM_DEFAULTS = {
 
 type PaymentType = "piti" | "pi";
 const PAYMENT_TYPE_DEFAULT: PaymentType = "piti";
+
+// Financing Structure: a single-select mode. "" is "Not Specified" (no
+// structure chosen yet).
+type FinancingMode = "" | "traditional" | "subjectTo" | "sellerFinancing" | "hybrid";
+const FINANCING_MODE_DEFAULT: FinancingMode = "";
 
 // Editable currency fields always display and reformat with cents (see
 // CurrencyField below), so drafts are built with formatCents, not
@@ -831,6 +871,7 @@ export default function SharedHousingCalculator() {
     traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
     traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
     traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
+    hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
   });
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -888,30 +929,21 @@ export default function SharedHousingCalculator() {
   const [floorPlan, setFloorPlan] = useState<FloorPlanFile | null>(null);
   const [floorPlanError, setFloorPlanError] = useState("");
   const [processingFloorPlan, setProcessingFloorPlan] = useState(false);
-  const [financingStructure, setFinancingStructure] = useState({
-    sellerFinancing: false,
-    subjectTo: false,
-    traditional: false,
-  });
+  // Financing Structure is a single-select choice among four mutually
+  // exclusive modes, each with its own inputs and calculations: only one
+  // may ever be active. "" means no structure has been selected yet
+  // (the "Not Specified" state). Subject To and Seller Financing can no
+  // longer be selected together independently -- a transaction that
+  // combines both uses the dedicated Hybrid option instead, which has
+  // its own dedicated inputs (see the Hybrid section further down).
+  const [financingMode, setFinancingMode] = useState<FinancingMode>("");
 
-  // Financing Structure selection logic: Seller Financing and Subject To
-  // may be selected together (or alone), but Traditional Financing is a
-  // separate financing mode with its own inputs and calculations, so
-  // selecting it deselects the other two, and selecting either of the
-  // other two deselects it.
-  function toggleFinancingStructure(key: "sellerFinancing" | "subjectTo" | "traditional") {
-    setFinancingStructure((prev) => {
-      if (key === "traditional") {
-        const next = !prev.traditional;
-        return {
-          sellerFinancing: next ? false : prev.sellerFinancing,
-          subjectTo: next ? false : prev.subjectTo,
-          traditional: next,
-        };
-      }
-      const next = !prev[key];
-      return { ...prev, [key]: next, traditional: next ? false : prev.traditional };
-    });
+  // Selecting a financing structure option deselects whichever one was
+  // previously active; clicking the already-active option deselects it
+  // and returns to "Not Specified", matching the toggle behavior visitors
+  // are used to from the previous checkbox-style selector.
+  function selectFinancingMode(mode: Exclude<FinancingMode, "">) {
+    setFinancingMode((prev) => (prev === mode ? "" : mode));
   }
 
   // Amortization schedule expand/collapse state for the Traditional
@@ -919,6 +951,14 @@ export default function SharedHousingCalculator() {
   // section further down).
   const [amortizationOpen, setAmortizationOpen] = useState(false);
   const [amortizationShowAll, setAmortizationShowAll] = useState(false);
+
+  // Amortization schedule expand/collapse state for the Hybrid
+  // structure's Seller Finance Amortization Schedule (see "View Seller
+  // Finance Amortization Schedule" further down). Kept separate from
+  // the Traditional Financing schedule state above so each behaves
+  // independently even though only one is ever visible at a time.
+  const [hybridAmortizationOpen, setHybridAmortizationOpen] = useState(false);
+  const [hybridAmortizationShowAll, setHybridAmortizationShowAll] = useState(false);
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
@@ -1109,6 +1149,7 @@ export default function SharedHousingCalculator() {
       traditionalDownPaymentPct: PERCENT_DEFAULTS.traditionalDownPaymentPct.toFixed(2),
       traditionalInterestRatePct: PERCENT_DEFAULTS.traditionalInterestRatePct.toFixed(2),
       traditionalClosingCostPct: PERCENT_DEFAULTS.traditionalClosingCostPct.toFixed(2),
+      hybridSellerFinanceRatePct: PERCENT_DEFAULTS.hybridSellerFinanceRatePct.toFixed(2),
     });
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
@@ -1135,16 +1176,19 @@ export default function SharedHousingCalculator() {
     setVideoWalkthroughLink("");
     setFloorPlan(null);
     setFloorPlanError("");
-    // Financing Structure resets to its default of no selection (all
-    // three unselected), which also clears the Traditional Financing
-    // inputs (Purchase Price is reset above via `financing`; Down
-    // Payment Percentage 20%, Interest Rate 7%, and Closing Cost
-    // Percentage 5% are reset above via `percent`), and the amortization
-    // schedule -- being derived entirely from that state -- resets
-    // automatically along with it.
-    setFinancingStructure({ sellerFinancing: false, subjectTo: false, traditional: false });
+    // Financing Structure resets to its default of no selection, which
+    // also clears the Traditional Financing and Hybrid inputs (Purchase
+    // Price and the Hybrid Existing Mortgage Balance / Subject-To PITI
+    // are reset above via `financing`; Down Payment Percentage 20%,
+    // Interest Rate 7%, Traditional Closing Cost Percentage 5%, and
+    // Seller Finance Interest Rate 2% are reset above via `percent`),
+    // and both amortization schedules -- being derived entirely from
+    // that state -- reset automatically along with it.
+    setFinancingMode(FINANCING_MODE_DEFAULT);
     setAmortizationOpen(false);
     setAmortizationShowAll(false);
+    setHybridAmortizationOpen(false);
+    setHybridAmortizationShowAll(false);
   }
 
   // ---------------------------------------------------------------------
@@ -1215,6 +1259,65 @@ export default function SharedHousingCalculator() {
   );
 
   // ---------------------------------------------------------------------
+  // Hybrid (Subject To & Seller Finance Hybrid): the buyer takes over
+  // making the existing mortgage's monthly Subject-To PITI payment
+  // (entered directly, since the existing loan's own terms are not
+  // otherwise modeled) and separately makes a seller-financed payment
+  // covering the remaining equity gap. Seller-Financed Balance and its
+  // amortization reuse the exact same standard formula and schedule
+  // builder as Traditional Financing above, just with a different
+  // principal and rate.
+  // ---------------------------------------------------------------------
+
+  // Estimated Equity = Purchase Price - Existing Mortgage Balance (the
+  // total equity in the property, independent of how the remainder --
+  // the Seller-Financed Balance below -- is financed).
+  const hybridEquityRaw = useMemo(
+    () => financing.purchasePrice - financing.hybridExistingMortgageBalance,
+    [financing.purchasePrice, financing.hybridExistingMortgageBalance]
+  );
+  const hybridEquity = Math.max(0, round2(hybridEquityRaw));
+
+  // Seller-Financed Balance = Purchase Price - Existing Mortgage Balance
+  // - Seller Down Payment, never allowed below $0.
+  const hybridSellerFinancedBalance = useMemo(
+    () =>
+      Math.max(
+        0,
+        round2(financing.purchasePrice - financing.hybridExistingMortgageBalance - financing.sellerDownPayment)
+      ),
+    [financing.purchasePrice, financing.hybridExistingMortgageBalance, financing.sellerDownPayment]
+  );
+
+  // Estimated Monthly Seller Finance Payment: a true fixed-rate, fully
+  // amortizing 30-year (360-payment) loan on the Seller-Financed
+  // Balance, at the entered Seller Finance Interest Rate.
+  const hybridMonthlySellerFinancePayment = useMemo(
+    () =>
+      round2(
+        calculateMonthlyPrincipalAndInterest(hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct)
+      ),
+    [hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct]
+  );
+
+  // The full month-by-month amortization schedule for the seller-financed
+  // balance only. The existing subject-to mortgage is deliberately never
+  // part of this schedule, since its original loan terms may differ.
+  const hybridAmortization = useMemo(
+    () => buildAmortizationSchedule(hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct),
+    [hybridSellerFinancedBalance, percent.hybridSellerFinanceRatePct]
+  );
+
+  // Total Monthly Housing Payment = Monthly Subject-To PITI Payment +
+  // Estimated Monthly Seller Finance Payment. The entered Subject-To
+  // payment is already a complete PITI figure for the existing mortgage,
+  // so taxes and insurance are never added again on top of it.
+  const hybridTotalMonthlyHousingPayment = useMemo(
+    () => round2(financing.hybridSubjectToPITI + hybridMonthlySellerFinancePayment),
+    [financing.hybridSubjectToPITI, hybridMonthlySellerFinancePayment]
+  );
+
+  // ---------------------------------------------------------------------
   // Monthly housing payment and the automatically calculated Holding
   // Costs are broken out of the main underwriting engine below (rather
   // than computed inline) so the Holding Costs override effect further
@@ -1229,10 +1332,16 @@ export default function SharedHousingCalculator() {
     // regardless of the Monthly Loan Payment Type toggle below (which
     // only applies to Seller Financing / Subject To's manually entered
     // payment).
-    if (financingStructure.traditional) {
+    if (financingMode === "traditional") {
       return round2(
         traditionalMonthlyPI + financing.annualPropertyTaxes / 12 + financing.annualPropertyInsurance / 12
       );
+    }
+    // Hybrid: the Subject-To PITI payment plus the separate seller
+    // finance payment, computed above. The Subject-To payment is
+    // already PITI, so taxes/insurance are never added a second time.
+    if (financingMode === "hybrid") {
+      return hybridTotalMonthlyHousingPayment;
     }
     // Prevents taxes/insurance from ever being counted twice: PITI
     // already includes them, so only Principal-and-Interest-Only adds
@@ -1245,8 +1354,9 @@ export default function SharedHousingCalculator() {
             financing.annualPropertyInsurance / 12
         );
   }, [
-    financingStructure.traditional,
+    financingMode,
     traditionalMonthlyPI,
+    hybridTotalMonthlyHousingPayment,
     paymentType,
     financing.monthlyPayment,
     financing.annualPropertyTaxes,
@@ -1322,15 +1432,21 @@ export default function SharedHousingCalculator() {
     // Estimated Equity. For Traditional Financing: Purchase Price -
     // Estimated Loan Balance (which, since Loan Balance = Purchase Price
     // - Estimated Down Payment, ordinarily equals the calculated Down
-    // Payment amount). For Seller Financing / Subject To, the existing
-    // calculation is preserved: Purchase Price - Loan Balance. The
-    // Seller Down Payment (or, for Traditional Financing, the Estimated
-    // Down Payment) is a separate cash requirement (used in Total
-    // Capital Required) and is not subtracted here, and is never added
-    // to Total Capital Required a second time as part of equity.
-    const equityRaw = financingStructure.traditional
-      ? financing.purchasePrice - traditionalLoanBalance
-      : financing.purchasePrice - financing.loanBalance;
+    // Payment amount). For Hybrid: Purchase Price - Existing Mortgage
+    // Balance (the total equity in the property, independent of how the
+    // remainder is seller-financed). For Seller Financing / Subject To,
+    // the existing calculation is preserved: Purchase Price - Loan
+    // Balance. The Seller Down Payment (or, for Traditional Financing,
+    // the Estimated Down Payment) is a separate cash requirement (used
+    // in Total Capital Required) and is not subtracted here, and is
+    // never added to Total Capital Required a second time as part of
+    // equity.
+    const equityRaw =
+      financingMode === "traditional"
+        ? financing.purchasePrice - traditionalLoanBalance
+        : financingMode === "hybrid"
+          ? hybridEquityRaw
+          : financing.purchasePrice - financing.loanBalance;
     const equity = Math.max(0, round2(equityRaw));
     const equityIsNegative = equityRaw < 0;
 
@@ -1343,22 +1459,23 @@ export default function SharedHousingCalculator() {
     // Financing Closing Costs (Estimated Loan Balance x Traditional
     // Closing Cost Percentage, computed above), never the general
     // purchase-price-based calculation, so only one closing-cost amount
-    // is ever included anywhere. Seller Financing / Subject To (or no
-    // structure selected) keep the existing calculation: 1.5% of the
-    // purchase price by default, or whatever Closing Cost Percentage the
-    // visitor has entered.
-    const closingCosts = financingStructure.traditional
-      ? traditionalClosingCosts
-      : round2(financing.purchasePrice * (percent.closingCostPct / 100));
+    // is ever included anywhere. Every other structure -- Seller
+    // Financing, Subject To, Hybrid, or no structure selected -- keeps
+    // the existing calculation: 1.5% of the purchase price by default,
+    // or whatever Closing Cost Percentage the visitor has entered.
+    const closingCosts =
+      financingMode === "traditional"
+        ? traditionalClosingCosts
+        : round2(financing.purchasePrice * (percent.closingCostPct / 100));
 
     // The acquisition down payment included in Total Capital Required:
     // the calculated Estimated Down Payment (Purchase Price x Down
     // Payment Percentage) when Traditional Financing is selected,
-    // otherwise the existing Seller Down Payment. Only one of the two is
+    // otherwise the existing Seller Down Payment (reused as-is for
+    // Hybrid, so it is included exactly once). Only one of the two is
     // ever included, never both.
-    const downPaymentForCapital = financingStructure.traditional
-      ? traditionalDownPaymentAmount
-      : financing.sellerDownPayment;
+    const downPaymentForCapital =
+      financingMode === "traditional" ? traditionalDownPaymentAmount : financing.sellerDownPayment;
 
     const totalCapitalRequired = round2(
       downPaymentForCapital +
@@ -1425,21 +1542,23 @@ export default function SharedHousingCalculator() {
     effectiveHoldingCosts,
     calculatedHoldingCosts,
     holdingCostsIsManual,
-    financingStructure.traditional,
+    financingMode,
     traditionalLoanBalance,
     traditionalClosingCosts,
     traditionalDownPaymentAmount,
+    hybridEquityRaw,
   ]);
 
   // Traditional Financing always labels its calculated loan payment
   // "Estimated Monthly Principal and Interest Payment" (never PITI,
   // since taxes and insurance are always shown and added separately, not
   // folded into the payment itself).
-  const monthlyPaymentLabel = financingStructure.traditional
-    ? "Estimated Monthly Principal and Interest Payment"
-    : paymentType === "piti"
-      ? "Monthly PITI Payment"
-      : "Monthly Principal and Interest Payment";
+  const monthlyPaymentLabel =
+    financingMode === "traditional"
+      ? "Estimated Monthly Principal and Interest Payment"
+      : paymentType === "piti"
+        ? "Monthly PITI Payment"
+        : "Monthly Principal and Interest Payment";
 
   // The complete monthly housing cost (loan payment, plus taxes and
   // insurance when the payment type is Principal and Interest Only, or
@@ -1455,30 +1574,30 @@ export default function SharedHousingCalculator() {
   // & Interest Payment" would be inaccurate, since that label is
   // reserved for the P&I-only amount shown separately); for Traditional
   // Financing that same combined figure is principal, interest, taxes,
-  // and insurance together, so it is labeled "Estimated Monthly PITI".
-  const housingPaymentLabel = financingStructure.traditional
-    ? "Estimated Monthly PITI"
-    : paymentType === "piti"
-      ? "Monthly PITI Payment"
-      : "Monthly Housing Payment";
+  // and insurance together, so it is labeled "Estimated Monthly PITI";
+  // for Hybrid it combines the Subject-To PITI payment with a separate
+  // seller-finance payment, so it is labeled "Total Monthly Housing
+  // Payment" rather than PITI, since PITI alone would be inaccurate.
+  const housingPaymentLabel =
+    financingMode === "traditional"
+      ? "Estimated Monthly PITI"
+      : financingMode === "hybrid"
+        ? "Total Monthly Housing Payment"
+        : paymentType === "piti"
+          ? "Monthly PITI Payment"
+          : "Monthly Housing Payment";
 
-  // Financing Structure: Seller Financing and Subject To are independent
-  // toggles that may be combined; Traditional Financing is mutually
-  // exclusive with both (see getFinancingStructureLabel above), computed
-  // once here so the breakdown, CSV, and print report all read the same
-  // label.
-  const financingStructureLabel = getFinancingStructureLabel(
-    financingStructure.sellerFinancing,
-    financingStructure.subjectTo,
-    financingStructure.traditional
-  );
+  // Financing Structure is a single-select mode (see getFinancingStructureLabel
+  // above), computed once here so the breakdown, CSV, and print report
+  // all read the same label.
+  const financingStructureLabel = getFinancingStructureLabel(financingMode);
 
   // The down payment label shown alongside downPaymentForCapital
   // (results.downPaymentForCapital): "Estimated Down Payment" for
   // Traditional Financing (the calculated Purchase Price x Down Payment
   // Percentage amount), or "Seller Down Payment" otherwise, matching
   // whichever field is actually in use.
-  const downPaymentLabel = financingStructure.traditional ? "Estimated Down Payment" : "Seller Down Payment";
+  const downPaymentLabel = financingMode === "traditional" ? "Estimated Down Payment" : "Seller Down Payment";
 
   // ---------------------------------------------------------------------
   // Shared breakdown data: the on-page "View Full Underwriting Breakdown"
@@ -1489,37 +1608,68 @@ export default function SharedHousingCalculator() {
     () => [
       {
         title: "Property and Financing",
-        rows: financingStructure.traditional
-          ? [
-              { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
-              { label: "Financing Structure", value: financingStructureLabel },
-              { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-              { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
-              { label: "Estimated Down Payment", value: formatCents(traditionalDownPaymentAmount) },
-              { label: "Estimated Loan Balance", value: formatCents(traditionalLoanBalance) },
-              { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
-              { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
-              {
-                label: "Monthly Principal and Interest",
-                value: formatCents(traditionalMonthlyPI),
-              },
-              { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
-              {
-                label: "Annual Property Insurance",
-                value: formatCents(financing.annualPropertyInsurance),
-              },
-              { label: "Estimated Monthly PITI", value: formatCents(results.monthlyHousingPayment) },
-              { label: "Estimated Equity", value: formatCents(results.equity) },
-            ]
-          : [
-              { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
-              { label: "Financing Structure", value: financingStructureLabel },
-              { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-              { label: "Loan Balance", value: formatCents(financing.loanBalance) },
-              { label: "Estimated Equity", value: formatCents(results.equity) },
-              { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-              { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
-            ],
+        rows:
+          financingMode === "traditional"
+            ? [
+                { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                { label: "Financing Structure", value: financingStructureLabel },
+                { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
+                { label: "Estimated Down Payment", value: formatCents(traditionalDownPaymentAmount) },
+                { label: "Estimated Loan Balance", value: formatCents(traditionalLoanBalance) },
+                { label: "Interest Rate", value: formatPercent(percent.traditionalInterestRatePct) },
+                { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                {
+                  label: "Monthly Principal and Interest",
+                  value: formatCents(traditionalMonthlyPI),
+                },
+                { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
+                {
+                  label: "Annual Property Insurance",
+                  value: formatCents(financing.annualPropertyInsurance),
+                },
+                { label: "Estimated Monthly PITI", value: formatCents(results.monthlyHousingPayment) },
+                { label: "Estimated Equity", value: formatCents(results.equity) },
+              ]
+            : financingMode === "hybrid"
+              ? [
+                  { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                  { label: "Financing Structure", value: financingStructureLabel },
+                  { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                  {
+                    label: "Existing Mortgage Balance",
+                    value: formatCents(financing.hybridExistingMortgageBalance),
+                  },
+                  { label: "Estimated Equity", value: formatCents(results.equity) },
+                  { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+                  {
+                    label: "Seller-Financed Balance",
+                    value: formatCents(hybridSellerFinancedBalance),
+                  },
+                  {
+                    label: "Monthly Subject-To PITI Payment",
+                    value: formatCents(financing.hybridSubjectToPITI),
+                  },
+                  {
+                    label: "Seller Finance Interest Rate",
+                    value: formatPercent(percent.hybridSellerFinanceRatePct),
+                  },
+                  { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                  {
+                    label: "Estimated Monthly Seller Finance Payment",
+                    value: formatCents(hybridMonthlySellerFinancePayment),
+                  },
+                  { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
+                ]
+              : [
+                  { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                  { label: "Financing Structure", value: financingStructureLabel },
+                  { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                  { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+                  { label: "Estimated Equity", value: formatCents(results.equity) },
+                  { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+                  { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
+                ],
       },
       {
         title: "Income",
@@ -1564,7 +1714,7 @@ export default function SharedHousingCalculator() {
           { label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) },
           { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
           { label: "TC and LLC", value: formatCents(capital.tcAndLlc) },
-          ...(financingStructure.traditional
+          ...(financingMode === "traditional"
             ? [
                 {
                   label: "Traditional Closing Cost Percentage",
@@ -1607,10 +1757,12 @@ export default function SharedHousingCalculator() {
       financingStructureLabel,
       housingPaymentLabel,
       downPaymentLabel,
-      financingStructure.traditional,
+      financingMode,
       traditionalDownPaymentAmount,
       traditionalLoanBalance,
       traditionalMonthlyPI,
+      hybridSellerFinancedBalance,
+      hybridMonthlySellerFinancePayment,
     ]
   );
 
@@ -1621,7 +1773,7 @@ export default function SharedHousingCalculator() {
         { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
         { label: "Video Walkthrough Link", value: videoWalkthroughLink.trim() || "Not entered" },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
-        ...(financingStructure.traditional
+        ...(financingMode === "traditional"
           ? [
               { label: "Down Payment Percentage", value: formatPercent(percent.traditionalDownPaymentPct) },
               { label: "Estimated Down Payment", value: formatWhole(traditionalDownPaymentAmount) },
@@ -1638,17 +1790,41 @@ export default function SharedHousingCalculator() {
                 value: formatPercent(percent.traditionalClosingCostPct),
               },
             ]
-          : [
-              { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
-              { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
-              { label: "Estimated Equity", value: formatWhole(results.equity) },
-              {
-                label: "Monthly Payment Type",
-                value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
-              },
-              { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
-              { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
-            ]),
+          : financingMode === "hybrid"
+            ? [
+                {
+                  label: "Existing Mortgage Balance",
+                  value: formatWhole(financing.hybridExistingMortgageBalance),
+                },
+                { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
+                { label: "Estimated Equity", value: formatWhole(results.equity) },
+                { label: "Seller-Financed Balance", value: formatWhole(hybridSellerFinancedBalance) },
+                {
+                  label: "Monthly Subject-To PITI Payment",
+                  value: formatCents(financing.hybridSubjectToPITI),
+                },
+                {
+                  label: "Seller Finance Interest Rate",
+                  value: formatPercent(percent.hybridSellerFinanceRatePct),
+                },
+                { label: "Seller Finance Amortization Term", value: "30 Years (360 Monthly Payments)" },
+                {
+                  label: "Estimated Monthly Seller Finance Payment",
+                  value: formatCents(hybridMonthlySellerFinancePayment),
+                },
+                { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+              ]
+            : [
+                { label: "Loan Balance", value: formatWhole(financing.loanBalance) },
+                { label: "Seller Down Payment", value: formatWhole(financing.sellerDownPayment) },
+                { label: "Estimated Equity", value: formatWhole(results.equity) },
+                {
+                  label: "Monthly Payment Type",
+                  value: paymentType === "piti" ? "PITI" : "Principal and Interest Only",
+                },
+                { label: monthlyPaymentLabel, value: formatCents(financing.monthlyPayment) },
+                { label: "Estimated Closing Cost Percentage", value: formatPercent(percent.closingCostPct) },
+              ]),
         { label: "Annual Property Taxes", value: formatWhole(financing.annualPropertyTaxes) },
         { label: "Annual Property Insurance", value: formatWhole(financing.annualPropertyInsurance) },
         { label: "Shared-Bath Bedrooms", value: String(sharedBathBedrooms) },
@@ -1681,10 +1857,12 @@ export default function SharedHousingCalculator() {
       maintenanceExpenses,
       propertyAddress,
       videoWalkthroughLink,
-      financingStructure.traditional,
+      financingMode,
       traditionalDownPaymentAmount,
       traditionalLoanBalance,
       traditionalMonthlyPI,
+      hybridSellerFinancedBalance,
+      hybridMonthlySellerFinancePayment,
     ]
   );
 
@@ -1766,6 +1944,37 @@ export default function SharedHousingCalculator() {
     const a = document.createElement("a");
     a.href = url;
     a.download = "traditional-financing-amortization-schedule.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Downloads the complete 360-payment Hybrid seller-finance
+  // amortization schedule as its own CSV. Covers only the
+  // seller-financed balance, not the existing subject-to mortgage.
+  function downloadHybridAmortizationCsv() {
+    const lines: string[] = [
+      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Total Payment,Ending Balance",
+    ];
+    for (const row of hybridAmortization.schedule) {
+      lines.push(
+        [
+          row.paymentNumber,
+          row.beginningBalance.toFixed(2),
+          row.principalPaid.toFixed(2),
+          row.interestPaid.toFixed(2),
+          row.totalPayment.toFixed(2),
+          row.endingBalance.toFixed(2),
+        ].join(",")
+      );
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "hybrid-seller-finance-amortization-schedule.csv";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2053,37 +2262,38 @@ export default function SharedHousingCalculator() {
         <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
           <p className="eyebrow text-brass mb-5">Property and Financing</p>
 
-          {/* Financing Structure: a three-way toggle. Seller Financing
-              and Subject To are independent and may be selected together;
-              Traditional Financing is a separate financing mode (it
-              requires different inputs and calculations, see below), so
-              selecting it deselects the other two, and selecting either
-              of the other two deselects it. */}
+          {/* Financing Structure: a single-select choice among four
+              mutually exclusive options. Subject To and Seller Financing
+              can no longer be selected together independently -- a deal
+              that combines both uses the dedicated Subject To & Seller
+              Finance Hybrid option instead, which has its own inputs and
+              calculations (see below). Selecting any option deselects
+              whichever one was previously active. */}
           <div>
             <p className="eyebrow text-brass mb-3">Financing Structure</p>
             <div
-              className="grid grid-cols-1 sm:grid-cols-3 gap-2"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2"
               role="group"
               aria-label="Financing Structure"
             >
               <button
                 type="button"
-                onClick={() => toggleFinancingStructure("sellerFinancing")}
-                aria-pressed={financingStructure.sellerFinancing}
+                onClick={() => selectFinancingMode("traditional")}
+                aria-pressed={financingMode === "traditional"}
                 className={`px-3 py-2.5 border text-sm transition-colors ${
-                  financingStructure.sellerFinancing
+                  financingMode === "traditional"
                     ? "border-brass bg-brass/10 text-ink"
                     : "border-line-dark text-ink/60 hover:border-brass/60"
                 }`}
               >
-                Seller Financing
+                Traditional Financing
               </button>
               <button
                 type="button"
-                onClick={() => toggleFinancingStructure("subjectTo")}
-                aria-pressed={financingStructure.subjectTo}
+                onClick={() => selectFinancingMode("subjectTo")}
+                aria-pressed={financingMode === "subjectTo"}
                 className={`px-3 py-2.5 border text-sm transition-colors ${
-                  financingStructure.subjectTo
+                  financingMode === "subjectTo"
                     ? "border-brass bg-brass/10 text-ink"
                     : "border-line-dark text-ink/60 hover:border-brass/60"
                 }`}
@@ -2092,34 +2302,49 @@ export default function SharedHousingCalculator() {
               </button>
               <button
                 type="button"
-                onClick={() => toggleFinancingStructure("traditional")}
-                aria-pressed={financingStructure.traditional}
+                onClick={() => selectFinancingMode("sellerFinancing")}
+                aria-pressed={financingMode === "sellerFinancing"}
                 className={`px-3 py-2.5 border text-sm transition-colors ${
-                  financingStructure.traditional
+                  financingMode === "sellerFinancing"
                     ? "border-brass bg-brass/10 text-ink"
                     : "border-line-dark text-ink/60 hover:border-brass/60"
                 }`}
               >
-                Traditional Financing
+                Seller Financing
+              </button>
+              <button
+                type="button"
+                onClick={() => selectFinancingMode("hybrid")}
+                aria-pressed={financingMode === "hybrid"}
+                className={`px-3 py-2.5 border text-sm transition-colors ${
+                  financingMode === "hybrid"
+                    ? "border-brass bg-brass/10 text-ink"
+                    : "border-line-dark text-ink/60 hover:border-brass/60"
+                }`}
+              >
+                Subject To &amp; Seller Finance <HybridBadge />
               </button>
             </div>
             <p className="mt-3 text-xs text-ink/50 leading-relaxed">
-              Select the financing structure that applies to the proposed acquisition.
+              Select the financing structure that applies to the proposed acquisition. Only one may be
+              selected at a time.
             </p>
             <p className="mt-3 text-sm text-ink/70">
-              Selected: <span className="font-medium text-ink">{financingStructureLabel}</span>
+              Selected:{" "}
+              <span className="font-medium text-ink">
+                <FinancingStructureLabelDisplay mode={financingMode} />
+              </span>
             </p>
           </div>
 
           {/* Purchase Price is shared by every financing structure (it
               drives Estimated Equity, Closing Costs, and the printable
               report regardless of mode), so outside of Traditional
-              Financing it lives here, at the top of this section. When
-              Traditional Financing is selected it moves into the
-              dedicated Traditional Financing section below instead,
-              alongside Down Payment, Interest Rate, and Amortization
-              Term -- it is still the exact same field either way. */}
-          {!financingStructure.traditional && (
+              Financing and Hybrid it lives here, at the top of this
+              section. When Traditional Financing or Hybrid is selected
+              it moves into that structure's dedicated section below
+              instead -- it is still the exact same field either way. */}
+          {(financingMode === "sellerFinancing" || financingMode === "subjectTo" || financingMode === "") && (
             <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
               <CurrencyField
                 id="purchasePrice"
@@ -2221,11 +2446,11 @@ export default function SharedHousingCalculator() {
               conventional mortgage is structured very differently from
               Seller Financing or Subject To above. */}
           {/* ------------------------------------------------------ */}
-          {financingStructure.traditional && (
+          {financingMode === "traditional" && (
             <div className="mt-8 pt-6 border-t border-line-dark">
               <p className="eyebrow text-brass mb-1">Traditional Financing</p>
               <p className="text-xs text-ink/50 leading-relaxed mb-5">
-                A conventional, fully amortizing 30-year mortgage. The
+                A traditional, fully amortizing 30-year mortgage. The
                 monthly principal and interest payment below is
                 calculated automatically from the purchase price, down
                 payment percentage, and interest rate entered here.
@@ -2412,19 +2637,227 @@ export default function SharedHousingCalculator() {
             </div>
           )}
 
+          {/* ------------------------------------------------------ */}
+          {/* Subject To & Seller Finance Hybrid: a dedicated section
+              combining a subject-to purchase of the existing mortgage
+              with separate seller financing for the remaining equity.
+              The buyer takes over making the existing mortgage's
+              monthly Subject-To PITI payment and separately makes a
+              seller-financed payment on the Seller-Financed Balance. */}
+          {/* ------------------------------------------------------ */}
+          {financingMode === "hybrid" && (
+            <div className="mt-8 pt-6 border-t border-line-dark">
+              <p className="eyebrow text-brass mb-1 inline-flex items-center gap-2">
+                Subject To &amp; Seller Finance <HybridBadge />
+              </p>
+              <p className="text-xs text-ink/50 leading-relaxed mb-2">
+                A hybrid transaction combines a subject-to purchase of the existing mortgage with
+                separate seller financing for the remaining equity. The buyer takes responsibility
+                for making the existing mortgage payment and also makes a separate monthly payment
+                to the seller under the agreed seller-financing terms.
+              </p>
+              <p className="text-xs text-ink/40 leading-relaxed mb-5">
+                The existing mortgage generally remains in the seller&apos;s name and is not
+                formally assumed by the buyer.
+              </p>
+
+              <p className="eyebrow text-ink/50 mb-3">Property and Equity</p>
+              <div className="grid sm:grid-cols-2 gap-5">
+                <CurrencyField
+                  id="purchasePriceHybrid"
+                  label="Purchase Price"
+                  draft={financingDraft.purchasePrice}
+                  onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
+                  onBlur={() => handleFinancingBlur("purchasePrice")}
+                />
+                <CurrencyField
+                  id="hybridExistingMortgageBalance"
+                  label="Existing Mortgage Balance"
+                  draft={financingDraft.hybridExistingMortgageBalance}
+                  onChange={(raw) => handleFinancingChange("hybridExistingMortgageBalance", raw)}
+                  onBlur={() => handleFinancingBlur("hybridExistingMortgageBalance")}
+                  helperText="The seller's remaining balance on the existing mortgage being taken subject to."
+                />
+                <CurrencyField
+                  id="sellerDownPaymentHybrid"
+                  label="Seller Down Payment"
+                  draft={financingDraft.sellerDownPayment}
+                  onChange={(raw) => handleFinancingChange("sellerDownPayment", raw)}
+                  onBlur={() => handleFinancingBlur("sellerDownPayment")}
+                  helperText="Cash paid to the seller at closing."
+                />
+              </div>
+
+              {financing.hybridExistingMortgageBalance + financing.sellerDownPayment >
+                financing.purchasePrice && (
+                <p className="mt-4 text-sm text-red-700">
+                  The existing mortgage balance plus the seller down payment exceeds the purchase
+                  price. The seller-financed balance is floored at $0.
+                </p>
+              )}
+
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Existing Mortgage</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <CurrencyField
+                    id="hybridSubjectToPITI"
+                    label="Monthly Subject-To PITI Payment"
+                    draft={financingDraft.hybridSubjectToPITI}
+                    onChange={(raw) => handleFinancingChange("hybridSubjectToPITI", raw)}
+                    onBlur={() => handleFinancingBlur("hybridSubjectToPITI")}
+                    helperText="The buyer takes over making this existing monthly payment."
+                  />
+                </div>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3">Seller Financing</p>
+                <div className="grid sm:grid-cols-2 gap-5">
+                  <ReadOnlyStat
+                    label="Seller-Financed Balance"
+                    value={formatWhole(hybridSellerFinancedBalance)}
+                    helperText="Purchase Price minus Existing Mortgage Balance minus Seller Down Payment. Never falls below $0."
+                  />
+                  <PercentField
+                    id="hybridSellerFinanceRatePct"
+                    label="Seller Finance Interest Rate"
+                    draft={percentDraft.hybridSellerFinanceRatePct}
+                    onChange={(raw) => handlePercentChange("hybridSellerFinanceRatePct", raw)}
+                    onBlur={() => handlePercentBlur("hybridSellerFinanceRatePct")}
+                    info="Allows decimals, e.g. 2.5%."
+                  />
+                  <ReadOnlyStat
+                    label="Seller Finance Amortization Term"
+                    value="30 Years (360 Monthly Payments)"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <div className="border border-brass bg-paper-2 p-6">
+                  <p className="eyebrow text-brass mb-1.5">Estimated Monthly Seller Finance Payment</p>
+                  <p className="font-display text-3xl">{formatCents(hybridMonthlySellerFinancePayment)}</p>
+                </div>
+              </div>
+
+              {/* Total Monthly Housing Payment: the Subject-To PITI
+                  payment plus the seller finance payment, combined into
+                  a single, visually prominent figure. This is the
+                  housing expense used everywhere else in this
+                  calculator -- monthly operating expenses, cash flow,
+                  holding costs, cash-on-cash return, the full breakdown,
+                  the printed report, and the CSV export. */}
+              <div className="mt-6 rounded border border-line-dark bg-white p-6">
+                <p className="eyebrow text-brass mb-4">Total Monthly Housing Payment</p>
+                <div className="divide-y divide-line-dark border-t border-b border-line-dark">
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Monthly Subject-To PITI Payment</span>
+                    <span>{formatCents(financing.hybridSubjectToPITI)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2.5 text-sm">
+                    <span className="text-ink/70">Estimated Monthly Seller Finance Payment</span>
+                    <span>{formatCents(hybridMonthlySellerFinancePayment)}</span>
+                  </div>
+                </div>
+                <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
+                  <span className="eyebrow text-brass">Total Monthly Housing Payment</span>
+                  <span className="font-display text-2xl text-ink">
+                    {formatCents(results.monthlyHousingPayment)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Seller Finance Amortization Schedule: covers only the
+                  seller-financed balance. The existing subject-to
+                  mortgage is deliberately never part of this schedule,
+                  since its original loan terms may differ. */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setHybridAmortizationOpen((v) => !v)}
+                    aria-expanded={hybridAmortizationOpen}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    {hybridAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadHybridAmortizationCsv}
+                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    Download Seller Finance Amortization Schedule as CSV
+                  </button>
+                </div>
+
+                {hybridAmortizationOpen && (
+                  <div className="mt-5">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs sm:text-sm border-collapse">
+                        <thead>
+                          <tr className="border-b border-line-dark text-left text-ink/60">
+                            <th className="py-2 pr-3 font-medium">Payment #</th>
+                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                            <th className="py-2 pr-3 font-medium">Principal Paid</th>
+                            <th className="py-2 pr-3 font-medium">Interest Paid</th>
+                            <th className="py-2 pr-3 font-medium">Total Payment</th>
+                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(hybridAmortizationShowAll
+                            ? hybridAmortization.schedule
+                            : hybridAmortization.schedule.slice(0, 12)
+                          ).map((row) => (
+                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {hybridAmortization.schedule.length > 12 && (
+                      <button
+                        type="button"
+                        onClick={() => setHybridAmortizationShowAll((v) => !v)}
+                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        {hybridAmortizationShowAll
+                          ? "Show First 12 Payments"
+                          : `View All ${hybridAmortization.schedule.length} Payments`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="mt-8 pt-6 border-t border-line-dark">
             <ReadOnlyStat
               label="Estimated Equity"
               value={formatWhole(results.equity)}
               helperText={
-                financingStructure.traditional
+                financingMode === "traditional"
                   ? "Estimated equity is calculated by subtracting the estimated loan balance from the purchase price."
-                  : "Estimated equity is calculated by subtracting the loan balance from the purchase price."
+                  : financingMode === "hybrid"
+                    ? "Estimated equity is calculated by subtracting the existing mortgage balance from the purchase price."
+                    : "Estimated equity is calculated by subtracting the loan balance from the purchase price."
               }
             />
-            {!financingStructure.traditional && results.equityIsNegative && (
+            {financingMode !== "traditional" && financingMode !== "hybrid" && results.equityIsNegative && (
               <p className="mt-3 text-sm text-red-700">
                 The loan balance exceeds the purchase price.
+              </p>
+            )}
+            {financingMode === "hybrid" && results.equityIsNegative && (
+              <p className="mt-3 text-sm text-red-700">
+                The existing mortgage balance exceeds the purchase price.
               </p>
             )}
           </div>
@@ -2741,7 +3174,7 @@ export default function SharedHousingCalculator() {
               onBlur={() => handleCapitalBlur("tcAndLlc")}
               helperText="Transaction coordination and entity formation costs."
             />
-            {financingStructure.traditional ? (
+            {financingMode === "traditional" ? (
               <>
                 <ReadOnlyStat
                   label="Traditional Closing Cost Percentage"
@@ -2941,7 +3374,14 @@ export default function SharedHousingCalculator() {
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <Landmark size={12} className="text-brass" />
-                Financing Structure: {financingStructureLabel}
+                Financing Structure:{" "}
+                {financingMode === "hybrid" ? (
+                  <>
+                    Subject To &amp; Seller Finance <strong>Hybrid</strong>
+                  </>
+                ) : (
+                  financingStructureLabel
+                )}
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <Calendar size={12} className="text-brass" />
@@ -3058,7 +3498,9 @@ export default function SharedHousingCalculator() {
               />
               <HighlightBullet
                 icon={<Landmark size={13} />}
-                label={financingStructureLabel}
+                label={
+                  financingMode === "hybrid" ? "Subject To & Seller Finance Hybrid" : financingStructureLabel
+                }
                 detail="Proposed financing structure for this acquisition."
               />
               <HighlightBullet
@@ -3151,11 +3593,20 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink/60">Purchase Price</span>
                   <span className="font-medium text-ink">{formatCents(financing.purchasePrice)}</span>
                 </div>
-                {!financingStructure.traditional && (
+                {financingMode === "hybrid" ? (
                   <div className="flex justify-between">
-                    <span className="text-ink/60">Loan Balance</span>
-                    <span className="font-medium text-ink">{formatCents(financing.loanBalance)}</span>
+                    <span className="text-ink/60">Existing Mortgage Balance</span>
+                    <span className="font-medium text-ink">
+                      {formatCents(financing.hybridExistingMortgageBalance)}
+                    </span>
                   </div>
+                ) : (
+                  financingMode !== "traditional" && (
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Loan Balance</span>
+                      <span className="font-medium text-ink">{formatCents(financing.loanBalance)}</span>
+                    </div>
+                  )
                 )}
                 <div className="flex justify-between pt-1.5 border-t border-ink/10">
                   <span className="font-semibold text-ink">Estimated Equity</span>
@@ -3171,9 +3622,17 @@ export default function SharedHousingCalculator() {
               <div className="space-y-1.5 text-[9.5pt]">
                 <div className="flex justify-between">
                   <span className="text-ink/60">Financing Structure</span>
-                  <span className="font-medium text-ink">{financingStructureLabel}</span>
+                  <span className="font-medium text-ink">
+                    {financingMode === "hybrid" ? (
+                      <>
+                        Subject To &amp; Seller Finance <strong>Hybrid</strong>
+                      </>
+                    ) : (
+                      financingStructureLabel
+                    )}
+                  </span>
                 </div>
-                {financingStructure.traditional ? (
+                {financingMode === "traditional" ? (
                   <>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Down Payment Percentage</span>
@@ -3219,6 +3678,49 @@ export default function SharedHousingCalculator() {
                     </div>
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
                       <span className="font-semibold text-ink">Estimated Monthly PITI</span>
+                      <span className="font-semibold text-ink">
+                        {formatCents(results.monthlyHousingPayment)}
+                      </span>
+                    </div>
+                  </>
+                ) : financingMode === "hybrid" ? (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller Down Payment</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.sellerDownPayment)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller-Financed Balance</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(hybridSellerFinancedBalance)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Monthly Subject-To PITI Payment</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.hybridSubjectToPITI)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller Finance Interest Rate</span>
+                      <span className="font-medium text-ink">
+                        {formatPercent(percent.hybridSellerFinanceRatePct)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Seller Finance Amortization Term</span>
+                      <span className="font-medium text-ink">30 Years (360 Monthly Payments)</span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Estimated Monthly Seller Finance Payment</span>
+                      <span className="font-semibold text-ink">
+                        {formatCents(hybridMonthlySellerFinancePayment)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
                       <span className="font-semibold text-ink">
                         {formatCents(results.monthlyHousingPayment)}
                       </span>
@@ -3399,7 +3901,7 @@ export default function SharedHousingCalculator() {
               </div>
               <div className="flex justify-between">
                 <span className="text-ink/60">
-                  {financingStructure.traditional
+                  {financingMode === "traditional"
                     ? `Traditional Closing Cost Percentage (${formatPercent(percent.traditionalClosingCostPct)})`
                     : `Closing Costs (${formatPercent(percent.closingCostPct)})`}
                 </span>
