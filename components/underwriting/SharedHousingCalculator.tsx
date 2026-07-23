@@ -31,7 +31,7 @@
  *     stays editable so a visitor can override the estimate
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Info,
   Upload,
@@ -51,6 +51,8 @@ import {
   HelpCircle,
   ArrowLeft,
   ArrowRight,
+  FileText,
+  ExternalLink,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------
@@ -63,13 +65,28 @@ const MAINTENANCE_ANNUAL = 4800;
 const UTILITIES_PER_BEDROOM = 80;
 const HOLDING_MONTHS = 3;
 
-// Property Images: processed and stored entirely client-side (never
-// uploaded anywhere) as compressed, orientation-corrected data URLs so
-// they can be previewed on screen and embedded directly in the
-// printable report.
-const MAX_PROPERTY_PHOTOS = 5;
+// Property Files: processed and stored entirely client-side (never
+// uploaded anywhere). Images are compressed, orientation-corrected data
+// URLs so they can be previewed on screen and embedded directly in the
+// printable report; PDFs are kept as their original file, referenced by
+// a temporary object URL (see processMediaFile below), since a browser
+// print view cannot reliably re-embed another PDF's pages -- PDFs are
+// instead shown as a linked document card, both on screen and in the
+// printable report. One shared limit applies to the combined total of
+// images and PDFs.
+const MAX_PROPERTY_FILES = 5;
 const ACCEPTED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+const ACCEPTED_DOCUMENT_TYPES = ["application/pdf"];
+const ACCEPTED_MEDIA_TYPES = [...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_DOCUMENT_TYPES];
+const MEDIA_FILE_ERROR_MESSAGE = "Please upload a PNG, JPG, JPEG, WEBP, or PDF file.";
 const MAX_IMAGE_DIMENSION = 1600;
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // ---------------------------------------------------------------------
 // Formatting and parsing helpers
@@ -155,7 +172,17 @@ function parseTypedPercent(raw: string): number {
 // stored as a data URL, both for on-screen previews and for the
 // printable report.
 // ---------------------------------------------------------------------
-type PropertyImage = { id: string; dataUrl: string; name: string };
+// A single uploaded media file, shared by Property Files, Floor Plan,
+// and PadSplit Rental Data. `dataUrl` holds a compressed, orientation-
+// corrected base64 data URL for images (so it can be embedded directly
+// in an <img> both on screen and in the printable report), or a
+// temporary object URL (via URL.createObjectURL) for PDFs, which is
+// never embedded as an image and must be revoked with
+// URL.revokeObjectURL when the file is removed, replaced, or cleared by
+// Reset to Defaults, to avoid leaking memory. `size` is the original
+// file's byte size, used only for the "PDF document card" preview.
+type MediaFile = { id: string; kind: "image" | "pdf"; dataUrl: string; name: string; size: number };
+type PropertyImage = MediaFile;
 
 async function processImageFile(file: File): Promise<string> {
   try {
@@ -186,6 +213,30 @@ async function processImageFile(file: File): Promise<string> {
   }
 }
 
+// Processes any accepted media file (image or PDF) into a MediaFile.
+// Images go through the exact same compress/orientation-correct
+// pipeline as before (processImageFile above); PDFs are never converted
+// into an image and are instead referenced by a temporary object URL,
+// used only to open the original PDF in a new tab or embed it as a
+// document-card link -- never rendered inside an <img> tag.
+async function processMediaFile(file: File): Promise<Omit<MediaFile, "id" | "name">> {
+  if (file.type === "application/pdf") {
+    return { kind: "pdf", dataUrl: URL.createObjectURL(file), size: file.size };
+  }
+  const dataUrl = await processImageFile(file);
+  return { kind: "image", dataUrl, size: file.size };
+}
+
+// Revokes a MediaFile's object URL if (and only if) it is a PDF -- image
+// data URLs are plain base64 strings and are never registered with
+// URL.createObjectURL, so calling revokeObjectURL on one would be a
+// no-op at best. Safe to call on `null`/`undefined`.
+function revokeMediaFile(file: { kind: "image" | "pdf"; dataUrl: string } | null | undefined) {
+  if (file && file.kind === "pdf" && file.dataUrl.startsWith("blob:")) {
+    URL.revokeObjectURL(file.dataUrl);
+  }
+}
+
 // Determines the printable report's image-gallery grid based on how
 // many photos were uploaded: 1 = large featured image, 2 = side by
 // side, 3-4 = a balanced grid, 5-6 = a compact multi-row gallery.
@@ -196,11 +247,12 @@ function getGalleryLayout(count: number): { gridClass: string; imgHeightClass: s
   return { gridClass: "grid-cols-3", imgHeightClass: "h-[1.3in]" };
 }
 
-// Floor Plan file: a single optional image, processed exactly like a
-// Property Image (resized, orientation-corrected, and stored as a data
-// URL) so it can be previewed on screen and embedded directly, as an
-// actual image, in the printable report.
-type FloorPlanFile = { dataUrl: string; name: string };
+// Floor Plan file and PadSplit Rental Data file: a single optional
+// upload each (image or PDF), processed exactly like a Property File
+// (see MediaFile above) so an image renders directly, as an actual
+// image, in the printable report, while a PDF renders as a linked
+// document card instead.
+type FloorPlanFile = MediaFile;
 
 // One Scope of Work line item: a free-text work item name and its
 // estimated cost, tracked as both a parsed number (for the running
@@ -1874,10 +1926,17 @@ export default function SharedHousingCalculator() {
   // still handleAddImageFiles's job, reused identically for both
   // click-to-upload and drag-and-drop).
   const [isDraggingPhotos, setIsDraggingPhotos] = useState(false);
+  // Refs to each upload area's hidden file input, used only so the
+  // drop zone can be operated from the keyboard: focusing the drop
+  // zone and pressing Enter or Space opens the same native file picker
+  // that clicking the tile would.
+  const propertyFilesInputRef = useRef<HTMLInputElement>(null);
   const [videoWalkthroughLink, setVideoWalkthroughLink] = useState("");
   const [floorPlan, setFloorPlan] = useState<FloorPlanFile | null>(null);
   const [floorPlanError, setFloorPlanError] = useState("");
   const [processingFloorPlan, setProcessingFloorPlan] = useState(false);
+  const [isDraggingFloorPlan, setIsDraggingFloorPlan] = useState(false);
+  const floorPlanInputRef = useRef<HTMLInputElement>(null);
   // PadSplit Rental Data Screenshot: a single optional supporting image
   // (comparable PadSplit rental data or room-rate research), processed
   // and stored exactly like the Floor Plan above -- entirely
@@ -1887,6 +1946,8 @@ export default function SharedHousingCalculator() {
   const [padSplitScreenshot, setPadSplitScreenshot] = useState<FloorPlanFile | null>(null);
   const [padSplitScreenshotError, setPadSplitScreenshotError] = useState("");
   const [processingPadSplitScreenshot, setProcessingPadSplitScreenshot] = useState(false);
+  const [isDraggingPadSplit, setIsDraggingPadSplit] = useState(false);
+  const padSplitInputRef = useRef<HTMLInputElement>(null);
   // Financing Structure is a single-select choice among four mutually
   // exclusive modes, each with its own inputs and calculations: only one
   // may ever be active. "" means no structure has been selected yet
@@ -2086,74 +2147,80 @@ export default function SharedHousingCalculator() {
     setHybridSellerFinancedBalanceDraft(formatCents(hybridSuggestedSellerFinancedBalance));
   }
 
-  // Property Images handlers: adding, removing, and replacing all run
-  // entirely client-side (see processImageFile above). Unsupported file
+  // Property Files handlers: adding, removing, and replacing all run
+  // entirely client-side (see processMediaFile above). Unsupported file
   // types are rejected with a clear error message instead of breaking
-  // the calculator, and selection is capped at MAX_PROPERTY_PHOTOS.
+  // the calculator, and selection is capped at MAX_PROPERTY_FILES -- one
+  // shared limit covering any combination of images and PDFs.
   async function handleAddImageFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
     const files = Array.from(fileList);
     setImageError("");
 
-    const valid = files.filter((f) => ACCEPTED_IMAGE_TYPES.includes(f.type));
-    const invalid = files.filter((f) => !ACCEPTED_IMAGE_TYPES.includes(f.type));
+    const valid = files.filter((f) => ACCEPTED_MEDIA_TYPES.includes(f.type));
+    const invalid = files.filter((f) => !ACCEPTED_MEDIA_TYPES.includes(f.type));
 
     if (invalid.length > 0) {
-      setImageError("Please upload a PNG, JPG, JPEG, or WEBP image.");
+      setImageError(MEDIA_FILE_ERROR_MESSAGE);
     }
     if (valid.length === 0) return;
 
-    const remainingSlots = MAX_PROPERTY_PHOTOS - propertyImages.length;
+    const remainingSlots = MAX_PROPERTY_FILES - propertyImages.length;
     if (remainingSlots <= 0) {
-      setImageError(
-        `Maximum of ${MAX_PROPERTY_PHOTOS} property photos reached. Remove a photo before adding another.`
-      );
+      setImageError(`Maximum of ${MAX_PROPERTY_FILES} property files reached.`);
       return;
     }
 
     const toProcess = valid.slice(0, remainingSlots);
     if (valid.length > toProcess.length) {
       setImageError(
-        `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Only the first ${toProcess.length} of the selected images were added.`
+        `You can upload up to ${MAX_PROPERTY_FILES} property files. Only the first ${toProcess.length} of the selected files were added.`
       );
     }
 
     setProcessingImages(true);
     try {
       const processed = await Promise.all(
-        toProcess.map(async (file) => ({
-          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          dataUrl: await processImageFile(file),
-          name: file.name,
-        }))
+        toProcess.map(async (file) => {
+          const media = await processMediaFile(file);
+          return {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            name: file.name,
+            ...media,
+          };
+        })
       );
       setPropertyImages((prev) => [...prev, ...processed]);
     } catch {
-      setImageError("One or more images could not be processed. Please try a different file.");
+      setImageError("One or more files could not be processed. Please try a different file.");
     } finally {
       setProcessingImages(false);
     }
   }
 
   function handleRemoveImage(id: string) {
-    setPropertyImages((prev) => prev.filter((img) => img.id !== id));
+    setPropertyImages((prev) => {
+      const removed = prev.find((img) => img.id === id);
+      revokeMediaFile(removed);
+      return prev.filter((img) => img.id !== id);
+    });
   }
 
-  // Drag-and-drop for property photos: reuses handleAddImageFiles
+  // Drag-and-drop for property files: reuses handleAddImageFiles
   // exactly, so dropped files go through the identical type-checking,
-  // 5-photo cap, and append-not-replace logic as files chosen through
+  // 5-file cap, and append-not-replace logic as files chosen through
   // the click-to-upload input. Dragging is purely a second way to reach
   // the same handler; nothing about file validation or storage differs.
   function handlePhotoDragEnter(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     e.stopPropagation();
-    if (propertyImages.length >= MAX_PROPERTY_PHOTOS) return;
+    if (propertyImages.length >= MAX_PROPERTY_FILES) return;
     setIsDraggingPhotos(true);
   }
   function handlePhotoDragOver(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     e.stopPropagation();
-    if (propertyImages.length >= MAX_PROPERTY_PHOTOS) return;
+    if (propertyImages.length >= MAX_PROPERTY_FILES) return;
     setIsDraggingPhotos(true);
   }
   function handlePhotoDragLeave(e: React.DragEvent<HTMLDivElement>) {
@@ -2174,13 +2241,13 @@ export default function SharedHousingCalculator() {
     }
   }
 
-  // Reorders property photos by swapping the photo at `id` with its
+  // Reorders property files by swapping the file at `id` with its
   // immediate left/right neighbor. The array order here is exactly the
-  // order used everywhere the photos are displayed -- the on-page
+  // order used everywhere the files are displayed -- the on-page
   // preview grid, the featured/thumbnail brochure layout in the
-  // printable report (index 0 is always the large featured photo), and
-  // the printable gallery -- so reordering on-page reorders the printed
-  // report identically.
+  // printable report (index 0 is always the large featured photo, when
+  // it is an image), and the printable gallery -- so reordering on-page
+  // reorders the printed report identically.
   function handleMoveImage(id: string, direction: "left" | "right") {
     setPropertyImages((prev) => {
       const index = prev.findIndex((img) => img.id === id);
@@ -2196,81 +2263,156 @@ export default function SharedHousingCalculator() {
   async function handleReplaceImage(id: string, fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setImageError("Please upload a PNG, JPG, JPEG, or WEBP image.");
+    if (!ACCEPTED_MEDIA_TYPES.includes(file.type)) {
+      setImageError(MEDIA_FILE_ERROR_MESSAGE);
       return;
     }
     setImageError("");
     setProcessingImages(true);
     try {
-      const dataUrl = await processImageFile(file);
+      const media = await processMediaFile(file);
       setPropertyImages((prev) =>
-        prev.map((img) => (img.id === id ? { ...img, dataUrl, name: file.name } : img))
+        prev.map((img) => {
+          if (img.id !== id) return img;
+          revokeMediaFile(img);
+          return { ...img, name: file.name, ...media };
+        })
       );
     } catch {
-      setImageError("That image could not be processed. Please try a different file.");
+      setImageError("That file could not be processed. Please try a different file.");
     } finally {
       setProcessingImages(false);
     }
   }
 
-  // Floor Plan handler: a single optional image, processed entirely
-  // client-side exactly like a Property Image (resized/compressed and
-  // orientation-corrected via processImageFile), so it always renders as
-  // an actual image both on screen and in the printable report.
-  // Uploading a new file always replaces whatever floor plan was there
-  // before.
+  // Floor Plan handler: a single optional file (image or PDF), processed
+  // entirely client-side exactly like a Property File (see
+  // processMediaFile above), so an image renders as an actual image both
+  // on screen and in the printable report, while a PDF renders as a
+  // linked document card instead. Uploading a new file always replaces
+  // whatever floor plan was there before, revoking its object URL first
+  // if it was a PDF.
   async function handleFloorPlanFile(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setFloorPlanError("That file is not supported. Please choose a JPG, PNG, or WEBP image.");
+    if (!ACCEPTED_MEDIA_TYPES.includes(file.type)) {
+      setFloorPlanError(MEDIA_FILE_ERROR_MESSAGE);
       return;
     }
     setFloorPlanError("");
     setProcessingFloorPlan(true);
     try {
-      const dataUrl = await processImageFile(file);
-      setFloorPlan({ dataUrl, name: file.name });
+      const media = await processMediaFile(file);
+      setFloorPlan((prev) => {
+        revokeMediaFile(prev);
+        return { id: "floor-plan", name: file.name, ...media };
+      });
     } catch {
-      setFloorPlanError("That image could not be processed. Please try a different file.");
+      setFloorPlanError("That file could not be processed. Please try a different file.");
     } finally {
       setProcessingFloorPlan(false);
     }
   }
 
   function handleRemoveFloorPlan() {
-    setFloorPlan(null);
+    setFloorPlan((prev) => {
+      revokeMediaFile(prev);
+      return null;
+    });
     setFloorPlanError("");
   }
 
-  // PadSplit Rental Data Screenshot handler: a single optional image,
+  // Drag-and-drop for the Floor Plan: a single-file drop zone, otherwise
+  // identical in spirit to the property-file drag handlers above.
+  // Dropping more than one file is fine -- handleFloorPlanFile only ever
+  // reads fileList[0], so a multi-file drop simply uses the first file
+  // and silently ignores the rest, matching a single-file field's
+  // expected behavior.
+  function handleFloorPlanDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFloorPlan(true);
+  }
+  function handleFloorPlanDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFloorPlan(true);
+  }
+  function handleFloorPlanDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingFloorPlan(false);
+  }
+  function handleFloorPlanDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFloorPlan(false);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      handleFloorPlanFile(e.dataTransfer.files);
+    }
+  }
+
+  // PadSplit Rental Data handler: a single optional file (image or PDF),
   // processed exactly like the Floor Plan above. Supporting
   // documentation only -- never read or used in any calculation, and
-  // uploading a new file always replaces whatever screenshot was there
-  // before.
+  // uploading a new file always replaces whatever file was there before,
+  // revoking its object URL first if it was a PDF.
   async function handlePadSplitScreenshotFile(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file) return;
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      setPadSplitScreenshotError("Please upload a PNG, JPG, JPEG, or WEBP image.");
+    if (!ACCEPTED_MEDIA_TYPES.includes(file.type)) {
+      setPadSplitScreenshotError(MEDIA_FILE_ERROR_MESSAGE);
       return;
     }
     setPadSplitScreenshotError("");
     setProcessingPadSplitScreenshot(true);
     try {
-      const dataUrl = await processImageFile(file);
-      setPadSplitScreenshot({ dataUrl, name: file.name });
+      const media = await processMediaFile(file);
+      setPadSplitScreenshot((prev) => {
+        revokeMediaFile(prev);
+        return { id: "padsplit-screenshot", name: file.name, ...media };
+      });
     } catch {
-      setPadSplitScreenshotError("That image could not be processed. Please try a different file.");
+      setPadSplitScreenshotError("That file could not be processed. Please try a different file.");
     } finally {
       setProcessingPadSplitScreenshot(false);
     }
   }
 
   function handleRemovePadSplitScreenshot() {
-    setPadSplitScreenshot(null);
+    setPadSplitScreenshot((prev) => {
+      revokeMediaFile(prev);
+      return null;
+    });
     setPadSplitScreenshotError("");
+  }
+
+  // Drag-and-drop for the PadSplit Rental Data upload: a single-file
+  // drop zone, identical in spirit to the Floor Plan's above.
+  function handlePadSplitDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingPadSplit(true);
+  }
+  function handlePadSplitDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingPadSplit(true);
+  }
+  function handlePadSplitDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDraggingPadSplit(false);
+  }
+  function handlePadSplitDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingPadSplit(false);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      handlePadSplitScreenshotFile(e.dataTransfer.files);
+    }
   }
 
   function resetToDefaults() {
@@ -2346,16 +2488,28 @@ export default function SharedHousingCalculator() {
     // manually entered amount.
     setHoldingCostsOverride(null);
     setHoldingCostsDraft(formatCents(0));
-    // Property Address, Property Images, Video Walkthrough Link, Floor
+    // Property Address, Property Files, Video Walkthrough Link, Floor
     // Plan, and Financing Structure are all cleared on reset, same as
-    // every other field.
+    // every other field. Any PDF among them has a temporary object URL
+    // that must be revoked before it is discarded, or it would leak for
+    // the rest of the browser session -- image data URLs need no such
+    // cleanup.
     setPropertyAddress("");
-    setPropertyImages([]);
+    setPropertyImages((prev) => {
+      prev.forEach(revokeMediaFile);
+      return [];
+    });
     setImageError("");
     setVideoWalkthroughLink("");
-    setFloorPlan(null);
+    setFloorPlan((prev) => {
+      revokeMediaFile(prev);
+      return null;
+    });
     setFloorPlanError("");
-    setPadSplitScreenshot(null);
+    setPadSplitScreenshot((prev) => {
+      revokeMediaFile(prev);
+      return null;
+    });
     setPadSplitScreenshotError("");
     // Scope of Work: clears every line item and restores the standard
     // itemized-by-default Renovation Cost behavior (Yes). Renovation
@@ -3868,11 +4022,37 @@ export default function SharedHousingCalculator() {
       rows: [
         { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
         { label: "Video Walkthrough Link", value: videoWalkthroughLink.trim() || "Not entered" },
-        { label: "Property Photo Count", value: String(propertyImages.length) },
+        // Property Files: never exports binary data, base64 strings, or
+        // temporary object URLs -- only the counts (total, image-kind,
+        // and PDF-kind) that describe what was uploaded.
+        { label: "Property File Count", value: String(propertyImages.length) },
         {
-          label: "PadSplit Rental Data Screenshot Uploaded",
+          label: "Property Image Count",
+          value: String(propertyImages.filter((f) => f.kind === "image").length),
+        },
+        {
+          label: "Property PDF Count",
+          value: String(propertyImages.filter((f) => f.kind === "pdf").length),
+        },
+        { label: "Floor Plan Uploaded", value: floorPlan ? "Yes" : "No" },
+        {
+          label: "Floor Plan File Type",
+          value: floorPlan ? (floorPlan.kind === "pdf" ? "PDF" : "Image") : "Not Applicable",
+        },
+        { label: "Floor Plan Filename", value: floorPlan?.name || "Not entered" },
+        {
+          label: "PadSplit Rental Data Uploaded",
           value: padSplitScreenshot ? "Yes" : "No",
         },
+        {
+          label: "PadSplit Rental Data File Type",
+          value: padSplitScreenshot
+            ? padSplitScreenshot.kind === "pdf"
+              ? "PDF"
+              : "Image"
+            : "Not Applicable",
+        },
+        { label: "PadSplit Rental Data Filename", value: padSplitScreenshot?.name || "Not entered" },
         { label: "Purchase Price", value: formatWhole(financing.purchasePrice) },
         ...(financingMode === "traditional"
           ? [
@@ -4168,6 +4348,7 @@ export default function SharedHousingCalculator() {
       traditionalEffectiveDownPaymentPct,
       traditionalPITIAt80,
       propertyImages,
+      floorPlan,
       padSplitScreenshot,
       scopeOfWorkItems,
       scopeOfWorkTotal,
@@ -4548,7 +4729,7 @@ export default function SharedHousingCalculator() {
         </div>
 
         {/* ---------------------------------------------------------- */}
-        {/* Property Images                                             */}
+        {/* Property Files (images and/or PDFs)                        */}
         {/* ---------------------------------------------------------- */}
         <div
           className={`print:hidden mt-6 p-6 sm:p-8 md:p-10 text-ink transition-colors ${
@@ -4561,73 +4742,108 @@ export default function SharedHousingCalculator() {
         >
           <p className="eyebrow text-brass mb-2">Property Images</p>
           <p className="text-sm text-ink/60 leading-relaxed mb-5">
-            Upload property photos to include in the printable underwriting summary. Click to
-            browse, or drag and drop up to 5 photos at once.
+            Drag and drop property photos or PDFs here, or click to browse.
           </p>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {propertyImages.map((img, index) => (
-              <div key={img.id} className="relative border border-line-dark bg-white p-2">
-                <img
-                  src={img.dataUrl}
-                  alt={img.name || "Property photo"}
-                  className="w-full h-32 object-cover"
-                />
-                <div className="mt-2 flex items-center justify-between gap-1.5">
-                  <div className="flex items-center gap-1.5">
+            {propertyImages.map((img, index) => {
+              const firstImageIndex = propertyImages.findIndex((f) => f.kind === "image");
+              return (
+                <div key={img.id} className="relative border border-line-dark bg-white p-2">
+                  {img.kind === "image" ? (
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name || "Property photo"}
+                      className="w-full h-32 object-contain bg-paper-2"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center gap-1.5 w-full h-32 bg-paper-2 px-2 text-center">
+                      <FileText size={26} className="text-ink/40" aria-hidden="true" />
+                      <span className="text-[11px] text-ink/70 leading-snug break-all line-clamp-2">
+                        {img.name || "Document.pdf"}
+                      </span>
+                      {img.size > 0 && (
+                        <span className="text-[10px] text-ink/40">{formatFileSize(img.size)}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="mt-2 flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleMoveImage(img.id, "left")}
+                        disabled={index === 0}
+                        aria-label={`Move ${img.kind === "pdf" ? "document" : "photo"} earlier`}
+                        title="Move earlier"
+                        className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      >
+                        <ArrowLeft size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleMoveImage(img.id, "right")}
+                        disabled={index === propertyImages.length - 1}
+                        aria-label={`Move ${img.kind === "pdf" ? "document" : "photo"} later`}
+                        title="Move later"
+                        className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      >
+                        <ArrowRight size={12} />
+                      </button>
+                    </div>
+                    {img.kind === "pdf" && (
+                      <a
+                        href={img.dataUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors inline-flex items-center gap-1"
+                      >
+                        Open <ExternalLink size={10} aria-hidden="true" />
+                      </a>
+                    )}
+                    <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
+                      Replace
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
+                        className="hidden"
+                        aria-label={`Replace ${img.name || (img.kind === "pdf" ? "document" : "photo")}`}
+                        onChange={(e) => {
+                          handleReplaceImage(img.id, e.target.files);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
                     <button
                       type="button"
-                      onClick={() => handleMoveImage(img.id, "left")}
-                      disabled={index === 0}
-                      aria-label="Move photo earlier"
-                      title="Move earlier"
-                      className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      onClick={() => handleRemoveImage(img.id)}
+                      aria-label={`Remove ${img.name || (img.kind === "pdf" ? "document" : "photo")}`}
+                      className="text-xs text-ink/50 hover:text-red-700 transition-colors"
                     >
-                      <ArrowLeft size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleMoveImage(img.id, "right")}
-                      disabled={index === propertyImages.length - 1}
-                      aria-label="Move photo later"
-                      title="Move later"
-                      className="p-1 border border-line-dark text-ink/50 hover:text-brass hover:border-brass transition-colors disabled:opacity-30 disabled:pointer-events-none"
-                    >
-                      <ArrowRight size={12} />
+                      Remove
                     </button>
                   </div>
-                  <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
-                    Replace
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/jpg,image/png,image/webp"
-                      className="hidden"
-                      onChange={(e) => {
-                        handleReplaceImage(img.id, e.target.files);
-                        e.target.value = "";
-                      }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveImage(img.id)}
-                    className="text-xs text-ink/50 hover:text-red-700 transition-colors"
-                  >
-                    Remove
-                  </button>
+                  {img.kind === "image" && index === firstImageIndex && propertyImages.length > 1 && (
+                    <p className="mt-1.5 text-[10px] uppercase tracking-wide text-brass/80">
+                      Featured Photo
+                    </p>
+                  )}
                 </div>
-                {index === 0 && propertyImages.length > 1 && (
-                  <p className="mt-1.5 text-[10px] uppercase tracking-wide text-brass/80">
-                    Featured Photo
-                  </p>
-                )}
-              </div>
-            ))}
+              );
+            })}
 
-            {propertyImages.length < MAX_PROPERTY_PHOTOS && (
-              <label
-                htmlFor="propertyImagesInput"
-                className={`flex flex-col items-center justify-center gap-2 border border-dashed h-full min-h-[128px] p-4 text-center cursor-pointer transition-colors ${
+            {propertyImages.length < MAX_PROPERTY_FILES && (
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="Add property photos or PDFs. Accepts PNG, JPG, JPEG, WEBP, or PDF files, up to 5 total."
+                onClick={() => propertyFilesInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    propertyFilesInputRef.current?.click();
+                  }
+                }}
+                className={`flex flex-col items-center justify-center gap-2 border border-dashed h-full min-h-[128px] p-4 text-center cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-brass ${
                   isDraggingPhotos
                     ? "border-brass bg-brass/10"
                     : "border-line-dark bg-white/60 hover:border-brass"
@@ -4639,20 +4855,18 @@ export default function SharedHousingCalculator() {
                     ? "Processing..."
                     : isDraggingPhotos
                       ? "Drop property photos here"
-                      : "Add Photos"}
+                      : "Add Photos or PDFs"}
                 </span>
                 {!isDraggingPhotos && !processingImages && (
-                  <span className="text-[10px] text-ink/40 sm:hidden">Tap to upload</span>
-                )}
-                {!isDraggingPhotos && !processingImages && (
-                  <span className="hidden sm:block text-[10px] text-ink/40">
-                    Or drag & drop up to {MAX_PROPERTY_PHOTOS} property photos
+                  <span className="text-[10px] text-ink/40">
+                    Click to browse, or drag and drop. PNG, JPG, JPEG, WEBP, or PDF.
                   </span>
                 )}
                 <input
+                  ref={propertyFilesInputRef}
                   id="propertyImagesInput"
                   type="file"
-                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
                   multiple
                   className="hidden"
                   disabled={processingImages}
@@ -4661,7 +4875,7 @@ export default function SharedHousingCalculator() {
                     e.target.value = "";
                   }}
                 />
-              </label>
+              </div>
             )}
           </div>
 
@@ -4672,11 +4886,11 @@ export default function SharedHousingCalculator() {
           )}
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-            {propertyImages.length >= MAX_PROPERTY_PHOTOS
-              ? `Maximum of ${MAX_PROPERTY_PHOTOS} property photos reached.`
-              : `You can upload up to ${MAX_PROPERTY_PHOTOS} property photos. Click to browse or drag and drop. Supported formats: JPG, PNG, and WEBP.`}{" "}
-            Images are used only to personalize the underwriting summary
-            generated from this calculator.
+            {propertyImages.length >= MAX_PROPERTY_FILES
+              ? `Maximum of ${MAX_PROPERTY_FILES} property files reached.`
+              : `You can upload up to ${MAX_PROPERTY_FILES} property images or PDFs. Click to browse or drag and drop. Supported formats: PNG, JPG, JPEG, WEBP, and PDF.`}{" "}
+            Files are used only to personalize the underwriting summary generated from this
+            calculator.
           </p>
         </div>
 
@@ -4713,28 +4927,58 @@ export default function SharedHousingCalculator() {
         {/* ---------------------------------------------------------- */}
         {/* Floor Plan                                                   */}
         {/* ---------------------------------------------------------- */}
-        <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+        <div
+          className={`print:hidden mt-6 p-6 sm:p-8 md:p-10 text-ink transition-colors ${
+            isDraggingFloorPlan ? "bg-brass/10 border-2 border-dashed border-brass" : "bg-paper"
+          }`}
+          onDragEnter={handleFloorPlanDragEnter}
+          onDragOver={handleFloorPlanDragOver}
+          onDragLeave={handleFloorPlanDragLeave}
+          onDrop={handleFloorPlanDrop}
+        >
           <p className="eyebrow text-brass mb-2">Floor Plan</p>
           <p className="text-sm text-ink/60 leading-relaxed mb-5">
-            Upload a floor plan to include at the bottom of the printable underwriting summary.
+            Drag and drop a floor plan image or PDF here, or click to browse. Uploading a new
+            file replaces the current one.
           </p>
 
           {floorPlan ? (
             <div className="border border-line-dark bg-white p-3 max-w-sm">
-              <div className="flex items-center justify-center bg-paper-2">
-                <img
-                  src={floorPlan.dataUrl}
-                  alt={floorPlan.name || "Floor plan"}
-                  className="w-full h-40 object-contain"
-                />
-              </div>
+              {floorPlan.kind === "image" ? (
+                <div className="flex items-center justify-center bg-paper-2">
+                  <img
+                    src={floorPlan.dataUrl}
+                    alt={floorPlan.name || "Floor plan"}
+                    className="w-full h-40 object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center gap-1.5 bg-paper-2 h-40 px-3 text-center">
+                  <FileText size={28} className="text-ink/40" aria-hidden="true" />
+                  <span className="text-xs text-ink/70 leading-snug break-all line-clamp-2">
+                    {floorPlan.name || "Floor Plan.pdf"}
+                  </span>
+                  {floorPlan.size > 0 && (
+                    <span className="text-[10px] text-ink/40">{formatFileSize(floorPlan.size)}</span>
+                  )}
+                  <a
+                    href={floorPlan.dataUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors inline-flex items-center gap-1"
+                  >
+                    Open Floor Plan PDF <ExternalLink size={10} aria-hidden="true" />
+                  </a>
+                </div>
+              )}
               <div className="mt-2 flex items-center justify-between gap-2">
                 <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
                   Replace
                   <input
                     type="file"
-                    accept="image/jpeg,image/jpg,image/png,image/webp"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
                     className="hidden"
+                    aria-label="Replace floor plan"
                     onChange={(e) => {
                       handleFloorPlanFile(e.target.files);
                       e.target.value = "";
@@ -4744,6 +4988,7 @@ export default function SharedHousingCalculator() {
                 <button
                   type="button"
                   onClick={handleRemoveFloorPlan}
+                  aria-label="Remove floor plan"
                   className="text-xs text-ink/50 hover:text-red-700 transition-colors"
                 >
                   Remove
@@ -4751,18 +4996,41 @@ export default function SharedHousingCalculator() {
               </div>
             </div>
           ) : (
-            <label
-              htmlFor="floorPlanInput"
-              className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 min-h-[128px] max-w-sm p-4 text-center cursor-pointer hover:border-brass transition-colors"
+            <div
+              role="button"
+              tabIndex={0}
+              aria-label="Add a floor plan. Accepts PNG, JPG, JPEG, WEBP, or PDF files, one file."
+              onClick={() => floorPlanInputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  floorPlanInputRef.current?.click();
+                }
+              }}
+              className={`flex flex-col items-center justify-center gap-2 border border-dashed min-h-[128px] max-w-sm p-4 text-center cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-brass ${
+                isDraggingFloorPlan
+                  ? "border-brass bg-brass/10"
+                  : "border-line-dark bg-white/60 hover:border-brass"
+              }`}
             >
-              <Upload size={18} className="text-ink/40" aria-hidden="true" />
+              <Upload size={18} className={isDraggingFloorPlan ? "text-brass" : "text-ink/40"} aria-hidden="true" />
               <span className="text-xs text-ink/60">
-                {processingFloorPlan ? "Processing..." : "Add Floor Plan"}
+                {processingFloorPlan
+                  ? "Processing..."
+                  : isDraggingFloorPlan
+                    ? "Drop floor plan here"
+                    : "Add Floor Plan"}
               </span>
+              {!isDraggingFloorPlan && !processingFloorPlan && (
+                <span className="text-[10px] text-ink/40">
+                  Click to browse, or drag and drop. PNG, JPG, JPEG, WEBP, or PDF.
+                </span>
+              )}
               <input
+                ref={floorPlanInputRef}
                 id="floorPlanInput"
                 type="file"
-                accept="image/jpeg,image/jpg,image/png,image/webp"
+                accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
                 className="hidden"
                 disabled={processingFloorPlan}
                 onChange={(e) => {
@@ -4770,7 +5038,7 @@ export default function SharedHousingCalculator() {
                   e.target.value = "";
                 }}
               />
-            </label>
+            </div>
           )}
 
           {floorPlanError && (
@@ -4780,7 +5048,7 @@ export default function SharedHousingCalculator() {
           )}
 
           <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-            Supported formats: JPG, PNG, and WEBP. One floor plan.
+            Supported formats: PNG, JPG, JPEG, WEBP, and PDF. One floor plan.
             Appears at the bottom of the printable underwriting summary.
           </p>
         </div>
@@ -6457,33 +6725,64 @@ export default function SharedHousingCalculator() {
             />
           </div>
 
-          {/* PadSplit Rental Data Screenshot: a single optional
-              supporting image, shared across every financing structure
+          {/* PadSplit Rental Data: a single optional supporting file
+              (image or PDF), shared across every financing structure
               (not cleared by switching financing modes), processed
               exactly like the Floor Plan upload. Never read or used in
               any calculation -- documentation only. */}
-          <div className="mt-8 pt-6 border-t border-line-dark">
-            <p className="eyebrow text-brass mb-2">PadSplit Rental Data Screenshot</p>
+          <div
+            className={`mt-8 pt-6 border-t border-line-dark transition-colors ${
+              isDraggingPadSplit ? "bg-brass/10 border-2 border-dashed border-brass -m-2 p-2" : ""
+            }`}
+            onDragEnter={handlePadSplitDragEnter}
+            onDragOver={handlePadSplitDragOver}
+            onDragLeave={handlePadSplitDragLeave}
+            onDrop={handlePadSplitDrop}
+          >
+            <p className="eyebrow text-brass mb-2">PadSplit Rental Data</p>
             <p className="text-sm text-ink/60 leading-relaxed mb-5">
-              Upload a screenshot of comparable PadSplit rental data or room-rate research.
+              Drag and drop a PadSplit rental-data image or PDF here, or click to browse.
             </p>
 
             {padSplitScreenshot ? (
               <div className="border border-line-dark bg-white p-3 max-w-sm">
-                <div className="flex items-center justify-center bg-paper-2">
-                  <img
-                    src={padSplitScreenshot.dataUrl}
-                    alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
-                    className="w-full h-40 object-contain"
-                  />
-                </div>
+                {padSplitScreenshot.kind === "image" ? (
+                  <div className="flex items-center justify-center bg-paper-2">
+                    <img
+                      src={padSplitScreenshot.dataUrl}
+                      alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
+                      className="w-full h-40 object-contain"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-1.5 bg-paper-2 h-40 px-3 text-center">
+                    <FileText size={28} className="text-ink/40" aria-hidden="true" />
+                    <span className="text-xs text-ink/70 leading-snug break-all line-clamp-2">
+                      {padSplitScreenshot.name || "PadSplit Rental Data.pdf"}
+                    </span>
+                    {padSplitScreenshot.size > 0 && (
+                      <span className="text-[10px] text-ink/40">
+                        {formatFileSize(padSplitScreenshot.size)}
+                      </span>
+                    )}
+                    <a
+                      href={padSplitScreenshot.dataUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors inline-flex items-center gap-1"
+                    >
+                      Open PadSplit Rental Data PDF <ExternalLink size={10} aria-hidden="true" />
+                    </a>
+                  </div>
+                )}
                 <div className="mt-2 flex items-center justify-between gap-2">
                   <label className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors cursor-pointer">
                     Replace
                     <input
                       type="file"
-                      accept="image/jpeg,image/jpg,image/png,image/webp"
+                      accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
                       className="hidden"
+                      aria-label="Replace PadSplit rental data file"
                       onChange={(e) => {
                         handlePadSplitScreenshotFile(e.target.files);
                         e.target.value = "";
@@ -6493,6 +6792,7 @@ export default function SharedHousingCalculator() {
                   <button
                     type="button"
                     onClick={handleRemovePadSplitScreenshot}
+                    aria-label="Remove PadSplit rental data file"
                     className="text-xs text-ink/50 hover:text-red-700 transition-colors"
                   >
                     Remove
@@ -6500,18 +6800,41 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
             ) : (
-              <label
-                htmlFor="padSplitScreenshotInput"
-                className="flex flex-col items-center justify-center gap-2 border border-dashed border-line-dark bg-white/60 min-h-[128px] max-w-sm p-4 text-center cursor-pointer hover:border-brass transition-colors"
+              <div
+                role="button"
+                tabIndex={0}
+                aria-label="Add PadSplit rental data. Accepts PNG, JPG, JPEG, WEBP, or PDF files, one file."
+                onClick={() => padSplitInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    padSplitInputRef.current?.click();
+                  }
+                }}
+                className={`flex flex-col items-center justify-center gap-2 border border-dashed min-h-[128px] max-w-sm p-4 text-center cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-brass ${
+                  isDraggingPadSplit
+                    ? "border-brass bg-brass/10"
+                    : "border-line-dark bg-white/60 hover:border-brass"
+                }`}
               >
-                <Upload size={18} className="text-ink/40" aria-hidden="true" />
+                <Upload size={18} className={isDraggingPadSplit ? "text-brass" : "text-ink/40"} aria-hidden="true" />
                 <span className="text-xs text-ink/60">
-                  {processingPadSplitScreenshot ? "Processing..." : "Add Screenshot"}
+                  {processingPadSplitScreenshot
+                    ? "Processing..."
+                    : isDraggingPadSplit
+                      ? "Drop PadSplit rental data here"
+                      : "Add Screenshot or PDF"}
                 </span>
+                {!isDraggingPadSplit && !processingPadSplitScreenshot && (
+                  <span className="text-[10px] text-ink/40">
+                    Click to browse, or drag and drop. PNG, JPG, JPEG, WEBP, or PDF.
+                  </span>
+                )}
                 <input
+                  ref={padSplitInputRef}
                   id="padSplitScreenshotInput"
                   type="file"
-                  accept="image/jpeg,image/jpg,image/png,image/webp"
+                  accept="image/jpeg,image/jpg,image/png,image/webp,application/pdf"
                   className="hidden"
                   disabled={processingPadSplitScreenshot}
                   onChange={(e) => {
@@ -6519,7 +6842,7 @@ export default function SharedHousingCalculator() {
                     e.target.value = "";
                   }}
                 />
-              </label>
+              </div>
             )}
 
             {padSplitScreenshotError && (
@@ -6529,9 +6852,9 @@ export default function SharedHousingCalculator() {
             )}
 
             <p className="mt-4 text-xs text-ink/50 leading-relaxed">
-              Supported formats: PNG, JPG, JPEG, and WEBP. One screenshot. Supporting
+              Supported formats: PNG, JPG, JPEG, WEBP, and PDF. One file. Supporting
               documentation only -- room rates are never automatically read or calculated from
-              this image. Appears in the printable underwriting summary near the Rental Income
+              this file. Appears in the printable underwriting summary near the Rental Income
               section when uploaded.
             </p>
           </div>
@@ -7253,32 +7576,40 @@ export default function SharedHousingCalculator() {
 
           {/* Listing-brochure media: a large featured photo with smaller
               gallery thumbnails, plus a Video Walkthrough button, if
-              either was provided. Omitted entirely when neither exists. */}
-          {(propertyImages.length > 0 || videoWalkthroughLink.trim() !== "") && (
+              either was provided. Only image-kind Property Files ever
+              appear in this gallery -- PDFs are never embedded as an
+              <img> (their object URL is not an image source); they are
+              instead shown as linked "Property Document" cards in the
+              section just below. Omitted entirely when there is no
+              image and no video link. */}
+          {(propertyImages.some((f) => f.kind === "image") || videoWalkthroughLink.trim() !== "") && (
             <div className="mb-3 print:break-inside-avoid-page grid grid-cols-3 gap-3">
-              {propertyImages.length > 0 && (
+              {propertyImages.some((f) => f.kind === "image") && (
                 <div className={videoWalkthroughLink.trim() !== "" ? "col-span-2" : "col-span-3"}>
                   <div className="rounded-xl overflow-hidden border border-ink/15 h-[2.2in]">
                     <img
-                      src={propertyImages[0].dataUrl}
-                      alt={propertyImages[0].name || "Featured property photo"}
+                      src={propertyImages.filter((f) => f.kind === "image")[0].dataUrl}
+                      alt={propertyImages.filter((f) => f.kind === "image")[0].name || "Featured property photo"}
                       className="w-full h-full object-cover"
                     />
                   </div>
-                  {propertyImages.length > 1 && (
+                  {propertyImages.filter((f) => f.kind === "image").length > 1 && (
                     <div className="mt-2 grid grid-cols-4 gap-2">
-                      {propertyImages.slice(1, MAX_PROPERTY_PHOTOS).map((img) => (
-                        <div
-                          key={img.id}
-                          className="rounded-lg overflow-hidden border border-ink/15 h-[0.75in]"
-                        >
-                          <img
-                            src={img.dataUrl}
-                            alt={img.name || "Property photo"}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
-                      ))}
+                      {propertyImages
+                        .filter((f) => f.kind === "image")
+                        .slice(1, MAX_PROPERTY_FILES)
+                        .map((img) => (
+                          <div
+                            key={img.id}
+                            className="rounded-lg overflow-hidden border border-ink/15 h-[0.75in]"
+                          >
+                            <img
+                              src={img.dataUrl}
+                              alt={img.name || "Property photo"}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                        ))}
                     </div>
                   )}
                 </div>
@@ -7289,7 +7620,7 @@ export default function SharedHousingCalculator() {
                   target="_blank"
                   rel="noopener noreferrer"
                   className={`${
-                    propertyImages.length > 0 ? "col-span-1" : "col-span-3"
+                    propertyImages.some((f) => f.kind === "image") ? "col-span-1" : "col-span-3"
                   } h-full flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-brass bg-white text-center px-3 py-6`}
                 >
                   <div className="h-10 w-10 rounded-full bg-brass text-white flex items-center justify-center">
@@ -7300,6 +7631,42 @@ export default function SharedHousingCalculator() {
                   </p>
                 </a>
               )}
+            </div>
+          )}
+
+          {/* Property Documents: one linked document card per uploaded
+              Property File PDF. A browser print view cannot reliably
+              re-embed another PDF's pages, so each PDF is represented by
+              its filename and a clickable "Open Property PDF" link
+              instead, rather than attempting to render its contents. */}
+          {propertyImages.some((f) => f.kind === "pdf") && (
+            <div className="mb-3 print:break-inside-avoid-page grid grid-cols-2 gap-3">
+              {propertyImages
+                .filter((f) => f.kind === "pdf")
+                .map((pdf) => (
+                  <div
+                    key={pdf.id}
+                    className="rounded-xl border border-ink/15 bg-white p-3 flex items-center gap-3"
+                  >
+                    <FileText size={22} className="text-brass flex-shrink-0" aria-hidden="true" />
+                    <div className="min-w-0">
+                      <p className="text-[7.5pt] uppercase tracking-wide text-ink/50">
+                        Property Document
+                      </p>
+                      <p className="text-[9.5pt] font-medium text-ink truncate">
+                        {pdf.name || "Document.pdf"}
+                      </p>
+                      <a
+                        href={pdf.dataUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[9pt] text-brass underline decoration-brass/50 underline-offset-2"
+                      >
+                        Open Property PDF
+                      </a>
+                    </div>
+                  </div>
+                ))}
             </div>
           )}
 
@@ -7947,11 +8314,14 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
-          {/* PadSplit Rental Data screenshot: supporting documentation
-              only, rendered only when one was actually uploaded so no
-              blank or near-blank section is ever created. object-contain
-              preserves the screenshot's original aspect ratio without
-              cropping or stretching. */}
+          {/* PadSplit Rental Data: supporting documentation only,
+              rendered only when one was actually uploaded so no blank or
+              near-blank section is ever created. An image renders
+              directly (object-contain preserves its original aspect
+              ratio without cropping or stretching); a PDF instead
+              renders as a linked "PadSplit Rental Data PDF" document
+              card, since a browser print view cannot reliably re-embed
+              another PDF's pages. */}
           {padSplitScreenshot && (
             <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
               <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
@@ -7960,13 +8330,35 @@ export default function SharedHousingCalculator() {
                   PadSplit Rental Data
                 </p>
               </div>
-              <div className="flex justify-center bg-paper-2 rounded-lg border border-ink/15 p-2">
-                <img
-                  src={padSplitScreenshot.dataUrl}
-                  alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
-                  className="w-full h-auto max-h-[3.4in] object-contain"
-                />
-              </div>
+              {padSplitScreenshot.kind === "image" ? (
+                <div className="flex justify-center bg-paper-2 rounded-lg border border-ink/15 p-2">
+                  <img
+                    src={padSplitScreenshot.dataUrl}
+                    alt={padSplitScreenshot.name || "PadSplit rental data screenshot"}
+                    className="w-full h-auto max-h-[3.4in] object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 bg-paper-2 rounded-lg border border-ink/15 p-3">
+                  <FileText size={22} className="text-brass flex-shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="text-[7.5pt] uppercase tracking-wide text-ink/50">
+                      PadSplit Rental Data PDF
+                    </p>
+                    <p className="text-[9.5pt] font-medium text-ink truncate">
+                      {padSplitScreenshot.name || "PadSplit Rental Data.pdf"}
+                    </p>
+                    <a
+                      href={padSplitScreenshot.dataUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[9pt] text-brass underline decoration-brass/50 underline-offset-2"
+                    >
+                      Open PadSplit Rental Data PDF
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -8267,32 +8659,54 @@ export default function SharedHousingCalculator() {
             </div>
           </div>
 
-          {/* Floor Plan, only if one was uploaded, on its own page. Shown
-              as an actual image (never a filename or file link), centered,
-              using object-contain so the plan's full aspect ratio is
-              preserved and nothing is cropped or stretched.
-              print:break-before-page starts it on a fresh page every
-              time, and print:break-inside-avoid-page keeps it from
-              splitting if it is taller than a single page. No top padding
-              and a tight ~24px heading-to-image gap keep the image
-              directly beneath the heading instead of drifting toward the
-              bottom of the page; the image's own max-height is kept
-              comfortably under a full page's usable height (after the
-              heading and this container's padding) so the whole block
-              reliably fits on one page rather than being bumped, nearly
-              in its entirety, onto the next one. */}
+          {/* Floor Plan, only if one was uploaded, on its own page. An
+              image is shown directly (never a filename or file link),
+              centered, using object-contain so the plan's full aspect
+              ratio is preserved and nothing is cropped or stretched. A
+              PDF instead renders as a linked "Floor Plan PDF" document
+              card, since a browser print view cannot reliably re-embed
+              another PDF's pages. print:break-before-page starts it on a
+              fresh page every time, and print:break-inside-avoid-page
+              keeps it from splitting if it is taller than a single page.
+              No top padding and a tight ~24px heading-to-image gap keep
+              the image directly beneath the heading instead of drifting
+              toward the bottom of the page; the image's own max-height
+              is kept comfortably under a full page's usable height
+              (after the heading and this container's padding) so the
+              whole block reliably fits on one page rather than being
+              bumped, nearly in its entirety, onto the next one. */}
           {floorPlan && (
             <div className="print:break-before-page print:break-inside-avoid-page">
               <p className="text-[16pt] font-display font-bold text-ink mb-6 pb-2 border-b-4 border-brass">
                 Floor Plan
               </p>
-              <div className="flex justify-center bg-paper-2 rounded-xl border border-ink/15 p-4">
-                <img
-                  src={floorPlan.dataUrl}
-                  alt={floorPlan.name || "Floor plan"}
-                  className="w-full h-auto max-h-[8.2in] object-contain"
-                />
-              </div>
+              {floorPlan.kind === "image" ? (
+                <div className="flex justify-center bg-paper-2 rounded-xl border border-ink/15 p-4">
+                  <img
+                    src={floorPlan.dataUrl}
+                    alt={floorPlan.name || "Floor plan"}
+                    className="w-full h-auto max-h-[8.2in] object-contain"
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 bg-paper-2 rounded-xl border border-ink/15 p-4">
+                  <FileText size={26} className="text-brass flex-shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="text-[8pt] uppercase tracking-wide text-ink/50">Floor Plan PDF</p>
+                    <p className="text-[11pt] font-medium text-ink truncate">
+                      {floorPlan.name || "Floor Plan.pdf"}
+                    </p>
+                    <a
+                      href={floorPlan.dataUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10pt] text-brass underline decoration-brass/50 underline-offset-2"
+                    >
+                      Open Floor Plan PDF
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
