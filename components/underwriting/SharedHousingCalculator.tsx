@@ -59,6 +59,15 @@ import {
   type ExportFinancingMode,
   type UnderwritingExportData,
 } from "@/lib/underwritingExcelExport";
+import {
+  buildRoiProjection,
+  ROI_PROJECTION_YEARS,
+  ROI_REPLACEMENT_LOAN_LABEL,
+  type RoiBalloonConfig,
+  type RoiDebtLeg,
+  type RoiProjectionResult,
+  type RoiYearRow,
+} from "@/lib/roiProjection";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -736,6 +745,445 @@ function BalloonRefinancePrintCard({
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// 30-Year ROI Projection: presentational components shared by the
+// on-page panel and the printable report. Every figure comes from a
+// RoiProjectionResult built by lib/roiProjection.ts's buildRoiProjection
+// (see activeRoiProjection in the main component below) -- nothing here
+// recalculates any underwriting math of its own.
+// ---------------------------------------------------------------------
+
+const ROI_DISCLOSURE_TEXT =
+  "Total ROI includes modeled net cash flow, principal paydown, and property appreciation.";
+
+function roiPct(value: number | null): string {
+  return value === null ? "N/A" : formatPercent(value * 100);
+}
+
+// Compact Year 1 / Year 5 / Year 10 / Year 30 summary cards (spec
+// section 11). Year 1 uses Annual ROI (a single year's return); Years
+// 5/10/30 use Cumulative ROI (the running total through that year).
+function RoiSummaryCards({ projection }: { projection: RoiProjectionResult }) {
+  const byYear = (year: number) => projection.rows.find((r) => r.year === year) ?? null;
+  const cards = [
+    { label: "Year 1 Total ROI", value: roiPct(projection.year1TotalRoi) },
+    { label: "Year 5 Cumulative ROI", value: roiPct(byYear(5)?.cumulativeRoi ?? null) },
+    { label: "Year 10 Cumulative ROI", value: roiPct(byYear(10)?.cumulativeRoi ?? null) },
+    { label: "Year 30 Cumulative ROI", value: roiPct(byYear(30)?.cumulativeRoi ?? null) },
+  ];
+  return (
+    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      {cards.map((c) => (
+        <div key={c.label} className="border border-line-dark bg-ink-2/60 px-4 py-3">
+          <p className="eyebrow text-bone/50 mb-1 text-[10px] leading-tight">{c.label}</p>
+          <p className="font-display text-xl text-brass-light">{c.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Hand-rolled SVG chart (this project has no charting library): a
+// stacked bar per year for the three return components -- Net Cash
+// Flow, Principal Paydown, Appreciation -- with an overlaid line for
+// Annual Total Return (which, by definition, always sits exactly at
+// the top of each stack, since it is the sum of the three). Never
+// plots a cumulative value here, only the true per-year figures, so
+// this annual-return chart is never misleading about scale. Works
+// identically on screen and in print (plain inline SVG, no JS-driven
+// canvas).
+function RoiComponentsChart({ rows }: { rows: RoiYearRow[] }) {
+  const width = 780;
+  const height = 240;
+  const marginLeft = 46;
+  const marginRight = 8;
+  const marginTop = 14;
+  const marginBottom = 22;
+  const plotW = width - marginLeft - marginRight;
+  const plotH = height - marginTop - marginBottom;
+  const slot = plotW / Math.max(1, rows.length);
+  const barW = Math.max(2, slot - 2);
+  const zeroY = marginTop + plotH;
+
+  const colors = { cashFlow: "#4E9C6C", paydown: "#C08A3E", appreciation: "#8B9795", line: "#12181C" };
+
+  const maxStack = Math.max(
+    1,
+    ...rows.map(
+      (r) => Math.max(0, r.annualNetCashFlow) + Math.max(0, r.totalPrincipalPaydown) + Math.max(0, r.annualAppreciation)
+    ),
+    ...rows.map((r) => Math.abs(r.annualTotalReturn))
+  );
+  const yScale = (v: number) => (Math.max(0, v) / maxStack) * plotH;
+
+  const linePoints = rows
+    .map((r, i) => {
+      const x = marginLeft + i * slot + slot / 2;
+      const y = zeroY - (r.annualTotalReturn / maxStack) * plotH;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full h-auto"
+        role="img"
+        aria-label="Annual return components (net cash flow, principal paydown, appreciation) and annual total return, by year"
+      >
+        <line x1={marginLeft} y1={zeroY} x2={width - marginRight} y2={zeroY} stroke="#12181C" strokeOpacity={0.25} />
+        {rows.map((r, i) => {
+          const x = marginLeft + i * slot + (slot - barW) / 2;
+          const segs = [
+            { h: yScale(r.annualNetCashFlow), color: colors.cashFlow },
+            { h: yScale(r.totalPrincipalPaydown), color: colors.paydown },
+            { h: yScale(r.annualAppreciation), color: colors.appreciation },
+          ];
+          let cursorY = zeroY;
+          return (
+            <g key={r.year}>
+              {segs.map((s, si) => {
+                const y = cursorY - s.h;
+                cursorY = y;
+                if (s.h <= 0) return null;
+                return <rect key={si} x={x} y={y} width={barW} height={s.h} fill={s.color} />;
+              })}
+              {(r.year === 1 || r.year % 5 === 0) && (
+                <text x={x + barW / 2} y={height - 6} fontSize="8" textAnchor="middle" fill="#12181C" opacity={0.55}>
+                  {r.year}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        <polyline points={linePoints} fill="none" stroke={colors.line} strokeWidth={1.5} />
+      </svg>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[9.5pt] print:text-[7pt] text-ink/60">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 inline-block" style={{ backgroundColor: colors.cashFlow }} />
+          Net Cash Flow
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 inline-block" style={{ backgroundColor: colors.paydown }} />
+          Principal Paydown
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 inline-block" style={{ backgroundColor: colors.appreciation }} />
+          Appreciation
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-0.5 w-3 inline-block" style={{ backgroundColor: colors.line }} />
+          Annual Total Return
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// The 30-row projection table, shared verbatim by the on-page panel and
+// the printable report (only the wrapping element differs -- the
+// on-page copy scrolls horizontally on narrow screens, the print copy
+// never does, since an overflow container would clip content across
+// printed pages; a plain <table>'s <thead> already repeats on every
+// printed page in every major browser without any extra markup).
+// Combined loan-balance columns are used throughout (Beginning/Ending
+// Loan Balance, Principal Paydown), per spec: "For financing structures
+// with more than one debt, use combined balances where applicable."
+function RoiProjectionTable({ rows, dense }: { rows: RoiYearRow[]; dense?: boolean }) {
+  const cellClass = dense ? "py-1 pr-2.5 text-[7.5pt]" : "py-1.5 pr-3 text-xs";
+  const headClass = dense
+    ? "py-1.5 pr-2.5 text-[7.5pt] font-semibold text-ink/70 text-right"
+    : "py-2 pr-3 text-xs font-semibold text-ink/70 text-right";
+  return (
+    <table className="w-full border-collapse">
+      <thead>
+        <tr className="text-left border-b-2 border-ink/20">
+          <th className={headClass.replace("text-right", "text-left")}>Year</th>
+          <th className={headClass}>Beg. Property Value</th>
+          <th className={headClass}>Appreciation</th>
+          <th className={headClass}>End. Property Value</th>
+          <th className={headClass}>Beg. Loan Balance</th>
+          <th className={headClass}>Principal Paydown</th>
+          <th className={headClass}>End. Loan Balance</th>
+          <th className={headClass}>Net Cash Flow</th>
+          <th className={headClass}>Total Return</th>
+          <th className={headClass}>Annual ROI</th>
+          <th className={headClass}>Cumulative Return</th>
+          <th className={headClass}>Cumulative ROI</th>
+          <th className={headClass}>Est. Ending Equity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => {
+          const beginningLoanBalance = r.legs.reduce((s, l) => s + l.beginningBalance, 0);
+          return (
+            <tr key={r.year} className={`border-b border-ink/10 ${r.isBalloonYear ? "bg-amber-50" : ""}`}>
+              <td className={cellClass}>
+                {r.year}
+                {r.isBalloonYear && <span className="ml-1 text-brass font-semibold">Balloon</span>}
+                {r.isRefinanceYear && <span className="ml-1 text-ink/50">(Refinanced)</span>}
+                {r.balloonUnresolved && <span className="ml-1 text-red-600 font-semibold">Balloon Due</span>}
+              </td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.beginningPropertyValue)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.annualAppreciation)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.endingPropertyValue)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(beginningLoanBalance)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.totalPrincipalPaydown)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.endingTotalDebt)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.annualNetCashFlow)}</td>
+              <td className={`${cellClass} text-right font-medium`}>{formatCents(r.annualTotalReturn)}</td>
+              <td className={`${cellClass} text-right`}>{roiPct(r.annualRoi)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.cumulativeTotalReturn)}</td>
+              <td className={`${cellClass} text-right font-medium`}>{roiPct(r.cumulativeRoi)}</td>
+              <td className={`${cellClass} text-right`}>{formatCents(r.estimatedEndingEquity)}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// The complete on-page "30-Year ROI Projection" expandable section:
+// the Annual Appreciation input, Refinance at Balloon controls (only
+// when this structure actually has a balloon), the four summary cards,
+// the chart, and the full table. Purely presentational, like every
+// other panel in this file -- all state lives in and is owned by the
+// parent.
+function RoiProjectionPanel({
+  isOpen,
+  onToggleOpen,
+  appreciationDraft,
+  onAppreciationChange,
+  onAppreciationBlur,
+  hasBalloon,
+  balloonYears,
+  refinanceAtBalloon,
+  onToggleRefinance,
+  refinanceRateDraft,
+  onRefinanceRateChange,
+  onRefinanceRateBlur,
+  refinanceRateIsManual,
+  onResetRefinanceRate,
+  projection,
+}: {
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  appreciationDraft: string;
+  onAppreciationChange: (raw: string) => void;
+  onAppreciationBlur: () => void;
+  hasBalloon: boolean;
+  balloonYears: number;
+  refinanceAtBalloon: boolean;
+  onToggleRefinance: (value: boolean) => void;
+  refinanceRateDraft: string;
+  onRefinanceRateChange: (raw: string) => void;
+  onRefinanceRateBlur: () => void;
+  refinanceRateIsManual: boolean;
+  onResetRefinanceRate: () => void;
+  projection: RoiProjectionResult;
+}) {
+  return (
+    <div className="print:hidden mt-10 pt-8 border-t border-line">
+      <p className="eyebrow text-brass mb-1">30-Year ROI Projection</p>
+      <p className="text-xs text-ink/50 leading-relaxed mb-5 max-w-3xl">{ROI_DISCLOSURE_TEXT}</p>
+
+      <RoiSummaryCards projection={projection} />
+
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        aria-expanded={isOpen}
+        className="mt-5 inline-flex items-center gap-2 border border-line-dark px-5 py-2.5 eyebrow text-bone/70 hover:border-brass hover:text-bone transition-colors"
+      >
+        {isOpen ? "Hide" : "View"} 30-Year ROI Projection
+      </button>
+
+      {isOpen && (
+        <div className="mt-6 bg-paper text-ink p-6 sm:p-8">
+          <div className="grid sm:grid-cols-2 gap-5 max-w-2xl">
+            <PercentField
+              id="roiAppreciationPct"
+              label="Annual Appreciation"
+              draft={appreciationDraft}
+              onChange={onAppreciationChange}
+              onBlur={onAppreciationBlur}
+              info="Compound annual appreciation. Defaults to 2%, fully editable."
+            />
+          </div>
+
+          {hasBalloon && (
+            <div className="mt-6 max-w-2xl">
+              <div className="mb-2">
+                <FieldLabel info="A balloon in this structure means its debt comes due partway through the 30-year projection. Choose how the projection should continue past that date.">
+                  Refinance at Balloon
+                </FieldLabel>
+              </div>
+              <div className="inline-flex border border-line-dark divide-x divide-line-dark">
+                <button
+                  type="button"
+                  onClick={() => onToggleRefinance(false)}
+                  aria-pressed={!refinanceAtBalloon}
+                  className={`px-4 py-2 text-sm transition-colors ${
+                    !refinanceAtBalloon ? "bg-brass/10 text-ink" : "text-ink/60 hover:text-ink"
+                  }`}
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleRefinance(true)}
+                  aria-pressed={refinanceAtBalloon}
+                  className={`px-4 py-2 text-sm transition-colors ${
+                    refinanceAtBalloon ? "bg-brass/10 text-ink" : "text-ink/60 hover:text-ink"
+                  }`}
+                >
+                  Yes
+                </button>
+              </div>
+
+              {refinanceAtBalloon ? (
+                <div className="mt-5 max-w-sm">
+                  <PercentField
+                    id="roiRefinanceRatePct"
+                    label="Replacement Interest Rate"
+                    draft={refinanceRateDraft}
+                    onChange={onRefinanceRateChange}
+                    onBlur={onRefinanceRateBlur}
+                    info="Defaults to this structure's current first-position interest rate. Fully editable."
+                  />
+                  {refinanceRateIsManual && (
+                    <button
+                      type="button"
+                      onClick={onResetRefinanceRate}
+                      className="mt-2 text-xs text-brass hover:underline"
+                    >
+                      Reset to Suggested Rate
+                    </button>
+                  )}
+                  <p className="mt-2 text-xs text-ink/50 leading-relaxed">
+                    At Year {balloonYears}, the balloon balance is modeled as refinanced into a new 30-year
+                    amortizing loan at this rate. Refinance proceeds are never counted as income or return.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-4 rounded border border-red-700 bg-red-50 p-4 max-w-xl">
+                  <p className="text-sm text-red-800 leading-relaxed inline-flex items-start gap-2">
+                    <HelpCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                    <span>
+                      Balloon Due in Year {balloonYears}: this financing is modeled as unresolved after that date.
+                      Appreciation and modeled cash flow continue, but no further principal paydown is projected and
+                      the outstanding balance is carried unchanged for the remainder of the 30-year period.
+                    </span>
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="mt-8">
+            <p className="eyebrow text-brass mb-3">Annual Return Components</p>
+            <RoiComponentsChart rows={projection.rows} />
+          </div>
+
+          <div className="mt-8 overflow-x-auto">
+            <RoiProjectionTable rows={projection.rows} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The printable-report counterpart to RoiProjectionPanel above -- same
+// underlying RoiProjectionResult, laid out to match the rest of the
+// print report's cards, with the full 30-row table (which may span
+// multiple printed pages) and the same return-components chart.
+function RoiProjectionPrintSection({
+  appreciationPct,
+  totalCapitalRequired,
+  hasBalloon,
+  balloonYears,
+  refinanceAtBalloon,
+  refinanceRatePct,
+  projection,
+}: {
+  appreciationPct: number;
+  totalCapitalRequired: number;
+  hasBalloon: boolean;
+  balloonYears: number;
+  refinanceAtBalloon: boolean;
+  refinanceRatePct: number;
+  projection: RoiProjectionResult;
+}) {
+  const byYear = (year: number) => projection.rows.find((r) => r.year === year) ?? null;
+  return (
+    <div className="hidden print:block mt-4">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <TrendingUp size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">30-Year ROI Projection</p>
+      </div>
+      <p className="text-[8pt] text-ink/60 leading-relaxed mb-2 max-w-2xl">{ROI_DISCLOSURE_TEXT}</p>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9pt] mb-3">
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Annual Appreciation Assumption</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatPercent(appreciationPct)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Initial Total Capital Required</span>
+          <span className="text-ink flex-shrink-0 text-right">{formatCents(totalCapitalRequired)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Year 1 Total ROI</span>
+          <span className="text-ink flex-shrink-0 text-right">{roiPct(projection.year1TotalRoi)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Year 5 Cumulative ROI</span>
+          <span className="text-ink flex-shrink-0 text-right">{roiPct(byYear(5)?.cumulativeRoi ?? null)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Year 10 Cumulative ROI</span>
+          <span className="text-ink flex-shrink-0 text-right">{roiPct(byYear(10)?.cumulativeRoi ?? null)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60 min-w-0">Year 30 Cumulative ROI</span>
+          <span className="text-ink flex-shrink-0 text-right">{roiPct(byYear(30)?.cumulativeRoi ?? null)}</span>
+        </div>
+        {hasBalloon && (
+          <>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Refinance at Balloon (Year {balloonYears})</span>
+              <span className="text-ink flex-shrink-0 text-right">{refinanceAtBalloon ? "Yes" : "No"}</span>
+            </div>
+            {refinanceAtBalloon && (
+              <div className="flex justify-between gap-3">
+                <span className="text-ink/60 min-w-0">Replacement Interest Rate</span>
+                <span className="text-ink flex-shrink-0 text-right">{formatPercent(refinanceRatePct)}</span>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {hasBalloon && !refinanceAtBalloon && (
+        <p className="text-[8pt] text-red-800 bg-red-50 border border-red-700 rounded p-2 mb-3 max-w-2xl leading-relaxed">
+          Balloon Due in Year {balloonYears}: this financing is modeled as unresolved after that date. No further
+          principal paydown is projected once the balloon comes due.
+        </p>
+      )}
+
+      <div className="mb-4 print:break-inside-avoid-page">
+        <RoiComponentsChart rows={projection.rows} />
+      </div>
+
+      <div className="text-ink">
+        <RoiProjectionTable rows={projection.rows} dense />
       </div>
     </div>
   );
@@ -1479,7 +1927,21 @@ type PercentKey =
   | "stackBalloonAppreciationPct"
   | "subjectToBalloonAppreciationPct"
   | "sellerFinancingBalloonAppreciationPct"
-  | "hybridBalloonAppreciationPct";
+  | "hybridBalloonAppreciationPct"
+  // 30-Year ROI Projection: Annual Appreciation, one independently
+  // editable field per financing structure (kept separate from the
+  // Balloon Refinance Analysis's own appreciation fields above, exactly
+  // like every other assumption in this calculator -- editing one
+  // structure's ROI appreciation assumption never affects another
+  // structure's, and never affects that same structure's balloon
+  // appreciation assumption either). Defaults to 2% for all five
+  // structures, including Traditional Financing, which has no balloon
+  // feature but still gets its own 30-Year ROI Projection.
+  | "traditionalRoiAppreciationPct"
+  | "subjectToRoiAppreciationPct"
+  | "sellerFinancingRoiAppreciationPct"
+  | "hybridRoiAppreciationPct"
+  | "stackRoiAppreciationPct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
@@ -1502,6 +1964,11 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   subjectToBalloonAppreciationPct: 2,
   sellerFinancingBalloonAppreciationPct: 2,
   hybridBalloonAppreciationPct: 2,
+  traditionalRoiAppreciationPct: 2,
+  subjectToRoiAppreciationPct: 2,
+  sellerFinancingRoiAppreciationPct: 2,
+  hybridRoiAppreciationPct: 2,
+  stackRoiAppreciationPct: 2,
 };
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
@@ -1867,6 +2334,132 @@ export default function SharedHousingCalculator() {
   const [hybridBalloonYears, setHybridBalloonYears] = useState(5);
   const [hybridBalloonYearsDraft, setHybridBalloonYearsDraft] = useState("5");
   const [hybridBalloonHas70LtvContingency, setHybridBalloonHas70LtvContingency] = useState(true);
+
+  // 30-Year ROI Projection -- Refinance at Balloon: only meaningful for
+  // the four structures that can have a balloon (never Traditional
+  // Financing, which has no balloon feature at all). Defaults to
+  // Yes/true per spec. The refinance interest rate follows the same
+  // "suggested unless manually overridden" pattern already used for
+  // Hybrid's Seller-Financed Balance above: null while it is still
+  // following the suggested rate (that structure's own first-position
+  // interest rate), a number once a visitor types their own rate in.
+  const [subjectToRefinanceAtBalloon, setSubjectToRefinanceAtBalloon] = useState(true);
+  const [subjectToRefinanceRateOverride, setSubjectToRefinanceRateOverride] = useState<number | null>(null);
+  const [subjectToRefinanceRateDraft, setSubjectToRefinanceRateDraft] = useState("");
+
+  const [sellerFinancingRefinanceAtBalloon, setSellerFinancingRefinanceAtBalloon] = useState(true);
+  const [sellerFinancingRefinanceRateOverride, setSellerFinancingRefinanceRateOverride] = useState<number | null>(
+    null
+  );
+  const [sellerFinancingRefinanceRateDraft, setSellerFinancingRefinanceRateDraft] = useState("");
+
+  const [hybridRefinanceAtBalloon, setHybridRefinanceAtBalloon] = useState(true);
+  const [hybridRefinanceRateOverride, setHybridRefinanceRateOverride] = useState<number | null>(null);
+  const [hybridRefinanceRateDraft, setHybridRefinanceRateDraft] = useState("");
+
+  const [stackRefinanceAtBalloon, setStackRefinanceAtBalloon] = useState(true);
+  const [stackRefinanceRateOverride, setStackRefinanceRateOverride] = useState<number | null>(null);
+  const [stackRefinanceRateDraft, setStackRefinanceRateDraft] = useState("");
+
+  // Suggested Replacement Interest Rate: each structure's own current
+  // underlying first-position interest rate, per spec ("default the
+  // refinance interest rate to the current underlying first-position
+  // interest rate where practical"). Subject To and Seller Financing
+  // share the same first-position loan fields, so they share the same
+  // suggested rate.
+  const subjectToSuggestedRefinanceRate = percent.loanInterestRatePct;
+  const sellerFinancingSuggestedRefinanceRate = percent.loanInterestRatePct;
+  const hybridSuggestedRefinanceRate = percent.hybridExistingMortgageRatePct;
+  const stackSuggestedRefinanceRate = percent.stackBankInterestRatePct;
+
+  const subjectToRefinanceRateIsManual = subjectToRefinanceRateOverride !== null;
+  const subjectToRefinanceRateUsed = subjectToRefinanceRateIsManual
+    ? subjectToRefinanceRateOverride!
+    : subjectToSuggestedRefinanceRate;
+  const sellerFinancingRefinanceRateIsManual = sellerFinancingRefinanceRateOverride !== null;
+  const sellerFinancingRefinanceRateUsed = sellerFinancingRefinanceRateIsManual
+    ? sellerFinancingRefinanceRateOverride!
+    : sellerFinancingSuggestedRefinanceRate;
+  const hybridRefinanceRateIsManual = hybridRefinanceRateOverride !== null;
+  const hybridRefinanceRateUsed = hybridRefinanceRateIsManual ? hybridRefinanceRateOverride! : hybridSuggestedRefinanceRate;
+  const stackRefinanceRateIsManual = stackRefinanceRateOverride !== null;
+  const stackRefinanceRateUsed = stackRefinanceRateIsManual ? stackRefinanceRateOverride! : stackSuggestedRefinanceRate;
+
+  // Keeps each Replacement Interest Rate field showing (and using) the
+  // live suggested first-position rate as long as it hasn't been
+  // manually overridden, exactly like Hybrid's Seller-Financed Balance
+  // above.
+  useEffect(() => {
+    if (!subjectToRefinanceRateIsManual) setSubjectToRefinanceRateDraft(subjectToSuggestedRefinanceRate.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectToSuggestedRefinanceRate, subjectToRefinanceRateIsManual]);
+  useEffect(() => {
+    if (!sellerFinancingRefinanceRateIsManual)
+      setSellerFinancingRefinanceRateDraft(sellerFinancingSuggestedRefinanceRate.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerFinancingSuggestedRefinanceRate, sellerFinancingRefinanceRateIsManual]);
+  useEffect(() => {
+    if (!hybridRefinanceRateIsManual) setHybridRefinanceRateDraft(hybridSuggestedRefinanceRate.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hybridSuggestedRefinanceRate, hybridRefinanceRateIsManual]);
+  useEffect(() => {
+    if (!stackRefinanceRateIsManual) setStackRefinanceRateDraft(stackSuggestedRefinanceRate.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stackSuggestedRefinanceRate, stackRefinanceRateIsManual]);
+
+  // Shared change/blur/reset handlers for a Replacement Interest Rate
+  // field, following the exact same "typing marks it as an override
+  // immediately, blur rounds and reformats it" pattern as Hybrid's
+  // Seller-Financed Balance above.
+  function makeRefinanceRateHandlers(
+    setOverride: React.Dispatch<React.SetStateAction<number | null>>,
+    setDraft: React.Dispatch<React.SetStateAction<string>>,
+    suggested: number
+  ) {
+    return {
+      onChange: (raw: string) => {
+        setDraft(raw);
+        setOverride(parseTypedPercent(raw));
+      },
+      onBlur: () => {
+        setOverride((prev) => {
+          const clamped = prev === null ? suggested : prev;
+          setDraft(clamped.toFixed(2));
+          return clamped;
+        });
+      },
+      reset: () => {
+        setOverride(null);
+        setDraft(suggested.toFixed(2));
+      },
+    };
+  }
+
+  const subjectToRefinanceRateHandlers = makeRefinanceRateHandlers(
+    setSubjectToRefinanceRateOverride,
+    setSubjectToRefinanceRateDraft,
+    subjectToSuggestedRefinanceRate
+  );
+  const sellerFinancingRefinanceRateHandlers = makeRefinanceRateHandlers(
+    setSellerFinancingRefinanceRateOverride,
+    setSellerFinancingRefinanceRateDraft,
+    sellerFinancingSuggestedRefinanceRate
+  );
+  const hybridRefinanceRateHandlers = makeRefinanceRateHandlers(
+    setHybridRefinanceRateOverride,
+    setHybridRefinanceRateDraft,
+    hybridSuggestedRefinanceRate
+  );
+  const stackRefinanceRateHandlers = makeRefinanceRateHandlers(
+    setStackRefinanceRateOverride,
+    setStackRefinanceRateDraft,
+    stackSuggestedRefinanceRate
+  );
+
+  // Expand/collapse state for the on-page "30-Year ROI Projection"
+  // section, one per financing structure so switching structures never
+  // carries the expanded state over from a different one.
+  const [roiProjectionOpen, setRoiProjectionOpen] = useState(false);
 
   // Subject To and Seller Financing already share the same underlying
   // loan-balance/monthly-payment fields (see the FinancingKey block
@@ -2522,6 +3115,23 @@ export default function SharedHousingCalculator() {
     setHybridBalloonYears(5);
     setHybridBalloonYearsDraft("5");
     setHybridBalloonHas70LtvContingency(true);
+    // 30-Year ROI Projection: Refinance at Balloon resets to Yes (its
+    // default) for every applicable structure, and every Replacement
+    // Interest Rate override clears so the field goes back to following
+    // that structure's own first-position interest rate.
+    setSubjectToRefinanceAtBalloon(true);
+    setSubjectToRefinanceRateOverride(null);
+    setSubjectToRefinanceRateDraft(PERCENT_DEFAULTS.loanInterestRatePct.toFixed(2));
+    setSellerFinancingRefinanceAtBalloon(true);
+    setSellerFinancingRefinanceRateOverride(null);
+    setSellerFinancingRefinanceRateDraft(PERCENT_DEFAULTS.loanInterestRatePct.toFixed(2));
+    setHybridRefinanceAtBalloon(true);
+    setHybridRefinanceRateOverride(null);
+    setHybridRefinanceRateDraft(PERCENT_DEFAULTS.hybridExistingMortgageRatePct.toFixed(2));
+    setStackRefinanceAtBalloon(true);
+    setStackRefinanceRateOverride(null);
+    setStackRefinanceRateDraft(PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2));
+    setRoiProjectionOpen(false);
     setLoanRemainingAmortizationYears(30);
     setLoanRemainingAmortizationYearsDraft("30");
     setHybridExistingMortgageAmortizationYears(30);
@@ -3666,6 +4276,191 @@ export default function SharedHousingCalculator() {
     stackEstimatedBuyerCashAtClosing,
   ]);
 
+  // ---------------------------------------------------------------------
+  // 30-Year ROI Projection: the debt legs and (if applicable) balloon
+  // configuration for whichever financing structure is currently
+  // selected, fed into the shared buildRoiProjection engine (see
+  // lib/roiProjection.ts, also used by the Excel export). Only one
+  // structure is ever active at a time, exactly like every other
+  // calculation in this file, so only that structure's legs/balloon are
+  // ever assembled.
+  // ---------------------------------------------------------------------
+  const activeRoiLegs: RoiDebtLeg[] = useMemo(() => {
+    if (financingMode === "traditional") {
+      return [
+        {
+          label: "First Mortgage",
+          balance: traditionalLoanBalance,
+          ratePct: percent.traditionalInterestRatePct,
+          amortMonths: TRADITIONAL_NUM_PAYMENTS,
+          active: true,
+        },
+      ];
+    }
+    if (financingMode === "subjectTo" || financingMode === "sellerFinancing") {
+      return [
+        {
+          label: "Existing Mortgage",
+          balance: financing.loanBalance,
+          ratePct: percent.loanInterestRatePct,
+          amortMonths: Math.max(1, Math.round(loanRemainingAmortizationYears * 12)),
+          active: true,
+        },
+      ];
+    }
+    if (financingMode === "hybrid") {
+      return [
+        {
+          label: "Existing Mortgage",
+          balance: financing.hybridExistingMortgageBalance,
+          ratePct: percent.hybridExistingMortgageRatePct,
+          amortMonths: Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12)),
+          active: true,
+        },
+        {
+          label: "Seller-Financed Balance",
+          balance: hybridSellerFinancedBalanceUsed,
+          ratePct: percent.hybridSellerFinanceRatePct,
+          amortMonths: TRADITIONAL_NUM_PAYMENTS,
+          // Never amortizes on its own while monthly seller-finance
+          // payments are disabled -- the full balance simply carries,
+          // exactly like everywhere else Hybrid's optional payment is
+          // modeled.
+          active: hybridSellerFinancePaymentsRequired,
+        },
+      ];
+    }
+    if (financingMode === "stackMethod") {
+      return [
+        {
+          label: "First-Position Bank Loan",
+          balance: stackBankLoanAmount,
+          ratePct: percent.stackBankInterestRatePct,
+          amortMonths: stackBankAmortMonths,
+          active: true,
+        },
+        {
+          label: "Seller-Financed Balance",
+          balance: stackSellerFinancedBalance,
+          ratePct: percent.stackSellerFinanceRatePct,
+          amortMonths: stackSellerAmortMonths,
+          active: stackSellerFinancePaymentsRequired,
+        },
+      ];
+    }
+    return [];
+  }, [
+    financingMode,
+    traditionalLoanBalance,
+    percent.traditionalInterestRatePct,
+    financing.loanBalance,
+    percent.loanInterestRatePct,
+    loanRemainingAmortizationYears,
+    financing.hybridExistingMortgageBalance,
+    percent.hybridExistingMortgageRatePct,
+    hybridExistingMortgageAmortizationYears,
+    hybridSellerFinancedBalanceUsed,
+    percent.hybridSellerFinanceRatePct,
+    hybridSellerFinancePaymentsRequired,
+    stackBankLoanAmount,
+    percent.stackBankInterestRatePct,
+    stackBankAmortMonths,
+    stackSellerFinancedBalance,
+    percent.stackSellerFinanceRatePct,
+    stackSellerAmortMonths,
+    stackSellerFinancePaymentsRequired,
+  ]);
+
+  // Traditional Financing never has a balloon at all, so this is always
+  // null for that structure; the other four are null unless that
+  // structure's own Balloon Exists toggle is Yes.
+  const activeRoiBalloon: RoiBalloonConfig | null = useMemo(() => {
+    if (financingMode === "subjectTo" && subjectToBalloonExists) {
+      return {
+        balloonYears: subjectToBalloonYears,
+        refinanceAtBalloon: subjectToRefinanceAtBalloon,
+        refinanceRatePct: subjectToRefinanceRateUsed,
+      };
+    }
+    if (financingMode === "sellerFinancing" && sellerFinancingBalloonExists) {
+      return {
+        balloonYears: sellerFinancingBalloonYears,
+        refinanceAtBalloon: sellerFinancingRefinanceAtBalloon,
+        refinanceRatePct: sellerFinancingRefinanceRateUsed,
+      };
+    }
+    if (financingMode === "hybrid" && hybridBalloonExists) {
+      return {
+        balloonYears: hybridBalloonYears,
+        refinanceAtBalloon: hybridRefinanceAtBalloon,
+        refinanceRatePct: hybridRefinanceRateUsed,
+      };
+    }
+    if (financingMode === "stackMethod" && stackBalloonExists) {
+      return {
+        balloonYears: stackBalloonYears,
+        refinanceAtBalloon: stackRefinanceAtBalloon,
+        refinanceRatePct: stackRefinanceRateUsed,
+      };
+    }
+    return null;
+  }, [
+    financingMode,
+    subjectToBalloonExists,
+    subjectToBalloonYears,
+    subjectToRefinanceAtBalloon,
+    subjectToRefinanceRateUsed,
+    sellerFinancingBalloonExists,
+    sellerFinancingBalloonYears,
+    sellerFinancingRefinanceAtBalloon,
+    sellerFinancingRefinanceRateUsed,
+    hybridBalloonExists,
+    hybridBalloonYears,
+    hybridRefinanceAtBalloon,
+    hybridRefinanceRateUsed,
+    stackBalloonExists,
+    stackBalloonYears,
+    stackRefinanceAtBalloon,
+    stackRefinanceRateUsed,
+  ]);
+
+  const activeRoiAppreciationPct =
+    financingMode === "traditional"
+      ? percent.traditionalRoiAppreciationPct
+      : financingMode === "subjectTo"
+        ? percent.subjectToRoiAppreciationPct
+        : financingMode === "sellerFinancing"
+          ? percent.sellerFinancingRoiAppreciationPct
+          : financingMode === "hybrid"
+            ? percent.hybridRoiAppreciationPct
+            : financingMode === "stackMethod"
+              ? percent.stackRoiAppreciationPct
+              : 2;
+
+  // The single source of truth for every 30-Year ROI Projection figure
+  // shown anywhere (on-page summary cards/table/chart, the printable
+  // report, and the Excel export): built once here via the shared
+  // buildRoiProjection engine.
+  const activeRoiProjection: RoiProjectionResult | null = useMemo(() => {
+    if (financingMode === "") return null;
+    return buildRoiProjection({
+      purchasePrice: financing.purchasePrice,
+      appreciationPct: activeRoiAppreciationPct,
+      totalCapitalRequired: results.totalCapitalRequired,
+      annualNetCashFlow: results.annualCashFlow,
+      legs: activeRoiLegs,
+      balloon: activeRoiBalloon,
+    });
+  }, [
+    financingMode,
+    financing.purchasePrice,
+    activeRoiAppreciationPct,
+    results.totalCapitalRequired,
+    results.annualCashFlow,
+    activeRoiLegs,
+    activeRoiBalloon,
+  ]);
+
   // Traditional Financing always labels its calculated loan payment
   // "Estimated Monthly Principal and Interest Payment" (never PITI,
   // since taxes and insurance are always shown and added separately, not
@@ -4687,6 +5482,13 @@ export default function SharedHousingCalculator() {
           padSplitFileType: padSplitScreenshot ? (padSplitScreenshot.kind === "pdf" ? "PDF" : "Image") : null,
           padSplitFilename: padSplitScreenshot?.name || null,
         },
+
+        roiAppreciationPct: activeRoiAppreciationPct,
+        roiProjection: activeRoiProjection,
+        roiHasBalloon: activeRoiBalloon !== null,
+        roiBalloonYears: activeRoiBalloon?.balloonYears ?? 0,
+        roiRefinanceAtBalloon: roiRefinanceControls?.atBalloon ?? true,
+        roiRefinanceRatePct: roiRefinanceControls?.rateUsed ?? 0,
       };
 
       await exportUnderwritingToExcel(exportData);
@@ -4846,12 +5648,80 @@ export default function SharedHousingCalculator() {
     window.print();
   }
 
+  // 30-Year ROI Projection: resolves which per-structure Annual
+  // Appreciation field and (when applicable) Refinance at Balloon
+  // controls apply to whichever financing structure is currently
+  // selected, so the JSX below can stay generic instead of repeating
+  // near-identical blocks five times.
+  const roiAppreciationDraft =
+    financingMode === "traditional"
+      ? percentDraft.traditionalRoiAppreciationPct
+      : financingMode === "subjectTo"
+        ? percentDraft.subjectToRoiAppreciationPct
+        : financingMode === "sellerFinancing"
+          ? percentDraft.sellerFinancingRoiAppreciationPct
+          : financingMode === "hybrid"
+            ? percentDraft.hybridRoiAppreciationPct
+            : financingMode === "stackMethod"
+              ? percentDraft.stackRoiAppreciationPct
+              : "2.00";
+  const roiAppreciationKey: PercentKey | null =
+    financingMode === "traditional"
+      ? "traditionalRoiAppreciationPct"
+      : financingMode === "subjectTo"
+        ? "subjectToRoiAppreciationPct"
+        : financingMode === "sellerFinancing"
+          ? "sellerFinancingRoiAppreciationPct"
+          : financingMode === "hybrid"
+            ? "hybridRoiAppreciationPct"
+            : financingMode === "stackMethod"
+              ? "stackRoiAppreciationPct"
+              : null;
+  const roiRefinanceControls =
+    financingMode === "subjectTo"
+      ? {
+          atBalloon: subjectToRefinanceAtBalloon,
+          setAtBalloon: setSubjectToRefinanceAtBalloon,
+          rateDraft: subjectToRefinanceRateDraft,
+          rateHandlers: subjectToRefinanceRateHandlers,
+          rateIsManual: subjectToRefinanceRateIsManual,
+          rateUsed: subjectToRefinanceRateUsed,
+        }
+      : financingMode === "sellerFinancing"
+        ? {
+            atBalloon: sellerFinancingRefinanceAtBalloon,
+            setAtBalloon: setSellerFinancingRefinanceAtBalloon,
+            rateDraft: sellerFinancingRefinanceRateDraft,
+            rateHandlers: sellerFinancingRefinanceRateHandlers,
+            rateIsManual: sellerFinancingRefinanceRateIsManual,
+            rateUsed: sellerFinancingRefinanceRateUsed,
+          }
+        : financingMode === "hybrid"
+          ? {
+              atBalloon: hybridRefinanceAtBalloon,
+              setAtBalloon: setHybridRefinanceAtBalloon,
+              rateDraft: hybridRefinanceRateDraft,
+              rateHandlers: hybridRefinanceRateHandlers,
+              rateIsManual: hybridRefinanceRateIsManual,
+              rateUsed: hybridRefinanceRateUsed,
+            }
+          : financingMode === "stackMethod"
+            ? {
+                atBalloon: stackRefinanceAtBalloon,
+                setAtBalloon: setStackRefinanceAtBalloon,
+                rateDraft: stackRefinanceRateDraft,
+                rateHandlers: stackRefinanceRateHandlers,
+                rateIsManual: stackRefinanceRateIsManual,
+                rateUsed: stackRefinanceRateUsed,
+              }
+            : null;
+
   return (
     <section className="bg-ink text-bone py-16 md:py-20 print:bg-white print:text-black print:py-0">
       <div className="mx-auto max-w-content px-6 md:px-10 print:max-w-none print:px-0">
         {/* Key results band: the four headline figures, always visible,
             always up to date, before any of the input sections. */}
-        <div className="print:hidden grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="print:hidden grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <div className="border border-line bg-ink-2 p-6">
             <p className="eyebrow text-brass-light mb-1.5">Estimated Monthly Cash Flow</p>
             <p className="font-display text-3xl text-brass-light">
@@ -4878,6 +5748,15 @@ export default function SharedHousingCalculator() {
                 adjustment, so a traditional cash-on-cash percentage is not applicable.
               </p>
             )}
+          </div>
+          <div className="border border-line bg-ink-2 p-6">
+            <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
+              Year 1 Total ROI
+              <InfoTip text="Year 1 Total Return (annual net cash flow + annual principal paydown + annual property appreciation) divided by Total Capital Required." />
+            </p>
+            <p className="font-display text-3xl text-brass-light">
+              {financingMode === "" || !activeRoiProjection ? "N/A" : roiPct(activeRoiProjection.year1TotalRoi)}
+            </p>
           </div>
           <div className="border border-brass bg-ink-2 p-6">
             <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
@@ -7694,6 +8573,26 @@ export default function SharedHousingCalculator() {
           )}
         </div>
 
+        {financingMode !== "" && activeRoiProjection && (
+          <RoiProjectionPanel
+            isOpen={roiProjectionOpen}
+            onToggleOpen={() => setRoiProjectionOpen((v) => !v)}
+            appreciationDraft={roiAppreciationDraft}
+            onAppreciationChange={(raw) => roiAppreciationKey && handlePercentChange(roiAppreciationKey, raw)}
+            onAppreciationBlur={() => roiAppreciationKey && handlePercentBlur(roiAppreciationKey)}
+            hasBalloon={activeRoiBalloon !== null}
+            balloonYears={activeRoiBalloon?.balloonYears ?? 0}
+            refinanceAtBalloon={roiRefinanceControls?.atBalloon ?? true}
+            onToggleRefinance={(v) => roiRefinanceControls?.setAtBalloon(v)}
+            refinanceRateDraft={roiRefinanceControls?.rateDraft ?? ""}
+            onRefinanceRateChange={(raw) => roiRefinanceControls?.rateHandlers.onChange(raw)}
+            onRefinanceRateBlur={() => roiRefinanceControls?.rateHandlers.onBlur()}
+            refinanceRateIsManual={roiRefinanceControls?.rateIsManual ?? false}
+            onResetRefinanceRate={() => roiRefinanceControls?.rateHandlers.reset()}
+            projection={activeRoiProjection}
+          />
+        )}
+
         <p className="print:hidden mt-8 max-w-3xl text-slate/70 leading-relaxed text-xs">
           This calculator is provided for illustrative and educational
           purposes only. Results are estimates based on the information
@@ -8469,6 +9368,18 @@ export default function SharedHousingCalculator() {
                 { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
                 { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
               ]}
+            />
+          )}
+
+          {financingMode !== "" && activeRoiProjection && (
+            <RoiProjectionPrintSection
+              appreciationPct={activeRoiAppreciationPct}
+              totalCapitalRequired={results.totalCapitalRequired}
+              hasBalloon={activeRoiBalloon !== null}
+              balloonYears={activeRoiBalloon?.balloonYears ?? 0}
+              refinanceAtBalloon={roiRefinanceControls?.atBalloon ?? true}
+              refinanceRatePct={roiRefinanceControls?.rateUsed ?? 0}
+              projection={activeRoiProjection}
             />
           )}
 

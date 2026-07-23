@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import type { RoiProjectionResult } from "./roiProjection";
 
 /**
  * Excel (.xlsx) export for the Underwriting calculator. Replaces the old
@@ -206,6 +207,17 @@ export interface UnderwritingExportData {
 
   // Supporting documents
   supportingDocuments: ExportSupportingDocuments;
+
+  // 30-Year ROI Projection: the same RoiProjectionResult built by
+  // lib/roiProjection.ts's buildRoiProjection for the active financing
+  // structure, passed straight through (never recalculated here) so the
+  // Excel figures are guaranteed to match the website exactly.
+  roiAppreciationPct: number;
+  roiProjection: RoiProjectionResult | null;
+  roiHasBalloon: boolean;
+  roiBalloonYears: number;
+  roiRefinanceAtBalloon: boolean;
+  roiRefinanceRatePct: number;
 }
 
 // ---------------------------------------------------------------------
@@ -508,6 +520,265 @@ function addSupportingDocumentsSheet(wb: ExcelJS.Workbook, data: UnderwritingExp
   writeRow("PadSplit Rental Data Uploaded", docs.padSplitUploaded ? "Yes" : "No");
   writeRow("PadSplit Rental Data File Type", docs.padSplitFileType || "Not Applicable");
   writeRow("PadSplit Rental Data Filename", docs.padSplitFilename || "Not entered");
+}
+
+// ---------------------------------------------------------------------
+// "30-Year ROI Projection" worksheet -- added to every export path
+// (template-based and generated alike) whenever a projection exists.
+// The row-by-row figures (property values, loan balances, principal
+// paydown, net cash flow) are written as plain values straight from the
+// same RoiProjectionResult the website itself computed (see
+// lib/roiProjection.ts), guaranteeing an exact match; the row-level
+// arithmetic that is safe to recompute in Excel (Ending Property Value,
+// Total Principal Paydown, Annual Total Return, Annual ROI, Cumulative
+// Total Return, Cumulative ROI, Ending Total Debt, Estimated Ending
+// Equity) is written as live formulas instead.
+// ---------------------------------------------------------------------
+function addRoiProjectionSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
+  const projection = data.roiProjection;
+  if (!projection || projection.rows.length === 0) return;
+
+  const ws = wb.addWorksheet("30-Year ROI Projection", { views: [{ showGridLines: false }] });
+  ws.getColumn(1).width = 2.5;
+
+  const legCount = Math.max(1, projection.rows[0]?.legs.length ?? 1);
+  const legLabels = (projection.rows[0]?.legs ?? []).map((l) => l.label);
+
+  let row = 2;
+  const sectionHeader = (title: string, span: number) => {
+    ws.mergeCells(row, 2, row, 1 + span);
+    const cell = ws.getCell(row, 2);
+    cell.value = title;
+    cell.font = { bold: true, size: 13, color: { argb: COLOR_WHITE }, name: "Calibri" };
+    cell.fill = FILL_HEADER;
+    cell.alignment = { vertical: "middle", indent: 1 };
+    ws.getRow(row).height = 22;
+    row++;
+  };
+
+  sectionHeader("30-Year ROI Projection", 3);
+  const writeSummaryRow = (label: string, value: number | string, format?: string) => {
+    ws.getCell(row, 2).value = label;
+    fmtLabel(ws.getCell(row, 2));
+    const valueCell = ws.getCell(row, 3);
+    valueCell.value = value;
+    fmtValue(valueCell, format);
+    row++;
+    return `C${row - 1}`;
+  };
+
+  const disclosureCell = ws.getCell(row, 2);
+  ws.mergeCells(row, 2, row, 4);
+  disclosureCell.value =
+    "Total ROI includes modeled net cash flow, principal paydown, and property appreciation.";
+  disclosureCell.font = { italic: true, size: 10, name: "Calibri" };
+  disclosureCell.alignment = { wrapText: true };
+  row += 2;
+
+  writeSummaryRow("Annual Appreciation Assumption", pct(data.roiAppreciationPct), FMT_PERCENT);
+  const initialCapitalAddr = writeSummaryRow(
+    "Initial Total Capital Required",
+    money(data.totalCapitalRequired),
+    FMT_CURRENCY
+  );
+  writeSummaryRow("Year 1 Total ROI", projection.year1TotalRoi === null ? "N/A" : pct(projection.year1TotalRoi * 100), FMT_PERCENT);
+  const yearRoi = (year: number) => projection.rows.find((r) => r.year === year)?.cumulativeRoi ?? null;
+  writeSummaryRow("Year 5 Cumulative ROI", yearRoi(5) === null ? "N/A" : pct((yearRoi(5) as number) * 100), FMT_PERCENT);
+  writeSummaryRow("Year 10 Cumulative ROI", yearRoi(10) === null ? "N/A" : pct((yearRoi(10) as number) * 100), FMT_PERCENT);
+  writeSummaryRow("Year 30 Cumulative ROI", yearRoi(30) === null ? "N/A" : pct((yearRoi(30) as number) * 100), FMT_PERCENT);
+
+  if (data.roiHasBalloon) {
+    writeSummaryRow("Balloon Due in Year", data.roiBalloonYears, FMT_WHOLE);
+    writeSummaryRow("Refinance at Balloon", data.roiRefinanceAtBalloon ? "Yes" : "No");
+    if (data.roiRefinanceAtBalloon) {
+      writeSummaryRow("Replacement Interest Rate", pct(data.roiRefinanceRatePct), FMT_PERCENT);
+      writeSummaryRow("Replacement Loan Amortization", 30, FMT_YEARS);
+    } else {
+      const warnCell = ws.getCell(row, 2);
+      ws.mergeCells(row, 2, row, 4);
+      warnCell.value = `Balloon Due in Year ${data.roiBalloonYears}: financing is modeled as unresolved after that date. No further principal paydown is projected once the balloon comes due.`;
+      warnCell.font = { italic: true, size: 10, color: { argb: "FFB00020" }, name: "Calibri" };
+      warnCell.alignment = { wrapText: true };
+      row++;
+    }
+  }
+  row += 1;
+
+  // ---- Column headers -------------------------------------------------
+  const headerRow = row;
+  const cols: string[] = ["Year", "Beginning Property Value", "Annual Appreciation", "Ending Property Value"];
+  for (let i = 0; i < legCount; i++) {
+    const label = legLabels[i] || `Loan ${i + 1}`;
+    cols.push(`${label} Beginning Balance`, `${label} Principal Paydown`, `${label} Ending Balance`);
+  }
+  cols.push(
+    "Total Annual Principal Paydown",
+    "Annual Net Cash Flow",
+    "Annual Total Return",
+    "Annual ROI",
+    "Cumulative Total Return",
+    "Cumulative ROI",
+    "Ending Total Debt",
+    "Estimated Ending Equity"
+  );
+  cols.forEach((label, i) => {
+    const cell = ws.getCell(headerRow, 2 + i);
+    cell.value = label;
+    cell.font = { bold: true, size: 9, color: { argb: COLOR_WHITE }, name: "Calibri" };
+    cell.fill = FILL_HEADER;
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  });
+  ws.getRow(headerRow).height = 32;
+  // Freeze the header row (and the Year column) so both stay visible
+  // while scrolling through all 30 rows.
+  ws.views = [{ state: "frozen", ySplit: headerRow, xSplit: 2, showGridLines: false }];
+
+  const colIndex = {
+    year: 2,
+    begPropVal: 3,
+    appreciation: 4,
+    endPropVal: 5,
+  };
+  const legStartCol = 6; // first leg's Beginning Balance column
+  const afterLegsCol = legStartCol + legCount * 3;
+  const totalPaydownCol = afterLegsCol;
+  const netCashFlowCol = afterLegsCol + 1;
+  const totalReturnCol = afterLegsCol + 2;
+  const annualRoiCol = afterLegsCol + 3;
+  const cumReturnCol = afterLegsCol + 4;
+  const cumRoiCol = afterLegsCol + 5;
+  const endingDebtCol = afterLegsCol + 6;
+  const endingEquityCol = afterLegsCol + 7;
+
+  // Absolute reference to the Initial Total Capital Required cell (e.g.
+  // "C10" -> "$C$10"), reused unchanged as the denominator for every
+  // year's Annual ROI and Cumulative ROI formula, exactly per spec
+  // ("Use the original Total Capital Required as the denominator for
+  // all 30 years. Do not change the denominator each year.").
+  const initialCapitalAbs = initialCapitalAddr.replace("C", "$C$");
+
+  let dataRow = headerRow + 1;
+  for (const yearRow of projection.rows) {
+    const r = dataRow;
+    ws.getCell(r, colIndex.year).value = yearRow.year;
+    fmtValue(ws.getCell(r, colIndex.year), FMT_WHOLE);
+    ws.getCell(r, colIndex.year).alignment = { horizontal: "center" };
+    if (yearRow.isBalloonYear) ws.getCell(r, colIndex.year).note = "Balloon due at the end of this year.";
+    if (yearRow.balloonUnresolved) {
+      ws.getRow(r).eachCell({ includeEmpty: true }, (cell) => {
+        if (!cell.fill || (cell.fill as ExcelJS.FillPattern).fgColor?.argb !== COLOR_INK) {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFDEAEA" } };
+        }
+      });
+    }
+
+    ws.getCell(r, colIndex.begPropVal).value = money(yearRow.beginningPropertyValue);
+    fmtValue(ws.getCell(r, colIndex.begPropVal), FMT_CURRENCY);
+    ws.getCell(r, colIndex.appreciation).value = money(yearRow.annualAppreciation);
+    fmtValue(ws.getCell(r, colIndex.appreciation), FMT_CURRENCY);
+    const endPropCell = ws.getCell(r, colIndex.endPropVal);
+    endPropCell.value = { formula: `${colLetter(colIndex.begPropVal)}${r}+${colLetter(colIndex.appreciation)}${r}` } as ExcelJS.CellFormulaValue;
+    fmtValue(endPropCell, FMT_CURRENCY);
+
+    for (let i = 0; i < legCount; i++) {
+      const leg = yearRow.legs[i];
+      const begCol = legStartCol + i * 3;
+      const paydownCol = begCol + 1;
+      const endCol = begCol + 2;
+      const begCell = ws.getCell(r, begCol);
+      begCell.value = money(leg?.beginningBalance ?? 0);
+      fmtValue(begCell, FMT_CURRENCY);
+      const paydownCell = ws.getCell(r, paydownCol);
+      paydownCell.value = money(leg?.principalPaydown ?? 0);
+      fmtValue(paydownCell, FMT_CURRENCY);
+      const endCell = ws.getCell(r, endCol);
+      endCell.value = {
+        formula: `${colLetter(begCol)}${r}-${colLetter(paydownCol)}${r}`,
+      } as ExcelJS.CellFormulaValue;
+      fmtValue(endCell, FMT_CURRENCY);
+    }
+
+    const paydownRefs = Array.from({ length: legCount }, (_, i) => `${colLetter(legStartCol + i * 3 + 1)}${r}`);
+    const totalPaydownCell = ws.getCell(r, totalPaydownCol);
+    totalPaydownCell.value = { formula: paydownRefs.join("+") } as ExcelJS.CellFormulaValue;
+    fmtValue(totalPaydownCell, FMT_CURRENCY);
+
+    const cashFlowCell = ws.getCell(r, netCashFlowCol);
+    cashFlowCell.value = money(yearRow.annualNetCashFlow);
+    fmtValue(cashFlowCell, FMT_CURRENCY);
+
+    const totalReturnCell = ws.getCell(r, totalReturnCol);
+    totalReturnCell.value = {
+      formula: `${colLetter(netCashFlowCol)}${r}+${colLetter(totalPaydownCol)}${r}+${colLetter(colIndex.appreciation)}${r}`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(totalReturnCell, FMT_CURRENCY, { emphasis: true });
+
+    const annualRoiCell = ws.getCell(r, annualRoiCol);
+    annualRoiCell.value = {
+      formula: `IF(${initialCapitalAbs}=0,"N/A",${colLetter(totalReturnCol)}${r}/${initialCapitalAbs})`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(annualRoiCell, FMT_PERCENT);
+
+    const cumReturnCell = ws.getCell(r, cumReturnCol);
+    if (r === headerRow + 1) {
+      cumReturnCell.value = { formula: `${colLetter(totalReturnCol)}${r}` } as ExcelJS.CellFormulaValue;
+    } else {
+      cumReturnCell.value = {
+        formula: `${colLetter(cumReturnCol)}${r - 1}+${colLetter(totalReturnCol)}${r}`,
+      } as ExcelJS.CellFormulaValue;
+    }
+    fmtValue(cumReturnCell, FMT_CURRENCY);
+
+    const cumRoiCell = ws.getCell(r, cumRoiCol);
+    cumRoiCell.value = {
+      formula: `IF(${initialCapitalAbs}=0,"N/A",${colLetter(cumReturnCol)}${r}/${initialCapitalAbs})`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(cumRoiCell, FMT_PERCENT, { emphasis: true });
+
+    const endingDebtRefs = Array.from({ length: legCount }, (_, i) => `${colLetter(legStartCol + i * 3 + 2)}${r}`);
+    const endingDebtCell = ws.getCell(r, endingDebtCol);
+    endingDebtCell.value = { formula: endingDebtRefs.join("+") } as ExcelJS.CellFormulaValue;
+    fmtValue(endingDebtCell, FMT_CURRENCY);
+
+    const endingEquityCell = ws.getCell(r, endingEquityCol);
+    endingEquityCell.value = {
+      formula: `${colLetter(colIndex.endPropVal)}${r}-${colLetter(endingDebtCol)}${r}`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(endingEquityCell, FMT_CURRENCY);
+
+    dataRow++;
+  }
+
+  // Column widths: narrower for Year, generous for everything else.
+  ws.getColumn(colIndex.year).width = 8;
+  for (let c = 3; c <= endingEquityCol; c++) {
+    ws.getColumn(c).width = 15;
+  }
+
+  if (legCount < 2) {
+    const footnote = ws.getCell(dataRow + 1, 2);
+    footnote.value =
+      "This structure has a single amortizing debt, so only one loan's beginning/paydown/ending balance columns apply.";
+    footnote.font = { italic: true, size: 9, name: "Calibri" };
+  }
+  if (data.roiHasBalloon && data.roiRefinanceAtBalloon) {
+    const footnote = ws.getCell(dataRow + 2, 2);
+    footnote.value = `Beginning the year after the Year ${data.roiBalloonYears} balloon, the combined outstanding balance is refinanced into one replacement loan, shown under the first loan's columns; any second loan's columns show $0 from that point forward.`;
+    footnote.font = { italic: true, size: 9, name: "Calibri" };
+    ws.mergeCells(dataRow + 2, 2, dataRow + 2, 6);
+  }
+}
+
+// Converts a 1-based column index into its Excel letter (2 -> B, 27 -> AA).
+function colLetter(col: number): string {
+  let n = col;
+  let letters = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    letters = String.fromCharCode(65 + rem) + letters;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letters;
 }
 
 // ---------------------------------------------------------------------
@@ -880,6 +1151,7 @@ export async function buildTemplateWorkbook(data: UnderwritingExportData): Promi
   const ws = wb.worksheets[0];
   populateTemplateWorkbook(ws, data);
   addScopeOfWorkSheet(wb, data);
+  addRoiProjectionSheet(wb, data);
   addSupportingDocumentsSheet(wb, data);
   return wb;
 }
@@ -1181,6 +1453,7 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
   }
 
   addScopeOfWorkSheet(wb, data);
+  addRoiProjectionSheet(wb, data);
   addSupportingDocumentsSheet(wb, data);
 
   return wb;
