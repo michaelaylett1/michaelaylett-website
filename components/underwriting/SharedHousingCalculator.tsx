@@ -1008,10 +1008,29 @@ function RoiProjectionPanel({
     <div className="print:hidden mt-10 pt-8 border-t border-line">
       <p className="eyebrow text-brass mb-1">30-Year ROI Projection</p>
       <p className="text-sm text-bone leading-[1.45] mb-2 max-w-3xl">{ROI_DISCLOSURE_TEXT}</p>
-      <p className="text-sm text-bone/80 leading-[1.45] mb-5 max-w-3xl">
-        Annual Appreciation Assumption:{" "}
-        <span className="text-bone font-medium">{formatPercent(appreciationPct)}</span>
-      </p>
+      <div className="flex flex-wrap items-center gap-2 mb-5">
+        <label htmlFor="roiAppreciationPctTop" className="text-sm text-bone/80">
+          Annual Property Appreciation:
+        </label>
+        <div className="relative inline-flex items-center">
+          <input
+            id="roiAppreciationPctTop"
+            type="text"
+            inputMode="decimal"
+            value={appreciationDraft}
+            onChange={(e) => onAppreciationChange(e.target.value)}
+            onBlur={onAppreciationBlur}
+            aria-label="Annual Property Appreciation"
+            className="w-20 bg-white border border-line-dark pl-2.5 pr-6 py-1.5 text-ink text-sm outline-none focus:border-brass"
+          />
+          <span className="pointer-events-none absolute right-2.5 text-ink/40 text-sm" aria-hidden="true">
+            %
+          </span>
+        </div>
+        <span className="text-xs text-bone/50">
+          Shared with Balloon Refinance Analysis -- editing it here or there updates both.
+        </span>
+      </div>
 
       <RoiSummaryCards projection={projection} />
 
