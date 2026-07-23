@@ -2152,31 +2152,53 @@ export default function SharedHousingCalculator() {
   // types are rejected with a clear error message instead of breaking
   // the calculator, and selection is capped at MAX_PROPERTY_FILES -- one
   // shared limit covering any combination of images and PDFs.
+  // Accepts the complete FileList from either the click-to-upload input
+  // (multi-select, via the `multiple` attribute) or a multi-file drag-
+  // and-drop, converts it to an array once, and validates every file
+  // individually -- Array.from(fileList) up front, never fileList[0],
+  // so a batch of several files is never silently reduced to just the
+  // first one. New files are always appended to the existing
+  // propertyImages array (Existing Property Files + Newly Selected
+  // Files), never replacing it, and MAX_PROPERTY_FILES is the one
+  // shared cap applied here regardless of how many of the newly
+  // selected files are images versus PDFs.
   async function handleAddImageFiles(fileList: FileList | null) {
     if (!fileList || fileList.length === 0) return;
     const files = Array.from(fileList);
-    setImageError("");
 
     const valid = files.filter((f) => ACCEPTED_MEDIA_TYPES.includes(f.type));
-    const invalid = files.filter((f) => !ACCEPTED_MEDIA_TYPES.includes(f.type));
+    const invalidCount = files.length - valid.length;
 
-    if (invalid.length > 0) {
-      setImageError(MEDIA_FILE_ERROR_MESSAGE);
-    }
-    if (valid.length === 0) return;
-
-    const remainingSlots = MAX_PROPERTY_FILES - propertyImages.length;
-    if (remainingSlots <= 0) {
-      setImageError(`Maximum of ${MAX_PROPERTY_FILES} property files reached.`);
-      return;
-    }
-
+    const remainingSlots = Math.max(0, MAX_PROPERTY_FILES - propertyImages.length);
     const toProcess = valid.slice(0, remainingSlots);
-    if (valid.length > toProcess.length) {
-      setImageError(
-        `You can upload up to ${MAX_PROPERTY_FILES} property files. Only the first ${toProcess.length} of the selected files were added.`
+    const skippedForCapCount = valid.length - toProcess.length;
+
+    // One combined, accurate summary covering every reason a selected
+    // or dropped file might not have been added, rather than reporting
+    // only the first problem encountered and leaving the rest
+    // unexplained (e.g. a mixed batch of valid, unsupported, and over-
+    // the-cap files all in a single selection).
+    const messageParts: string[] = [];
+    if (toProcess.length > 0) {
+      messageParts.push(`${toProcess.length} file${toProcess.length === 1 ? "" : "s"} added.`);
+    }
+    if (invalidCount > 0) {
+      messageParts.push(
+        `${invalidCount} unsupported file${invalidCount === 1 ? "" : "s"} ${
+          invalidCount === 1 ? "was" : "were"
+        } skipped.`
       );
     }
+    if (skippedForCapCount > 0) {
+      messageParts.push(
+        `${skippedForCapCount} additional file${skippedForCapCount === 1 ? "" : "s"} ${
+          skippedForCapCount === 1 ? "was" : "were"
+        } not added because the maximum is ${MAX_PROPERTY_FILES} property files.`
+      );
+    }
+    setImageError(messageParts.join(" "));
+
+    if (toProcess.length === 0) return;
 
     setProcessingImages(true);
     try {
@@ -2192,7 +2214,11 @@ export default function SharedHousingCalculator() {
       );
       setPropertyImages((prev) => [...prev, ...processed]);
     } catch {
-      setImageError("One or more files could not be processed. Please try a different file.");
+      setImageError((prev) =>
+        prev
+          ? `${prev} One or more files could not be processed.`
+          : "One or more files could not be processed. Please try a different file."
+      );
     } finally {
       setProcessingImages(false);
     }
@@ -3535,7 +3561,9 @@ export default function SharedHousingCalculator() {
         ? stackAdjustedTotalCapitalRequired
         : round2(
             downPaymentForCapital +
-              capital.arrears +
+              (financingMode === "traditional" || financingMode === "sellerFinancing"
+                ? 0
+                : capital.arrears) +
               capital.renovationCost +
               capital.furniture +
               capital.appliances +
@@ -3902,7 +3930,9 @@ export default function SharedHousingCalculator() {
               ]
             : [
                 { label: downPaymentLabel, value: formatCents(results.downPaymentForCapital) },
-                { label: "Arrears", value: formatCents(capital.arrears) },
+                ...(financingMode === "traditional" || financingMode === "sellerFinancing"
+                  ? []
+                  : [{ label: "Arrears", value: formatCents(capital.arrears) }]),
                 { label: "Renovation Cost", value: formatCents(capital.renovationCost) },
                 { label: "Furniture", value: formatCents(capital.furniture) },
                 { label: "Appliances", value: formatCents(capital.appliances) },
@@ -4420,7 +4450,7 @@ export default function SharedHousingCalculator() {
       ].filter((bar) => bar.value > 0);
     }
     const otherApplicableCosts = round2(
-      capital.arrears +
+      (financingMode === "traditional" || financingMode === "sellerFinancing" ? 0 : capital.arrears) +
         (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
         capital.acquisitionFee +
         capital.photos
@@ -7008,15 +7038,17 @@ export default function SharedHousingCalculator() {
                 helperText="Reused from Property and Financing above."
               />
             )}
-            {financingMode !== "stackMethod" && (
-              <CurrencyField
-                id="arrears"
-                label="Arrears"
-                draft={capitalDraft.arrears}
-                onChange={(raw) => handleCapitalChange("arrears", raw)}
-                onBlur={() => handleCapitalBlur("arrears")}
-              />
-            )}
+            {financingMode !== "stackMethod" &&
+              financingMode !== "traditional" &&
+              financingMode !== "sellerFinancing" && (
+                <CurrencyField
+                  id="arrears"
+                  label="Arrears"
+                  draft={capitalDraft.arrears}
+                  onChange={(raw) => handleCapitalChange("arrears", raw)}
+                  onBlur={() => handleCapitalBlur("arrears")}
+                />
+              )}
             {useItemizedScopeOfWork ? (
               <ReadOnlyStat
                 label="Renovation Cost"
@@ -8427,12 +8459,14 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/60">Reserves</span>
                 <span className="text-ink">{formatCents(capital.reserves)}</span>
               </div>
-              {financingMode !== "stackMethod" && (
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Arrears</span>
-                  <span className="text-ink">{formatCents(capital.arrears)}</span>
-                </div>
-              )}
+              {financingMode !== "stackMethod" &&
+                financingMode !== "traditional" &&
+                financingMode !== "sellerFinancing" && (
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Arrears</span>
+                    <span className="text-ink">{formatCents(capital.arrears)}</span>
+                  </div>
+                )}
               {financingMode !== "stackMethod" && financingMode !== "traditional" && (
                 <div className="flex justify-between">
                   <span className="text-ink/60">Upfront Insurance</span>
