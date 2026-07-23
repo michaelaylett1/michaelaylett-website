@@ -48,6 +48,14 @@ export interface ExportBalloonAnalysis {
   projectedLtv: number | null;
   equityCushion: number;
   meets70Ltv: boolean | null;
+  // Used only by the Stack Method refinance-shortfall rows/messaging
+  // below (spec: "Apply this only to the Stack Method section for
+  // now"). Always present at runtime on every structure's balloon
+  // analysis object (the component's BalloonAnalysis type computes
+  // them for all four), just not read outside Stack Method yet.
+  recommendedYears: number | null;
+  projectedLtvAtRecommended: number | null;
+  amortizationCeilingYears: number;
 }
 
 export interface ExportScopeOfWorkItem {
@@ -851,6 +859,126 @@ function balloonRows(
   return rows;
 }
 
+// Stack Method only (for now): mirrors stackEstimatedCashRequiredToRefinance()
+// / stackRefinanceMessage() in SharedHousingCalculator.tsx exactly, kept as
+// its own copy here so this module has no dependency back on the component
+// file (same pattern as lib/roiProjection.ts's amortization helper).
+function stackCashRequiredToRefinance(analysis: ExportBalloonAnalysis): number {
+  return Math.max(0, -analysis.equityCushion);
+}
+
+function stackRefinanceMessageLines(analysis: ExportBalloonAnalysis): string[] {
+  const ltvText = analysis.projectedLtv === null ? "N/A" : `${(analysis.projectedLtv * 100).toFixed(2)}%`;
+  const cashRequired = stackCashRequiredToRefinance(analysis);
+  const aboveSeventy = analysis.meets70Ltv === false;
+
+  if (aboveSeventy) {
+    const lines: string[] = [
+      `Warning: The projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}, which is above 70%. Based on a refinance limited to 70% LTV, the estimated refinance proceeds would be ${fmtDollarsCents(
+        money(analysis.maxDebtAt70Ltv)
+      )} and the projected debt due would be ${fmtDollarsCents(
+        money(analysis.projectedDebtAtBalloon)
+      )}. You may need to bring approximately ${fmtDollarsCents(
+        money(cashRequired)
+      )} to closing to pay off the balloon, before lender fees and other refinance costs.`,
+    ];
+    if (analysis.has70LtvContingency) {
+      lines.push("This financing structure does not currently satisfy the selected 70% LTV refinance contingency.");
+      if (analysis.recommendedYears !== null) {
+        lines.push(
+          `To reach a projected LTV of 70% or less under the current assumptions, the estimated minimum balloon term is ${
+            analysis.recommendedYears
+          } years, with a projected LTV of ${
+            analysis.projectedLtvAtRecommended === null ? "N/A" : `${(analysis.projectedLtvAtRecommended * 100).toFixed(2)}%`
+          }.`
+        );
+      } else {
+        lines.push(
+          `Projected LTV does not reach 70% within ${analysis.amortizationCeilingYears} years under the current assumptions.`
+        );
+      }
+    } else {
+      lines.push("No 70% LTV refinance contingency has been selected, but the projected refinance shortfall still exists.");
+    }
+    return lines;
+  }
+
+  const lines: string[] = [
+    analysis.has70LtvContingency
+      ? `Projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}, which is at or below the selected 70% LTV refinance contingency. Based on the current assumptions, a lender approving a 70% LTV refinance should provide enough proceeds to pay off the projected balloon balance without requiring additional cash from you at closing.`
+      : `Projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}. Based on the current assumptions, a refinance at 70% LTV should provide sufficient proceeds to pay off the projected balloon balance without additional payoff funds, subject to lender approval and refinance costs. No contractual 70% LTV refinance contingency has been selected.`,
+  ];
+  if (analysis.has70LtvContingency) {
+    lines.push(
+      "This is subject to lender approval, the future appraised value, property condition, income qualification, interest rates, refinance costs, and other lender requirements."
+    );
+  }
+  return lines;
+}
+
+// Stack Method only (for now): the relabeled/expanded row set from spec
+// (Maximum Refinance Proceeds at 70% LTV, Estimated Refinance Surplus /
+// Shortfall, Estimated Cash Required to Refinance, Recommended Minimum
+// Balloon Term when applicable, and the full warning/success message).
+function stackBalloonRows(analysis: ExportBalloonAnalysis, loanBalanceRows: { label: string; value: number }[]): KVRow[] {
+  const rows: KVRow[] = [
+    { label: "Balloon Exists", value: "Yes" },
+    { label: "Balloon Due in Years", value: analysis.balloonYears, format: FMT_YEARS },
+    { label: "Annual Property Appreciation", value: pct(analysis.appreciationPct), format: FMT_PERCENT },
+    { label: "Current Purchase Price", value: money(analysis.purchasePrice), format: FMT_CURRENCY },
+    {
+      label: "Projected Appraised Value at Balloon",
+      value: money(analysis.projectedAppraisedValue),
+      format: FMT_CURRENCY,
+    },
+  ];
+  for (const r of loanBalanceRows) {
+    rows.push({ label: r.label, value: money(r.value), format: FMT_CURRENCY });
+  }
+  rows.push(
+    { label: "Total Projected Debt at Balloon", value: money(analysis.projectedDebtAtBalloon), format: FMT_CURRENCY },
+    { label: "Maximum Refinance Proceeds at 70% LTV", value: money(analysis.maxDebtAt70Ltv), format: FMT_CURRENCY },
+    {
+      label: "Projected LTV at Balloon",
+      value: analysis.projectedLtv === null ? "N/A" : pct(analysis.projectedLtv * 100),
+      format: analysis.projectedLtv === null ? undefined : FMT_PERCENT,
+    },
+    {
+      label: "Estimated Refinance Surplus / Shortfall",
+      value: money(analysis.equityCushion),
+      format: FMT_CURRENCY,
+    },
+    {
+      label: "Estimated Cash Required to Refinance",
+      value: money(stackCashRequiredToRefinance(analysis)),
+      format: FMT_CURRENCY,
+    },
+    { label: "70% LTV Refinance Contingency", value: analysis.has70LtvContingency ? "Yes" : "No" }
+  );
+
+  const messageLines = stackRefinanceMessageLines(analysis);
+  rows.push({ label: "70% LTV Refinance Status", value: messageLines.join(" ") });
+
+  if (analysis.meets70Ltv === false && analysis.has70LtvContingency) {
+    if (analysis.recommendedYears !== null) {
+      rows.push(
+        { label: "Recommended Minimum Balloon Term", value: analysis.recommendedYears, format: FMT_YEARS },
+        {
+          label: "Projected LTV at Recommended Term",
+          value: analysis.projectedLtvAtRecommended === null ? "N/A" : pct(analysis.projectedLtvAtRecommended * 100),
+          format: analysis.projectedLtvAtRecommended === null ? undefined : FMT_PERCENT,
+        }
+      );
+    } else {
+      rows.push({
+        label: "Recommended Minimum Balloon Term",
+        value: `Projected LTV does not reach 70% within ${analysis.amortizationCeilingYears} years under the current assumptions.`,
+      });
+    }
+  }
+  return rows;
+}
+
 function activeBalloon(data: UnderwritingExportData): { rows: KVRow[] } | null {
   if (data.financingMode === "subjectTo" && data.subjectToBalloon) {
     return {
@@ -876,7 +1004,7 @@ function activeBalloon(data: UnderwritingExportData): { rows: KVRow[] } | null {
   }
   if (data.financingMode === "stackMethod" && data.stackBalloon) {
     return {
-      rows: balloonRows(data.stackBalloon, [
+      rows: stackBalloonRows(data.stackBalloon, [
         { label: "First-Position Loan Balance at Balloon", value: data.stackBalloon.bankBalanceAtBalloon },
         { label: "Seller-Finance Balance at Balloon", value: data.stackBalloon.sellerBalanceAtBalloon },
       ]),

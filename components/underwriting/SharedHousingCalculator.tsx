@@ -49,6 +49,7 @@ import {
   CheckCircle2,
   XCircle,
   HelpCircle,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   FileText,
@@ -426,11 +427,19 @@ function ZeroOutOfPocketBadge({
 // One row of a Balloon Refinance Analysis results panel: a label on the
 // left, its value right-aligned, matching the row style used throughout
 // the rest of the on-page calculator.
-function BalloonStatRow({ label, value }: { label: string; value: string }) {
+function BalloonStatRow({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
   return (
     <div className="flex items-center justify-between gap-4 py-2.5 text-sm">
       <span className="text-ink/70">{label}</span>
-      <span className="text-right">{value}</span>
+      <span className={`text-right ${valueClassName ?? ""}`}>{value}</span>
     </div>
   );
 }
@@ -455,6 +464,7 @@ function BalloonRefinanceAnalysisPanel({
   onToggleContingency,
   analysis,
   loanBalanceRows,
+  stackRefinanceDetail,
 }: {
   balloonExists: boolean;
   onToggleExists: (value: boolean) => void;
@@ -468,6 +478,11 @@ function BalloonRefinanceAnalysisPanel({
   onToggleContingency: (value: boolean) => void;
   analysis: BalloonAnalysis | null;
   loanBalanceRows: { label: string; value: number }[];
+  // Stack Method only (for now): swaps in the refinance-shortfall
+  // relabeled rows and the new red/green messaging logic below. Every
+  // other financing structure omits this prop (defaults to false/
+  // undefined) and renders exactly as before.
+  stackRefinanceDetail?: boolean;
 }) {
   return (
     <div className="mt-8 pt-6 border-t border-line-dark">
@@ -573,16 +588,75 @@ function BalloonRefinanceAnalysisPanel({
                   label="Total Projected Debt at Balloon"
                   value={formatCents(analysis.projectedDebtAtBalloon)}
                 />
-                <BalloonStatRow label="Maximum Debt at 70% LTV" value={formatCents(analysis.maxDebtAt70Ltv)} />
-                <BalloonStatRow
-                  label="Projected LTV at Balloon"
-                  value={analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
-                />
-                <BalloonStatRow label="Estimated Equity Cushion" value={formatCents(analysis.equityCushion)} />
+                {stackRefinanceDetail ? (
+                  <>
+                    <BalloonStatRow
+                      label="Maximum Refinance Proceeds at 70% LTV"
+                      value={formatCents(analysis.maxDebtAt70Ltv)}
+                    />
+                    <BalloonStatRow
+                      label="Projected LTV at Balloon"
+                      value={analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+                    />
+                    <BalloonStatRow
+                      label="Estimated Refinance Surplus / Shortfall"
+                      value={
+                        analysis.equityCushion < 0
+                          ? `-${formatCents(Math.abs(analysis.equityCushion))} shortfall`
+                          : `${formatCents(analysis.equityCushion)} surplus`
+                      }
+                      valueClassName={analysis.equityCushion < 0 ? "text-red-700 font-medium" : undefined}
+                    />
+                    <BalloonStatRow
+                      label="Estimated Cash Required to Refinance"
+                      value={formatCents(stackEstimatedCashRequiredToRefinance(analysis))}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <BalloonStatRow label="Maximum Debt at 70% LTV" value={formatCents(analysis.maxDebtAt70Ltv)} />
+                    <BalloonStatRow
+                      label="Projected LTV at Balloon"
+                      value={analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+                    />
+                    <BalloonStatRow label="Estimated Equity Cushion" value={formatCents(analysis.equityCushion)} />
+                  </>
+                )}
               </div>
 
               <div className="mt-4">
-                {!analysis.has70LtvContingency ? (
+                {stackRefinanceDetail ? (
+                  (() => {
+                    const message = stackRefinanceMessage(analysis);
+                    const isRed = message.tone === "red";
+                    return (
+                      <div
+                        className={
+                          isRed
+                            ? "rounded border-2 border-red-700 bg-red-50 p-4"
+                            : "rounded border border-green-700 bg-green-50 p-4"
+                        }
+                      >
+                        <div
+                          className={`text-sm leading-relaxed flex items-start gap-2 ${
+                            isRed ? "text-red-800" : "text-green-800"
+                          }`}
+                        >
+                          {isRed ? (
+                            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                          ) : (
+                            <CheckCircle2 size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                          )}
+                          <div className="space-y-2">
+                            {message.lines.map((line, i) => (
+                              <p key={i}>{line}</p>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : !analysis.has70LtvContingency ? (
                   <div className="rounded border border-ink/30 bg-paper-2 p-4">
                     <p className="text-sm text-ink/70 leading-relaxed inline-flex items-start gap-2">
                       <HelpCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
@@ -644,10 +718,13 @@ function BalloonRefinancePrintCard({
   analysis,
   loanBalanceRows,
   extraTextRows = [],
+  stackRefinanceDetail,
 }: {
   analysis: BalloonAnalysis;
   loanBalanceRows: { label: string; value: number }[];
   extraTextRows?: { label: string; value: string }[];
+  // Stack Method only (for now): see BalloonRefinanceAnalysisPanel above.
+  stackRefinanceDetail?: boolean;
 }) {
   const statusPass = analysis.has70LtvContingency && analysis.meets70Ltv === true;
   const statusFail = analysis.has70LtvContingency && analysis.meets70Ltv === false;
@@ -702,24 +779,80 @@ function BalloonRefinancePrintCard({
             {formatCents(analysis.projectedDebtAtBalloon)}
           </span>
         </div>
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60 min-w-0">Maximum Debt at 70% LTV</span>
-          <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.maxDebtAt70Ltv)}</span>
-        </div>
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60 min-w-0">Projected LTV at Balloon</span>
-          <span className="text-ink flex-shrink-0 text-right">
-            {analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
-          </span>
-        </div>
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60 min-w-0">Estimated Equity Cushion</span>
-          <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.equityCushion)}</span>
-        </div>
+        {stackRefinanceDetail ? (
+          <>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Maximum Refinance Proceeds at 70% LTV</span>
+              <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.maxDebtAt70Ltv)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Projected LTV at Balloon</span>
+              <span className="text-ink flex-shrink-0 text-right">
+                {analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Estimated Refinance Surplus / Shortfall</span>
+              <span className={`flex-shrink-0 text-right ${analysis.equityCushion < 0 ? "text-red-700" : "text-ink"}`}>
+                {analysis.equityCushion < 0
+                  ? `-${formatCents(Math.abs(analysis.equityCushion))} shortfall`
+                  : `${formatCents(analysis.equityCushion)} surplus`}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Estimated Cash Required to Refinance</span>
+              <span className="text-ink flex-shrink-0 text-right">
+                {formatCents(stackEstimatedCashRequiredToRefinance(analysis))}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Maximum Debt at 70% LTV</span>
+              <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.maxDebtAt70Ltv)}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Projected LTV at Balloon</span>
+              <span className="text-ink flex-shrink-0 text-right">
+                {analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-ink/60 min-w-0">Estimated Equity Cushion</span>
+              <span className="text-ink flex-shrink-0 text-right">{formatCents(analysis.equityCushion)}</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="mt-2 pt-2 border-t border-ink/10">
-        {!analysis.has70LtvContingency ? (
+        {stackRefinanceDetail ? (
+          (() => {
+            const message = stackRefinanceMessage(analysis);
+            const isRed = message.tone === "red";
+            return (
+              <div
+                className={
+                  isRed ? "rounded border-2 border-red-700 bg-red-50 p-2.5" : "rounded border border-green-700 bg-green-50 p-2.5"
+                }
+              >
+                <div className={`text-[9pt] leading-relaxed flex items-start gap-1.5 ${isRed ? "text-red-800" : "text-green-800"}`}>
+                  {isRed ? (
+                    <AlertTriangle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                  )}
+                  <div className="space-y-1">
+                    {message.lines.map((line, i) => (
+                      <p key={i}>{line}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        ) : !analysis.has70LtvContingency ? (
           <div className="rounded border border-ink/30 bg-paper-2 p-2.5">
             <p className="text-[9pt] text-ink/70 leading-relaxed inline-flex items-start gap-1.5">
               <HelpCircle size={13} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
@@ -1621,6 +1754,72 @@ function buildBalloonAnalysis({
   };
 }
 
+// Stack Method only (for now): the estimated cash the buyer would need
+// to bring to closing to pay off the balloon using a refinance capped
+// at 70% LTV. Never negative -- a surplus is not displayed as a
+// negative "requirement". Maximum Refinance Proceeds at 70% LTV is the
+// exact same figure as maxDebtAt70Ltv (Projected Appraised Value x
+// 70%); Estimated Refinance Surplus / Shortfall is the exact same
+// figure as equityCushion (Maximum Refinance Proceeds - Total
+// Projected Debt) -- both are simply relabeled/re-signed for this
+// structure's messaging rather than recalculated.
+function stackEstimatedCashRequiredToRefinance(analysis: BalloonAnalysis): number {
+  return Math.max(0, -analysis.equityCushion);
+}
+
+// Stack Method only (for now): builds the exact warning/success message
+// text (as an array of paragraphs) for the four combinations of 70%
+// LTV contingency (Yes/No) x projected LTV (above/at-or-below 70%), per
+// spec. Shared verbatim by the on-page panel, the printable report
+// card, and the Excel export, so the wording and dynamic values can
+// never drift between them.
+function stackRefinanceMessage(analysis: BalloonAnalysis): { tone: "red" | "green"; lines: string[] } {
+  const ltvText = analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100);
+  const cashRequired = stackEstimatedCashRequiredToRefinance(analysis);
+  const aboveSeventy = analysis.meets70Ltv === false;
+
+  if (aboveSeventy) {
+    const lines: string[] = [
+      `Warning: The projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}, which is above 70%. Based on a refinance limited to 70% LTV, the estimated refinance proceeds would be ${formatCents(
+        analysis.maxDebtAt70Ltv
+      )} and the projected debt due would be ${formatCents(
+        analysis.projectedDebtAtBalloon
+      )}. You may need to bring approximately ${formatCents(cashRequired)} to closing to pay off the balloon, before lender fees and other refinance costs.`,
+    ];
+    if (analysis.has70LtvContingency) {
+      lines.push("This financing structure does not currently satisfy the selected 70% LTV refinance contingency.");
+      if (analysis.recommendedYears !== null) {
+        lines.push(
+          `To reach a projected LTV of 70% or less under the current assumptions, the estimated minimum balloon term is ${
+            analysis.recommendedYears
+          } years, with a projected LTV of ${
+            analysis.projectedLtvAtRecommended === null ? "N/A" : formatPercent(analysis.projectedLtvAtRecommended * 100)
+          }.`
+        );
+      } else {
+        lines.push(
+          `Projected LTV does not reach 70% within ${analysis.amortizationCeilingYears} years under the current assumptions.`
+        );
+      }
+    } else {
+      lines.push("No 70% LTV refinance contingency has been selected, but the projected refinance shortfall still exists.");
+    }
+    return { tone: "red", lines };
+  }
+
+  const lines: string[] = [
+    analysis.has70LtvContingency
+      ? `Projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}, which is at or below the selected 70% LTV refinance contingency. Based on the current assumptions, a lender approving a 70% LTV refinance should provide enough proceeds to pay off the projected balloon balance without requiring additional cash from you at closing.`
+      : `Projected LTV at the ${analysis.balloonYears}-year balloon is ${ltvText}. Based on the current assumptions, a refinance at 70% LTV should provide sufficient proceeds to pay off the projected balloon balance without additional payoff funds, subject to lender approval and refinance costs. No contractual 70% LTV refinance contingency has been selected.`,
+  ];
+  if (analysis.has70LtvContingency) {
+    lines.push(
+      "This is subject to lender approval, the future appraised value, property condition, income qualification, interest rates, refinance costs, and other lender requirements."
+    );
+  }
+  return { tone: "green", lines };
+}
+
 // Turns a completed BalloonAnalysis into the exact same ordered list of
 // {label, value} rows used by the on-page Full Underwriting Breakdown,
 // the CSV export, and (restyled, not re-derived) the printable report --
@@ -1632,7 +1831,11 @@ function buildBalloonAnalysis({
 // the projected appraised value and the combined total.
 function balloonAnalysisRows(
   analysis: BalloonAnalysis,
-  loanBalanceRows: { label: string; value: number }[]
+  loanBalanceRows: { label: string; value: number }[],
+  // Stack Method only (for now): swaps in the refinance-shortfall
+  // relabeled rows/status text below. Every other financing structure
+  // omits this argument and gets the original rows unchanged.
+  stackRefinanceDetail?: boolean
 ): { label: string; value: string }[] {
   const rows: { label: string; value: string }[] = [
     { label: "Balloon Exists", value: "Yes" },
@@ -1644,8 +1847,53 @@ function balloonAnalysisRows(
   for (const row of loanBalanceRows) {
     rows.push({ label: row.label, value: formatCents(row.value) });
   }
+  rows.push({ label: "Total Projected Debt at Balloon", value: formatCents(analysis.projectedDebtAtBalloon) });
+
+  if (stackRefinanceDetail) {
+    rows.push(
+      { label: "Maximum Refinance Proceeds at 70% LTV", value: formatCents(analysis.maxDebtAt70Ltv) },
+      {
+        label: "Projected LTV at Balloon",
+        value: analysis.projectedLtv === null ? "N/A" : formatPercent(analysis.projectedLtv * 100),
+      },
+      {
+        label: "Estimated Refinance Surplus / Shortfall",
+        value:
+          analysis.equityCushion < 0
+            ? `-${formatCents(Math.abs(analysis.equityCushion))} shortfall`
+            : `${formatCents(analysis.equityCushion)} surplus`,
+      },
+      {
+        label: "Estimated Cash Required to Refinance",
+        value: formatCents(stackEstimatedCashRequiredToRefinance(analysis)),
+      },
+      { label: "70% LTV Refinance Contingency", value: analysis.has70LtvContingency ? "Yes" : "No" }
+    );
+    const message = stackRefinanceMessage(analysis);
+    rows.push({ label: "70% LTV Refinance Status", value: message.lines.join(" ") });
+    if (message.tone === "red" && analysis.has70LtvContingency) {
+      if (analysis.recommendedYears !== null) {
+        rows.push(
+          { label: "Recommended Minimum Balloon Term", value: `${analysis.recommendedYears} Years` },
+          {
+            label: "Projected LTV at Recommended Term",
+            value:
+              analysis.projectedLtvAtRecommended === null
+                ? "N/A"
+                : formatPercent(analysis.projectedLtvAtRecommended * 100),
+          }
+        );
+      } else {
+        rows.push({
+          label: "Recommended Minimum Balloon Term",
+          value: `Projected LTV does not reach 70% within ${analysis.amortizationCeilingYears} years under the current assumptions.`,
+        });
+      }
+    }
+    return rows;
+  }
+
   rows.push(
-    { label: "Total Projected Debt at Balloon", value: formatCents(analysis.projectedDebtAtBalloon) },
     { label: "Maximum Debt at 70% LTV", value: formatCents(analysis.maxDebtAt70Ltv) },
     {
       label: "Projected LTV at Balloon",
@@ -5137,10 +5385,14 @@ export default function SharedHousingCalculator() {
                   },
                   { label: "Adjusted Total Capital Required", value: formatWhole(results.totalCapitalRequired) },
                   ...(stackBalloonAnalysis
-                    ? balloonAnalysisRows(stackBalloonAnalysis, [
-                        { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
-                        { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
-                      ])
+                    ? balloonAnalysisRows(
+                        stackBalloonAnalysis,
+                        [
+                          { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
+                          { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+                        ],
+                        true
+                      )
                     : [{ label: "Balloon Exists", value: "No" }]),
                 ]
               : [
@@ -7613,6 +7865,7 @@ export default function SharedHousingCalculator() {
                       ]
                     : []
                 }
+                stackRefinanceDetail
               />
 
               {/* Bank Loan Amortization Schedule */}
@@ -9416,6 +9669,7 @@ export default function SharedHousingCalculator() {
                 { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
                 { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
               ]}
+              stackRefinanceDetail
             />
           )}
 
