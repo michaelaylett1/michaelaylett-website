@@ -237,6 +237,22 @@ function revokeMediaFile(file: { kind: "image" | "pdf"; dataUrl: string } | null
   }
 }
 
+// Determines the printable report's secondary-photo gallery grid --
+// everything after the large hero photo -- based on how many secondary
+// photos there are (0-4, since the hero always takes one of the 5
+// available Property Files slots). Each tier trades column count for
+// row height so every secondary photo stays as large as the layout can
+// afford: a single secondary photo gets one full-width row, two get a
+// two-column row, three get a three-column row, and four fill a
+// balanced 2x2 grid rather than being squeezed into one cramped row of
+// four tiny thumbnails.
+function getSecondaryGalleryLayout(secondaryCount: number): { gridClass: string; imgHeightClass: string } {
+  if (secondaryCount <= 1) return { gridClass: "grid-cols-1", imgHeightClass: "h-[2.1in]" };
+  if (secondaryCount === 2) return { gridClass: "grid-cols-2", imgHeightClass: "h-[1.7in]" };
+  if (secondaryCount === 3) return { gridClass: "grid-cols-3", imgHeightClass: "h-[1.35in]" };
+  return { gridClass: "grid-cols-2", imgHeightClass: "h-[1.4in]" };
+}
+
 // Determines the printable report's image-gallery grid based on how
 // many photos were uploaded: 1 = large featured image, 2 = side by
 // side, 3-4 = a balanced grid, 5-6 = a compact multi-row gallery.
@@ -7626,14 +7642,24 @@ export default function SharedHousingCalculator() {
                     />
                   </div>
                   {propertyImages.filter((f) => f.kind === "image").length > 1 && (
-                    <div className="mt-2 grid grid-cols-4 gap-2">
+                    <div
+                      className={`mt-2 grid gap-2 ${
+                        getSecondaryGalleryLayout(
+                          propertyImages.filter((f) => f.kind === "image").length - 1
+                        ).gridClass
+                      }`}
+                    >
                       {propertyImages
                         .filter((f) => f.kind === "image")
                         .slice(1, MAX_PROPERTY_FILES)
                         .map((img) => (
                           <div
                             key={img.id}
-                            className="rounded-lg overflow-hidden border border-ink/15 h-[0.75in]"
+                            className={`rounded-xl overflow-hidden border border-ink/15 ${
+                              getSecondaryGalleryLayout(
+                                propertyImages.filter((f) => f.kind === "image").length - 1
+                              ).imgHeightClass
+                            }`}
                           >
                             <img
                               src={img.dataUrl}
