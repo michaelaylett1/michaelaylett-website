@@ -54,6 +54,11 @@ import {
   FileText,
   ExternalLink,
 } from "lucide-react";
+import {
+  exportUnderwritingToExcel,
+  type ExportFinancingMode,
+  type UnderwritingExportData,
+} from "@/lib/underwritingExcelExport";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -1927,6 +1932,13 @@ export default function SharedHousingCalculator() {
   const [holdingCostsDraft, setHoldingCostsDraft] = useState(formatCents(0));
 
   const [breakdownOpen, setBreakdownOpen] = useState(false);
+
+  // Excel export: true only while the workbook (template fetch, for
+  // Subject To/Hybrid, plus population/serialization) is being built, so
+  // the "Export to Excel" button can show its own brief loading state
+  // and never be double-clicked into two overlapping downloads.
+  const [isExportingExcel, setIsExportingExcel] = useState(false);
+  const [exportExcelError, setExportExcelError] = useState("");
 
   // Property Address and Property Images stay local to the current
   // browser session: plain in-memory state only, never written to
@@ -4402,8 +4414,10 @@ export default function SharedHousingCalculator() {
     ]
   );
 
-  const csvSections = [inputsSection, ...breakdownSections];
-
+  // inputsSection above fed the old CSV export (now replaced by the
+  // Excel export in lib/underwritingExcelExport.ts, see
+  // handleExportExcel); the on-page "View Full Underwriting Breakdown"
+  // table reads directly from breakdownSections, unaffected.
 
   // Monthly Income and Expense Breakdown chart data for the printable
   // report: every figure that makes up the monthly cash flow picture, as
@@ -4513,24 +4527,175 @@ export default function SharedHousingCalculator() {
     financingMode,
   ]);
 
-  function downloadCsv() {
-    const lines: string[] = ["Section,Field,Value"];
-    for (const section of csvSections) {
-      for (const row of section.rows) {
-        const safeLabel = row.label.replace(/"/g, '""');
-        lines.push(`"${section.title}","${safeLabel}","${row.value}"`);
-      }
+  // Builds the complete export payload for the Excel workbook (see
+  // lib/underwritingExcelExport.ts) from the exact same state and
+  // `results`/derived values that drive the on-page UI, the printable
+  // report, and (previously) the CSV export -- so the workbook always
+  // matches the website exactly. Replaces the old CSV export entirely.
+  async function handleExportExcel() {
+    if (financingMode === "") {
+      setExportExcelError("Please select a Financing Structure before exporting.");
+      return;
     }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "shared-housing-underwriting-summary.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setExportExcelError("");
+    setIsExportingExcel(true);
+    try {
+      const tcLlc =
+        financingMode === "traditional"
+          ? { tcFee: capital.traditionalTcFee, llcFee: capital.traditionalLlcFee }
+          : financingMode === "subjectTo"
+            ? { tcFee: capital.subjectToTcFee, llcFee: capital.subjectToLlcFee }
+            : financingMode === "hybrid"
+              ? { tcFee: capital.hybridTcFee, llcFee: capital.hybridLlcFee }
+              : financingMode === "sellerFinancing"
+                ? { tcFee: capital.sellerFinancingTcFee, llcFee: capital.sellerFinancingLlcFee }
+                : { tcFee: capital.stackTcFee, llcFee: capital.stackLlcFee };
+
+      const exportData: UnderwritingExportData = {
+        financingMode: financingMode as ExportFinancingMode,
+        propertyAddress,
+        videoWalkthroughLink,
+
+        sharedBathBedrooms,
+        weeklySharedBathRent,
+        ensuiteBedrooms,
+        weeklyEnsuiteRent,
+        totalBedrooms: results.totalBedrooms,
+        grossMonthlyRent: results.grossMonthlyRent,
+
+        vacancyPct: percent.vacancyPct,
+        platformFeePct: percent.platformFeePct,
+        propertyManagementPct: percent.propertyManagementPct,
+        closingCostPct: percent.closingCostPct,
+        vacancyExpense: results.vacancyExpense,
+        effectiveRentAfterVacancy: results.effectiveRentAfterVacancy,
+        platformFees: results.platformFees,
+        propertyManagementFee: results.propertyManagementFee,
+        maintenanceMonthly: results.maintenanceMonthly,
+        utilitiesMonthly: results.utilitiesMonthly,
+        cleaningMonthly: results.cleaningMonthly,
+        lawnCareMonthly: results.lawnCareMonthly,
+        pestControlMonthly: results.pestControlMonthly,
+        totalMonthlyOperatingExpenses: results.totalMonthlyOperatingExpenses,
+        monthlyHousingPayment: results.monthlyHousingPayment,
+        housingPaymentLabel,
+        annualPropertyTaxes: financing.annualPropertyTaxes,
+        annualPropertyInsurance: financing.annualPropertyInsurance,
+
+        purchasePrice: financing.purchasePrice,
+        paymentType,
+
+        loanBalance: financing.loanBalance,
+        sellerDownPayment: financing.sellerDownPayment,
+        monthlyPayment: financing.monthlyPayment,
+        loanInterestRatePct: percent.loanInterestRatePct,
+        loanRemainingAmortizationYears,
+
+        traditionalDownPaymentPct: traditionalEffectiveDownPaymentPct,
+        traditionalDownPaymentAmount,
+        traditionalLoanBalance,
+        traditionalInterestRatePct: percent.traditionalInterestRatePct,
+        traditionalMonthlyPI,
+        traditionalClosingCostPct: percent.traditionalClosingCostPct,
+        traditionalClosingCosts,
+        traditionalLongTermRent,
+        traditionalSelectedLtvPct,
+
+        hybridExistingMortgageBalance: financing.hybridExistingMortgageBalance,
+        hybridExistingMortgageRatePct: percent.hybridExistingMortgageRatePct,
+        hybridExistingMortgageAmortizationYears,
+        hybridSubjectToPITI: financing.hybridSubjectToPITI,
+        hybridSuggestedSellerFinancedBalance,
+        hybridSellerFinancedBalanceUsed,
+        hybridSellerFinancedBalanceIsManual,
+        hybridSellerFinancePaymentsRequired,
+        hybridSellerFinanceRatePct: percent.hybridSellerFinanceRatePct,
+        hybridMonthlySellerFinancePayment,
+        hybridSellerFinanceRepaymentStructure,
+        hybridTotalMonthlyHousingPayment,
+
+        stackBankLoanAmount,
+        stackEffectiveBankLtvPct,
+        stackBankInterestRatePct: percent.stackBankInterestRatePct,
+        stackBankAmortizationYears,
+        stackBankMonthlyPI,
+        stackMonthlyBankPITI,
+        stackSellerFirstLoanBalance: financing.stackSellerFirstLoanBalance,
+        stackSellerSecondLien: financing.stackSellerSecondLien,
+        stackMiscLiens: financing.stackMiscLiens,
+        stackDownPaymentToSeller: financing.stackDownPaymentToSeller,
+        stackSellerFinancedBalance,
+        stackTotalDebtAtAcquisition,
+        stackLeverageRatioDecimal,
+        stackClosingCostPct: percent.stackClosingCostPct,
+        stackClosingCosts,
+        stackAgentCommissionPct: percent.stackAgentCommissionPct,
+        stackAgentFees,
+        stackTransactionalFundingFeePct: percent.stackTransactionalFundingFeePct,
+        stackTransactionalFundingFee,
+        stackCashToCloseLeg1,
+        stackSellerFinancePaymentsRequired,
+        stackSellerFinanceRatePct: percent.stackSellerFinanceRatePct,
+        stackSellerFinanceAmortizationYears,
+        stackMonthlySellerFinancePayment,
+        stackEstimatedBuyerCashAtClosing,
+        stackZeroOutOfPocket,
+        stackBaseCapitalRequired: results.stackBaseCapitalRequired,
+        stackAdjustedTotalCapitalRequired: results.totalCapitalRequired,
+
+        subjectToBalloon: subjectToBalloonAnalysis,
+        sellerFinancingBalloon: sellerFinancingBalloonAnalysis,
+        hybridBalloon: hybridBalloonAnalysis,
+        stackBalloon: stackBalloonAnalysis,
+
+        arrears: capital.arrears,
+        renovationCost: capital.renovationCost,
+        reserves: capital.reserves,
+        furniture: capital.furniture,
+        appliances: capital.appliances,
+        photos: capital.photos,
+        upfrontInsurance: capital.upfrontInsurance,
+        acquisitionFee: capital.acquisitionFee,
+        tcFee: tcLlc.tcFee,
+        llcFee: tcLlc.llcFee,
+        agentFee: capital.agentFee,
+        assignmentFee: capital.assignmentFee,
+        closingCosts: results.closingCosts,
+        downPaymentForCapital: results.downPaymentForCapital,
+        downPaymentLabel,
+        holdingCosts: results.holdingCosts,
+        totalCapitalRequired: results.totalCapitalRequired,
+        equity: results.equity,
+        equityIsNegative: results.equityIsNegative,
+        monthlyCashFlow: results.monthlyCashFlow,
+        annualCashFlow: results.annualCashFlow,
+        cashOnCashReturn: results.cashOnCashReturn,
+
+        scopeOfWorkItems: scopeOfWorkItems.map((item) => ({ name: item.name, cost: item.cost })),
+        scopeOfWorkTotal,
+        useItemizedScopeOfWork,
+
+        supportingDocuments: {
+          propertyFileCount: propertyImages.length,
+          propertyImageCount: propertyImages.filter((f) => f.kind === "image").length,
+          propertyPdfCount: propertyImages.filter((f) => f.kind === "pdf").length,
+          propertyFilenames: propertyImages.map((f) => f.name),
+          floorPlanUploaded: !!floorPlan,
+          floorPlanFileType: floorPlan ? (floorPlan.kind === "pdf" ? "PDF" : "Image") : null,
+          floorPlanFilename: floorPlan?.name || null,
+          padSplitUploaded: !!padSplitScreenshot,
+          padSplitFileType: padSplitScreenshot ? (padSplitScreenshot.kind === "pdf" ? "PDF" : "Image") : null,
+          padSplitFilename: padSplitScreenshot?.name || null,
+        },
+      };
+
+      await exportUnderwritingToExcel(exportData);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong while building the Excel file.";
+      setExportExcelError(message);
+    } finally {
+      setIsExportingExcel(false);
+    }
   }
 
   // Downloads the complete 360-payment Traditional Financing
@@ -4742,12 +4907,16 @@ export default function SharedHousingCalculator() {
           </button>
           <button
             type="button"
-            onClick={downloadCsv}
-            className="border border-line-dark px-4 py-2 eyebrow text-bone/70 hover:border-brass hover:text-bone transition-colors"
+            onClick={handleExportExcel}
+            disabled={isExportingExcel}
+            className="border border-line-dark px-4 py-2 eyebrow text-bone/70 hover:border-brass hover:text-bone transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Download Underwriting as CSV
+            {isExportingExcel ? "Building Excel File..." : "Export to Excel"}
           </button>
         </div>
+        {exportExcelError && (
+          <p className="print:hidden mt-2 text-xs text-red-400">{exportExcelError}</p>
+        )}
 
         {/* ---------------------------------------------------------- */}
         {/* Property Address                                            */}
