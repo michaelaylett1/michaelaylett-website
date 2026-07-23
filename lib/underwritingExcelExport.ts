@@ -575,7 +575,12 @@ function addRoiProjectionSheet(wb: ExcelJS.Workbook, data: UnderwritingExportDat
   disclosureCell.alignment = { wrapText: true };
   row += 2;
 
-  writeSummaryRow("Annual Appreciation Assumption", pct(data.roiAppreciationPct), FMT_PERCENT);
+  const appreciationAddr = writeSummaryRow("Annual Appreciation Assumption", pct(data.roiAppreciationPct), FMT_PERCENT);
+  // Marked as an input cell (yellow fill, matching every other editable
+  // assumption in this workbook): every year's Annual Appreciation and
+  // Beginning Property Value formula below references this cell, so
+  // changing it here recalculates the entire 30-year projection.
+  ws.getCell(appreciationAddr).fill = FILL_INPUT;
   const initialCapitalAddr = writeSummaryRow(
     "Initial Total Capital Required",
     money(data.totalCapitalRequired),
@@ -656,6 +661,7 @@ function addRoiProjectionSheet(wb: ExcelJS.Workbook, data: UnderwritingExportDat
   // ("Use the original Total Capital Required as the denominator for
   // all 30 years. Do not change the denominator each year.").
   const initialCapitalAbs = initialCapitalAddr.replace("C", "$C$");
+  const appreciationAbs = appreciationAddr.replace("C", "$C$");
 
   let dataRow = headerRow + 1;
   for (const yearRow of projection.rows) {
@@ -672,10 +678,29 @@ function addRoiProjectionSheet(wb: ExcelJS.Workbook, data: UnderwritingExportDat
       });
     }
 
-    ws.getCell(r, colIndex.begPropVal).value = money(yearRow.beginningPropertyValue);
-    fmtValue(ws.getCell(r, colIndex.begPropVal), FMT_CURRENCY);
-    ws.getCell(r, colIndex.appreciation).value = money(yearRow.annualAppreciation);
-    fmtValue(ws.getCell(r, colIndex.appreciation), FMT_CURRENCY);
+    // Beginning Property Value: Year 1 is the purchase price (a plain
+    // value); every later year references the PRIOR row's Ending
+    // Property Value formula, so the whole chain recalculates whenever
+    // the appreciation input cell changes. Annual Appreciation is always
+    // a formula (Beginning Property Value x the appreciation input
+    // cell) -- never a hard-coded percentage -- so editing that one
+    // input cell cascades through every year's appreciation, ending
+    // property value, next year's beginning property value, total
+    // return, annual ROI, cumulative return/ROI, and estimated equity.
+    const begPropCell = ws.getCell(r, colIndex.begPropVal);
+    if (r === headerRow + 1) {
+      begPropCell.value = money(yearRow.beginningPropertyValue);
+    } else {
+      begPropCell.value = { formula: `${colLetter(colIndex.endPropVal)}${r - 1}` } as ExcelJS.CellFormulaValue;
+    }
+    fmtValue(begPropCell, FMT_CURRENCY);
+
+    const appreciationCell = ws.getCell(r, colIndex.appreciation);
+    appreciationCell.value = {
+      formula: `${colLetter(colIndex.begPropVal)}${r}*${appreciationAbs}`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(appreciationCell, FMT_CURRENCY);
+
     const endPropCell = ws.getCell(r, colIndex.endPropVal);
     endPropCell.value = { formula: `${colLetter(colIndex.begPropVal)}${r}+${colLetter(colIndex.appreciation)}${r}` } as ExcelJS.CellFormulaValue;
     fmtValue(endPropCell, FMT_CURRENCY);

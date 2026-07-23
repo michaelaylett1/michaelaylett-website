@@ -178,6 +178,19 @@ function parseTypedPercent(raw: string): number {
   return Math.min(100, n);
 }
 
+// Appreciation-rate specific parser: unlike every other percent field on
+// this page, Annual Property Appreciation must allow negative values (a
+// property can depreciate), so this keeps a leading "-" instead of
+// stripping it, and clamps to a realistic +/-20% band rather than 0-100.
+function parseSignedPercent(raw: string, min: number, max: number): number {
+  const isNegative = /^\s*-/.test(raw);
+  const cleaned = raw.replace(/[^0-9.]/g, "");
+  if (!cleaned) return 0;
+  const n = Number(cleaned) * (isNegative ? -1 : 1);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(max, Math.max(min, n));
+}
+
 // ---------------------------------------------------------------------
 // Property Images: type, client-side processing, and print gallery
 // layout. Everything here runs entirely in the browser; no image is
@@ -959,6 +972,7 @@ function RoiProjectionTable({ rows, dense }: { rows: RoiYearRow[]; dense?: boole
 function RoiProjectionPanel({
   isOpen,
   onToggleOpen,
+  appreciationPct,
   appreciationDraft,
   onAppreciationChange,
   onAppreciationBlur,
@@ -975,6 +989,7 @@ function RoiProjectionPanel({
 }: {
   isOpen: boolean;
   onToggleOpen: () => void;
+  appreciationPct: number;
   appreciationDraft: string;
   onAppreciationChange: (raw: string) => void;
   onAppreciationBlur: () => void;
@@ -992,7 +1007,11 @@ function RoiProjectionPanel({
   return (
     <div className="print:hidden mt-10 pt-8 border-t border-line">
       <p className="eyebrow text-brass mb-1">30-Year ROI Projection</p>
-      <p className="text-xs text-ink/50 leading-relaxed mb-5 max-w-3xl">{ROI_DISCLOSURE_TEXT}</p>
+      <p className="text-sm text-bone leading-[1.45] mb-2 max-w-3xl">{ROI_DISCLOSURE_TEXT}</p>
+      <p className="text-sm text-bone/80 leading-[1.45] mb-5 max-w-3xl">
+        Annual Appreciation Assumption:{" "}
+        <span className="text-bone font-medium">{formatPercent(appreciationPct)}</span>
+      </p>
 
       <RoiSummaryCards projection={projection} />
 
@@ -1010,11 +1029,11 @@ function RoiProjectionPanel({
           <div className="grid sm:grid-cols-2 gap-5 max-w-2xl">
             <PercentField
               id="roiAppreciationPct"
-              label="Annual Appreciation"
+              label="Annual Property Appreciation"
               draft={appreciationDraft}
               onChange={onAppreciationChange}
               onBlur={onAppreciationBlur}
-              info="Compound annual appreciation. Defaults to 2%, fully editable."
+              info="Compound annual appreciation. Shares the same assumption as Balloon Refinance Analysis above -- editing it here or there updates both. Decimals and negative values allowed (-20 to 20). Defaults to 2%."
             />
           </div>
 
@@ -1129,7 +1148,7 @@ function RoiProjectionPrintSection({
         <TrendingUp size={14} className="text-brass" />
         <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">30-Year ROI Projection</p>
       </div>
-      <p className="text-[8pt] text-ink/60 leading-relaxed mb-2 max-w-2xl">{ROI_DISCLOSURE_TEXT}</p>
+      <p className="text-[8.5pt] text-ink leading-relaxed mb-2 max-w-2xl">{ROI_DISCLOSURE_TEXT}</p>
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9pt] mb-3">
         <div className="flex justify-between gap-3">
           <span className="text-ink/60 min-w-0">Annual Appreciation Assumption</span>
@@ -1921,27 +1940,19 @@ type PercentKey =
   // Hybrid's existing subject-to first mortgage rate, used the same way
   // -- only for its Balloon Refinance Analysis.
   | "hybridExistingMortgageRatePct"
-  // Balloon Refinance Analysis: Annual Property Appreciation, one
-  // independently editable field per financing structure (each
-  // structure's balloon terms are otherwise entirely independent).
+  // Annual Property Appreciation: ONE shared assumption per financing
+  // structure, used by both Balloon Refinance Analysis and the 30-Year
+  // ROI Projection -- editing it in either place updates both, since
+  // both features read/write this exact same key. Allows negative
+  // values (see parseSignedPercent / APPRECIATION_PERCENT_KEYS below).
   | "stackBalloonAppreciationPct"
   | "subjectToBalloonAppreciationPct"
   | "sellerFinancingBalloonAppreciationPct"
   | "hybridBalloonAppreciationPct"
-  // 30-Year ROI Projection: Annual Appreciation, one independently
-  // editable field per financing structure (kept separate from the
-  // Balloon Refinance Analysis's own appreciation fields above, exactly
-  // like every other assumption in this calculator -- editing one
-  // structure's ROI appreciation assumption never affects another
-  // structure's, and never affects that same structure's balloon
-  // appreciation assumption either). Defaults to 2% for all five
-  // structures, including Traditional Financing, which has no balloon
-  // feature but still gets its own 30-Year ROI Projection.
-  | "traditionalRoiAppreciationPct"
-  | "subjectToRoiAppreciationPct"
-  | "sellerFinancingRoiAppreciationPct"
-  | "hybridRoiAppreciationPct"
-  | "stackRoiAppreciationPct";
+  // Traditional Financing has no balloon feature, so it gets its own
+  // dedicated Annual Property Appreciation assumption, used only by its
+  // 30-Year ROI Projection.
+  | "traditionalAppreciationPct";
 
 const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   vacancyPct: 10,
@@ -1964,12 +1975,20 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   subjectToBalloonAppreciationPct: 2,
   sellerFinancingBalloonAppreciationPct: 2,
   hybridBalloonAppreciationPct: 2,
-  traditionalRoiAppreciationPct: 2,
-  subjectToRoiAppreciationPct: 2,
-  sellerFinancingRoiAppreciationPct: 2,
-  hybridRoiAppreciationPct: 2,
-  stackRoiAppreciationPct: 2,
+  traditionalAppreciationPct: 2,
 };
+
+// The subset of PercentKey that represent an Annual Property
+// Appreciation assumption: these allow negative values (a property can
+// depreciate) and clamp to +/-20% instead of the 0-100% used by every
+// other percent field on this page. See parseSignedPercent above.
+const APPRECIATION_PERCENT_KEYS = new Set<PercentKey>([
+  "stackBalloonAppreciationPct",
+  "subjectToBalloonAppreciationPct",
+  "sellerFinancingBalloonAppreciationPct",
+  "hybridBalloonAppreciationPct",
+  "traditionalAppreciationPct",
+]);
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
 // "Cleaning and Lawn Care" field: three separate, fully editable
@@ -2668,11 +2687,16 @@ export default function SharedHousingCalculator() {
 
   function handlePercentChange(key: PercentKey, raw: string) {
     setPercentDraft((prev) => ({ ...prev, [key]: raw }));
-    setPercent((prev) => ({ ...prev, [key]: parseTypedPercent(raw) }));
+    setPercent((prev) => ({
+      ...prev,
+      [key]: APPRECIATION_PERCENT_KEYS.has(key) ? parseSignedPercent(raw, -20, 20) : parseTypedPercent(raw),
+    }));
   }
   function handlePercentBlur(key: PercentKey) {
     setPercent((prev) => {
-      const clamped = Math.min(100, Math.max(0, prev[key]));
+      const clamped = APPRECIATION_PERCENT_KEYS.has(key)
+        ? Math.min(20, Math.max(-20, prev[key]))
+        : Math.min(100, Math.max(0, prev[key]));
       setPercentDraft((d) => ({ ...d, [key]: clamped.toFixed(2) }));
       return { ...prev, [key]: clamped };
     });
@@ -4424,17 +4448,21 @@ export default function SharedHousingCalculator() {
     stackRefinanceRateUsed,
   ]);
 
+  // ONE shared Annual Property Appreciation assumption per structure --
+  // the same percent key used by Balloon Refinance Analysis above, so
+  // editing it in either place updates both features everywhere
+  // (website, print, and Excel export).
   const activeRoiAppreciationPct =
     financingMode === "traditional"
-      ? percent.traditionalRoiAppreciationPct
+      ? percent.traditionalAppreciationPct
       : financingMode === "subjectTo"
-        ? percent.subjectToRoiAppreciationPct
+        ? percent.subjectToBalloonAppreciationPct
         : financingMode === "sellerFinancing"
-          ? percent.sellerFinancingRoiAppreciationPct
+          ? percent.sellerFinancingBalloonAppreciationPct
           : financingMode === "hybrid"
-            ? percent.hybridRoiAppreciationPct
+            ? percent.hybridBalloonAppreciationPct
             : financingMode === "stackMethod"
-              ? percent.stackRoiAppreciationPct
+              ? percent.stackBalloonAppreciationPct
               : 2;
 
   // The single source of truth for every 30-Year ROI Projection figure
@@ -5655,27 +5683,27 @@ export default function SharedHousingCalculator() {
   // near-identical blocks five times.
   const roiAppreciationDraft =
     financingMode === "traditional"
-      ? percentDraft.traditionalRoiAppreciationPct
+      ? percentDraft.traditionalAppreciationPct
       : financingMode === "subjectTo"
-        ? percentDraft.subjectToRoiAppreciationPct
+        ? percentDraft.subjectToBalloonAppreciationPct
         : financingMode === "sellerFinancing"
-          ? percentDraft.sellerFinancingRoiAppreciationPct
+          ? percentDraft.sellerFinancingBalloonAppreciationPct
           : financingMode === "hybrid"
-            ? percentDraft.hybridRoiAppreciationPct
+            ? percentDraft.hybridBalloonAppreciationPct
             : financingMode === "stackMethod"
-              ? percentDraft.stackRoiAppreciationPct
+              ? percentDraft.stackBalloonAppreciationPct
               : "2.00";
   const roiAppreciationKey: PercentKey | null =
     financingMode === "traditional"
-      ? "traditionalRoiAppreciationPct"
+      ? "traditionalAppreciationPct"
       : financingMode === "subjectTo"
-        ? "subjectToRoiAppreciationPct"
+        ? "subjectToBalloonAppreciationPct"
         : financingMode === "sellerFinancing"
-          ? "sellerFinancingRoiAppreciationPct"
+          ? "sellerFinancingBalloonAppreciationPct"
           : financingMode === "hybrid"
-            ? "hybridRoiAppreciationPct"
+            ? "hybridBalloonAppreciationPct"
             : financingMode === "stackMethod"
-              ? "stackRoiAppreciationPct"
+              ? "stackBalloonAppreciationPct"
               : null;
   const roiRefinanceControls =
     financingMode === "subjectTo"
@@ -8577,6 +8605,7 @@ export default function SharedHousingCalculator() {
           <RoiProjectionPanel
             isOpen={roiProjectionOpen}
             onToggleOpen={() => setRoiProjectionOpen((v) => !v)}
+            appreciationPct={activeRoiAppreciationPct}
             appreciationDraft={roiAppreciationDraft}
             onAppreciationChange={(raw) => roiAppreciationKey && handlePercentChange(roiAppreciationKey, raw)}
             onAppreciationBlur={() => roiAppreciationKey && handlePercentBlur(roiAppreciationKey)}
