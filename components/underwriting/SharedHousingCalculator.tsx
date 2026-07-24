@@ -54,10 +54,14 @@ import {
   ArrowRight,
   FileText,
   ExternalLink,
+  Bus,
+  RefreshCw,
+  Loader2,
 } from "lucide-react";
 import {
   exportUnderwritingToExcel,
   type ExportFinancingMode,
+  type ExportTransitResult,
   type UnderwritingExportData,
 } from "@/lib/underwritingExcelExport";
 import {
@@ -69,6 +73,17 @@ import {
   type RoiProjectionResult,
   type RoiYearRow,
 } from "@/lib/roiProjection";
+import { evaluateWalkResult, looksLikeCompleteAddress, formatMaxWalkLabel } from "@/lib/transit/evaluate";
+import type {
+  TransitDataSource,
+  TransitLookupResult,
+  TransitLookupResponseBody,
+  TransitMaxWalkMode,
+  TransitMaxWalkSetting,
+  TransitResultStatus,
+  TransitResultUsed,
+  TransitStopCandidate,
+} from "@/lib/transit/types";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -2166,12 +2181,13 @@ const CAPITAL_DEFAULTS: Record<CapitalKey, number> = {
   // LLC Entity Formation Cost pair, so editing one structure's fees
   // never affects another's, and each fee is included exactly once in
   // that structure's Total Capital Required. Stack Method is the only
-  // structure with a $2,500 TC Fee default; every other structure
-  // defaults to $1,500. LLC Entity Formation Cost defaults to $1,000
-  // everywhere.
+  // structure with a $2,500 TC Fee default; Traditional Financing
+  // defaults its TC Fee to $0 (still fully editable); every other
+  // structure defaults to $1,500. LLC Entity Formation Cost defaults to
+  // $1,000 everywhere.
   stackTcFee: 2500,
   stackLlcFee: 1000,
-  traditionalTcFee: 1500,
+  traditionalTcFee: 0,
   traditionalLlcFee: 1000,
   subjectToTcFee: 1500,
   subjectToLlcFee: 1000,
@@ -2746,6 +2762,517 @@ function PropertyTaxPrintRows({
 }
 
 // ---------------------------------------------------------------------
+// Transit and Bus Stop Access: on-page section. Purely presentational
+// like PropertyTaxSection above -- all state, the actual fetch to
+// /api/transit/lookup, and every handler live on the parent component.
+// Rendered exactly once (Property Address itself is a single,
+// financing-mode-independent field, not duplicated per structure), which
+// is what satisfies "apply consistently across all five financing
+// structures": the section is always visible regardless of which
+// structure is selected.
+// ---------------------------------------------------------------------
+function transitStatusColors(status: TransitResultStatus | null): {
+  border: string;
+  bg: string;
+  text: string;
+} {
+  switch (status) {
+    case "pass":
+      return { border: "border-emerald-600/40", bg: "bg-emerald-50", text: "text-emerald-800" };
+    case "caution":
+      return { border: "border-amber-500/40", bg: "bg-amber-50", text: "text-amber-800" };
+    case "fail":
+      return { border: "border-red-600/40", bg: "bg-red-50", text: "text-red-800" };
+    default:
+      return { border: "border-line-dark", bg: "bg-paper-2", text: "text-ink/70" };
+  }
+}
+
+function transitStatusLabel(status: TransitResultStatus | null): string {
+  switch (status) {
+    case "pass":
+      return "PASS";
+    case "caution":
+      return "CAUTION";
+    case "fail":
+      return "FAIL";
+    default:
+      return "NOT VERIFIED";
+  }
+}
+
+/** Google Maps "get directions" URL -- no API key required or exposed. */
+function buildWalkingRouteMapsUrl(originAddress: string, stop: TransitStopCandidate): string {
+  const destination =
+    stop.latitude && stop.longitude ? `${stop.latitude},${stop.longitude}` : stop.name;
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    originAddress
+  )}&destination=${encodeURIComponent(destination)}&travelmode=walking`;
+}
+
+/** Google Maps "view this place" URL -- uses the Google place_id when
+ * available (Google Maps data source) for a precise match; falls back to
+ * a coordinate search otherwise (OpenStreetMap data source). No API key
+ * required or exposed either way. */
+function buildBusStopMapsUrl(stop: TransitStopCandidate, dataSource: TransitDataSource): string {
+  const query = encodeURIComponent(`${stop.name} ${stop.latitude},${stop.longitude}`);
+  if (dataSource === "Google Maps") {
+    return `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(
+      stop.id
+    )}`;
+  }
+  return `https://www.google.com/maps/search/?api=1&query=${query}`;
+}
+
+function TransitStopSummaryLines({ stop }: { stop: TransitStopCandidate }) {
+  return (
+    <>
+      <div className="flex justify-between gap-3">
+        <span className="text-ink/60">Walking Distance</span>
+        <span className="text-ink font-medium text-right">
+          {stop.hasValidWalkingRoute ? `${stop.walkingMiles} miles` : "Unavailable"}
+        </span>
+      </div>
+      <div className="flex justify-between gap-3">
+        <span className="text-ink/60">Estimated Walking Time</span>
+        <span className="text-ink font-medium text-right">
+          {stop.hasValidWalkingRoute ? `${stop.walkingMinutes} minutes` : "Unavailable"}
+        </span>
+      </div>
+      <div className="flex justify-between gap-3">
+        <span className="text-ink/60">Straight-Line Distance</span>
+        <span className="text-ink/70 text-right">{stop.straightLineMiles} miles (secondary)</span>
+      </div>
+      {stop.busRoutes.length > 0 && (
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60">Bus Routes</span>
+          <span className="text-ink font-medium text-right">{stop.busRoutes.join(", ")}</span>
+        </div>
+      )}
+      {stop.transitAgency && (
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60">Transit Agency</span>
+          <span className="text-ink font-medium text-right">{stop.transitAgency}</span>
+        </div>
+      )}
+      {stop.address && (
+        <div className="flex justify-between gap-3">
+          <span className="text-ink/60">Stop Address</span>
+          <span className="text-ink text-right break-words">{stop.address}</span>
+        </div>
+      )}
+      <div className="flex justify-between gap-3">
+        <span className="text-ink/60">Verification</span>
+        <span className="text-ink/70 text-right">
+          {stop.busServiceConfidence === "confirmed"
+            ? "Bus service confirmed by provider data"
+            : "Bus service should be independently verified"}
+        </span>
+      </div>
+    </>
+  );
+}
+
+function TransitAndBusStopAccessSection({
+  address,
+  maxWalkMode,
+  onMaxWalkModeChange,
+  maxWalkTimeSelection,
+  onMaxWalkTimeSelectionChange,
+  maxWalkTimeCustomDraft,
+  onMaxWalkTimeCustomChange,
+  maxWalkDistanceSelection,
+  onMaxWalkDistanceSelectionChange,
+  maxWalkDistanceCustomDraft,
+  onMaxWalkDistanceCustomChange,
+  effectiveMaxWalkSetting,
+  onCheckClick,
+  onRefreshClick,
+  loading,
+  error,
+  result,
+  outdated,
+  showAlternates,
+  onToggleAlternates,
+  overrideStatus,
+  onOverrideChange,
+  notes,
+  onNotesChange,
+  displayStatus,
+  displayMessage,
+}: {
+  address: string;
+  maxWalkMode: TransitMaxWalkMode;
+  onMaxWalkModeChange: (mode: TransitMaxWalkMode) => void;
+  maxWalkTimeSelection: string;
+  onMaxWalkTimeSelectionChange: (value: string) => void;
+  maxWalkTimeCustomDraft: string;
+  onMaxWalkTimeCustomChange: (raw: string) => void;
+  maxWalkDistanceSelection: string;
+  onMaxWalkDistanceSelectionChange: (value: string) => void;
+  maxWalkDistanceCustomDraft: string;
+  onMaxWalkDistanceCustomChange: (raw: string) => void;
+  effectiveMaxWalkSetting: TransitMaxWalkSetting;
+  onCheckClick: () => void;
+  onRefreshClick: () => void;
+  loading: boolean;
+  error: string | null;
+  result: TransitLookupResult | null;
+  outdated: boolean;
+  showAlternates: boolean;
+  onToggleAlternates: () => void;
+  overrideStatus: TransitResultUsed;
+  onOverrideChange: (value: TransitResultUsed) => void;
+  notes: string;
+  onNotesChange: (value: string) => void;
+  displayStatus: TransitResultStatus | null;
+  displayMessage: string;
+}) {
+  const colors = transitStatusColors(displayStatus);
+  const nearest = result?.nearestStop ?? null;
+
+  return (
+    <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
+      <p className="eyebrow text-brass mb-1">Transit and Bus Stop Access</p>
+      <p className="text-sm text-ink/70 leading-[1.45] mb-5 max-w-2xl">
+        Determines the nearest usable bus stop within walking distance of the property, once a
+        complete Property Address is entered above.
+      </p>
+
+      {/* Maximum Walking Distance setting */}
+      <div className="grid sm:grid-cols-2 gap-5 mb-5">
+        <div>
+          <label htmlFor="transitMaxWalkMode" className="block mb-2">
+            <FieldLabel info="Choose whether the pass/fail threshold is based on walking time or walking distance.">
+              Maximum Walking Distance to Bus Stop
+            </FieldLabel>
+          </label>
+          <select
+            id="transitMaxWalkMode"
+            value={maxWalkMode}
+            onChange={(e) => onMaxWalkModeChange(e.target.value as TransitMaxWalkMode)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            <option value="time">Walking Time</option>
+            <option value="distance">Walking Distance</option>
+          </select>
+        </div>
+        {maxWalkMode === "time" ? (
+          <div>
+            <label htmlFor="transitMaxWalkTimeSelect" className="block mb-2">
+              <FieldLabel>Maximum Walking Time</FieldLabel>
+            </label>
+            <select
+              id="transitMaxWalkTimeSelect"
+              value={maxWalkTimeSelection}
+              onChange={(e) => onMaxWalkTimeSelectionChange(e.target.value)}
+              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+            >
+              <option value="5">5 minutes</option>
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="20">20 minutes</option>
+              <option value="custom">Custom</option>
+            </select>
+            {maxWalkTimeSelection === "custom" && (
+              <input
+                type="text"
+                inputMode="numeric"
+                value={maxWalkTimeCustomDraft}
+                onChange={(e) => onMaxWalkTimeCustomChange(e.target.value)}
+                placeholder="Custom minutes"
+                className="mt-2 w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+              />
+            )}
+          </div>
+        ) : (
+          <div>
+            <label htmlFor="transitMaxWalkDistanceSelect" className="block mb-2">
+              <FieldLabel>Maximum Walking Distance</FieldLabel>
+            </label>
+            <select
+              id="transitMaxWalkDistanceSelect"
+              value={maxWalkDistanceSelection}
+              onChange={(e) => onMaxWalkDistanceSelectionChange(e.target.value)}
+              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+            >
+              <option value="0.25">0.25 miles</option>
+              <option value="0.50">0.50 miles</option>
+              <option value="0.75">0.75 miles</option>
+              <option value="1.00">1.00 mile</option>
+              <option value="custom">Custom</option>
+            </select>
+            {maxWalkDistanceSelection === "custom" && (
+              <input
+                type="text"
+                inputMode="decimal"
+                value={maxWalkDistanceCustomDraft}
+                onChange={(e) => onMaxWalkDistanceCustomChange(e.target.value)}
+                placeholder="Custom miles"
+                className="mt-2 w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+              />
+            )}
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-ink/50 leading-relaxed mb-5">
+        The standard co-living/PadSplit underwriting benchmark is generally a bus stop within a
+        15-minute walk. Changing this setting re-checks the existing result instantly and does not
+        run a new search.
+      </p>
+
+      {/* Lookup button + loading state */}
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <button
+          type="button"
+          onClick={onCheckClick}
+          disabled={loading}
+          className="inline-flex items-center gap-2 border border-line-dark px-4 py-2.5 text-sm text-ink hover:border-brass transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {loading && <Loader2 size={15} className="animate-spin" aria-hidden="true" />}
+          Check Nearest Bus Stop
+        </button>
+        {result && (
+          <button
+            type="button"
+            onClick={onRefreshClick}
+            disabled={loading}
+            className="inline-flex items-center gap-2 border border-line-dark px-4 py-2.5 text-sm text-ink/70 hover:border-brass hover:text-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+            Refresh Transit Data
+          </button>
+        )}
+        <span role="status" aria-live="polite" className="text-sm text-ink/60">
+          {loading ? "Checking nearby bus stops..." : ""}
+        </span>
+      </div>
+
+      {outdated && !loading && (
+        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
+          Transit lookup needs to be refreshed. The address changed since this result was checked.
+        </p>
+      )}
+
+      {error && !loading && (
+        <p className="mb-5 border border-red-600/40 bg-red-50 text-red-800 text-sm px-4 py-3">
+          {error}
+        </p>
+      )}
+
+      {/* Result card */}
+      {result && (
+        <div className={`border ${colors.border} ${colors.bg} p-5 sm:p-6 mb-5`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <p className={`font-semibold ${colors.text}`}>{transitStatusLabel(displayStatus)}</p>
+            <span className="text-xs text-ink/50">
+              Maximum Allowed: {formatMaxWalkLabel(effectiveMaxWalkSetting)}
+            </span>
+          </div>
+          <p className={`text-sm leading-relaxed mb-4 ${colors.text}`}>{displayMessage}</p>
+
+          {nearest ? (
+            <>
+              <p className="font-medium text-ink mb-2 break-words">{nearest.name}</p>
+              <div className="space-y-1.5 text-sm mb-4">
+                <TransitStopSummaryLines stop={nearest} />
+              </div>
+              <div className="flex flex-wrap gap-3 mb-1">
+                <a
+                  href={buildWalkingRouteMapsUrl(result.matchedAddress, nearest)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-brass hover:underline"
+                >
+                  View Walking Route
+                  <ExternalLink size={13} aria-hidden="true" />
+                </a>
+                <a
+                  href={buildBusStopMapsUrl(nearest, result.dataSource)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-sm text-brass hover:underline"
+                >
+                  View Bus Stop
+                  <ExternalLink size={13} aria-hidden="true" />
+                </a>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-ink/60">No candidate stop is available to display.</p>
+          )}
+
+          <div className="grid sm:grid-cols-2 gap-2 mt-4 pt-4 border-t border-ink/10 text-xs text-ink/50">
+            <span>Data Source: {result.dataSource}</span>
+            <span>
+              Date Checked:{" "}
+              {new Date(result.dateChecked).toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </span>
+          </div>
+
+          {result.alternates.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-ink/10">
+              <button
+                type="button"
+                onClick={onToggleAlternates}
+                className="text-sm text-brass hover:underline"
+              >
+                {showAlternates ? "Hide Other Nearby Bus Stops" : "View Other Nearby Bus Stops"}
+              </button>
+              {showAlternates && (
+                <div className="mt-3 space-y-4">
+                  {result.alternates.map((alt) => (
+                    <div key={alt.id} className="border border-line-dark bg-white p-3">
+                      <p className="font-medium text-ink mb-1.5 break-words">{alt.name}</p>
+                      <div className="space-y-1 text-xs">
+                        <TransitStopSummaryLines stop={alt} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Manual override */}
+      <div className="grid sm:grid-cols-2 gap-5 mb-2">
+        <div>
+          <label htmlFor="transitOverrideStatus" className="block mb-2">
+            <FieldLabel info="The automated result above is always preserved. Selecting anything other than Use Automatic Result only changes which status is used elsewhere in the underwriting (summary, print, Excel).">
+              Transit Result Used in Underwriting
+            </FieldLabel>
+          </label>
+          <select
+            id="transitOverrideStatus"
+            value={overrideStatus}
+            onChange={(e) => onOverrideChange(e.target.value as TransitResultUsed)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            <option value="automatic">Use Automatic Result</option>
+            <option value="pass">Pass</option>
+            <option value="fail">Fail</option>
+            <option value="notVerified">Not Verified</option>
+            <option value="notApplicable">Not Applicable</option>
+          </select>
+          <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
+            Transit Status Source: {overrideStatus === "automatic" ? "Automated Result" : "Manual Override"}
+          </p>
+        </div>
+        <div>
+          <label htmlFor="transitNotes" className="block mb-2">
+            <FieldLabel>Transit Notes</FieldLabel>
+          </label>
+          <textarea
+            id="transitNotes"
+            value={notes}
+            onChange={(e) => onNotesChange(e.target.value)}
+            rows={3}
+            placeholder="e.g. Bus stop has no sidewalk access, route requires crossing a major highway..."
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass resize-y"
+          />
+        </div>
+      </div>
+
+      <p className="mt-4 text-xs text-ink/50 leading-relaxed max-w-2xl">
+        Walking time and distance are estimates. Verify sidewalks, road crossings, lighting,
+        terrain, accessibility, stop activity, route schedules, and current bus service before
+        acquiring the property.
+      </p>
+    </div>
+  );
+}
+
+// The printable-report counterpart to TransitAndBusStopAccessSection.
+// Never includes lookup buttons, dropdown controls, loading indicators,
+// resolved API errors, API keys, or raw provider responses (spec section
+// 21) -- only the resolved figures.
+function TransitPrintSection({
+  propertyAddress,
+  result,
+  overrideStatus,
+  notes,
+}: {
+  propertyAddress: string;
+  result: TransitLookupResult | null;
+  overrideStatus: TransitResultUsed;
+  notes: string;
+}) {
+  if (!result) return null;
+  const nearest = result.nearestStop;
+  const usedLabel =
+    overrideStatus === "automatic"
+      ? transitStatusLabel(result.status)
+      : overrideStatus === "pass"
+        ? "PASS"
+        : overrideStatus === "fail"
+          ? "FAIL"
+          : overrideStatus === "notVerified"
+            ? "NOT VERIFIED"
+            : "NOT APPLICABLE";
+
+  const row = (label: string, value: string) => (
+    <div className="flex justify-between gap-3" key={label}>
+      <span className="text-ink/60 min-w-0">{label}</span>
+      <span className="text-ink flex-shrink-0 text-right">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <Bus size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+          Transit and Bus Stop Access
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
+        {row("Property Address", propertyAddress.trim() || "Not entered")}
+        {row("Nearest Bus Stop", nearest ? nearest.name : "None found")}
+        {row(
+          "Walking Distance",
+          nearest && nearest.hasValidWalkingRoute ? `${nearest.walkingMiles} miles` : "Unavailable"
+        )}
+        {row(
+          "Walking Time",
+          nearest && nearest.hasValidWalkingRoute ? `${nearest.walkingMinutes} minutes` : "Unavailable"
+        )}
+        {row("Transit Agency", nearest?.transitAgency || "Not available")}
+        {row("Bus Routes", nearest && nearest.busRoutes.length > 0 ? nearest.busRoutes.join(", ") : "Not available")}
+        {row("Maximum Allowed Walking Distance", formatMaxWalkLabel(result.maxWalkSetting))}
+        {row("Automated Result", transitStatusLabel(result.status))}
+        {row("Transit Result Used in Underwriting", usedLabel)}
+        {row("Result Source", overrideStatus === "automatic" ? "Automated Result" : "Manual Override")}
+        {row("Data Provider", result.dataSource)}
+        {row(
+          "Date Checked",
+          new Date(result.dateChecked).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        )}
+      </div>
+      {notes.trim() && (
+        <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
+          Transit Notes: {notes.trim()}
+        </p>
+      )}
+      <p className="mt-2 text-[8pt] text-ink leading-relaxed">
+        Walking time and distance are estimates. Verify sidewalks, road crossings, lighting,
+        terrain, accessibility, stop activity, route schedules, and current bus service before
+        acquiring the property.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
 // Breakdown row types, shared by the on-page table, CSV export, and the
 // printable summary
 // ---------------------------------------------------------------------
@@ -3090,6 +3617,141 @@ export default function SharedHousingCalculator() {
   // localStorage/sessionStorage, never uploaded anywhere, and cleared on
   // refresh or Reset to Defaults.
   const [propertyAddress, setPropertyAddress] = useState("");
+
+  // Transit and Bus Stop Access: single, financing-mode-independent state
+  // block (Property Address itself is not duplicated per structure, so
+  // neither is this). transitResult/transitResultAddress hold the last
+  // successful automated lookup; propertyAddress changing away from
+  // transitResultAddress is what flips transitOutdated (spec section 16)
+  // without erasing the previous result. transitInFlightAddressRef
+  // guards against duplicate simultaneous requests for the same address
+  // (spec section 6/18) independent of React's render/state timing.
+  const [transitMaxWalkMode, setTransitMaxWalkMode] = useState<TransitMaxWalkMode>("time");
+  const [transitMaxWalkTimeSelection, setTransitMaxWalkTimeSelection] = useState("15");
+  const [transitMaxWalkTimeCustomDraft, setTransitMaxWalkTimeCustomDraft] = useState("15");
+  const [transitMaxWalkDistanceSelection, setTransitMaxWalkDistanceSelection] = useState("0.50");
+  const [transitMaxWalkDistanceCustomDraft, setTransitMaxWalkDistanceCustomDraft] = useState("0.50");
+  const [transitResult, setTransitResult] = useState<TransitLookupResult | null>(null);
+  const [transitResultAddress, setTransitResultAddress] = useState("");
+  const [transitLoading, setTransitLoading] = useState(false);
+  const [transitError, setTransitError] = useState<string | null>(null);
+  const [transitShowAlternates, setTransitShowAlternates] = useState(false);
+  const [transitOverrideStatus, setTransitOverrideStatus] = useState<TransitResultUsed>("automatic");
+  const [transitNotes, setTransitNotes] = useState("");
+  const transitInFlightAddressRef = useRef<string | null>(null);
+
+  const transitEffectiveMaxWalkSetting: TransitMaxWalkSetting = useMemo(() => {
+    const timeMinutes =
+      transitMaxWalkTimeSelection === "custom"
+        ? Math.max(1, Number(transitMaxWalkTimeCustomDraft) || 15)
+        : Number(transitMaxWalkTimeSelection);
+    const distanceMiles =
+      transitMaxWalkDistanceSelection === "custom"
+        ? Math.max(0.05, Number(transitMaxWalkDistanceCustomDraft) || 0.5)
+        : Number(transitMaxWalkDistanceSelection);
+    return { mode: transitMaxWalkMode, minutes: timeMinutes, miles: distanceMiles };
+  }, [
+    transitMaxWalkMode,
+    transitMaxWalkTimeSelection,
+    transitMaxWalkTimeCustomDraft,
+    transitMaxWalkDistanceSelection,
+    transitMaxWalkDistanceCustomDraft,
+  ]);
+
+  // Re-evaluates pass/caution/fail against the current max-walk setting
+  // purely client-side, from the already-fetched result -- changing the
+  // limit never triggers another API request (spec section 7/18).
+  const transitDisplayStatus: TransitResultStatus | null = useMemo(() => {
+    if (!transitResult) return null;
+    const nearest = transitResult.nearestStop;
+    if (!nearest || !nearest.hasValidWalkingRoute) return "noResult";
+    return (
+      evaluateWalkResult(nearest.walkingMinutes, nearest.walkingMiles, transitEffectiveMaxWalkSetting) ??
+      "noResult"
+    );
+  }, [transitResult, transitEffectiveMaxWalkSetting]);
+
+  const transitDisplayMessage: string = useMemo(() => {
+    if (!transitResult) return "";
+    const nearest = transitResult.nearestStop;
+    const limitLabel = formatMaxWalkLabel(transitEffectiveMaxWalkSetting);
+    if (transitDisplayStatus === "pass" && nearest?.hasValidWalkingRoute) {
+      return `PASS – The nearest bus stop is approximately ${nearest.walkingMiles} miles or ${nearest.walkingMinutes} minutes away on foot.`;
+    }
+    if (transitDisplayStatus === "caution" && nearest?.hasValidWalkingRoute) {
+      return `CAUTION – The nearest stop is close to the maximum allowed walking distance (${limitLabel}). Verify the route and pedestrian conditions manually.`;
+    }
+    if (transitDisplayStatus === "fail" && nearest?.hasValidWalkingRoute) {
+      return `FAIL – The closest bus stop is approximately ${nearest.walkingMiles} miles or ${nearest.walkingMinutes} minutes away on foot, exceeding the selected ${limitLabel} limit.`;
+    }
+    return "No reliable bus-stop result was found for this address. Verify transit access manually.";
+  }, [transitResult, transitDisplayStatus, transitEffectiveMaxWalkSetting]);
+
+  const transitOutdated = Boolean(
+    transitResult && transitResultAddress && propertyAddress.trim() !== transitResultAddress
+  );
+
+  // Coarse Pass/Fail/Not Verified/Not Applicable status for the
+  // underwriting summary (spec section 20) and print/Excel "Transit
+  // Result Used in Underwriting" -- this is an acquisition-criteria
+  // screening result, so it never feeds cash flow or ROI math.
+  const transitStatusUsed: "Pass" | "Fail" | "Not Verified" | "Not Applicable" = (() => {
+    if (transitOverrideStatus === "pass") return "Pass";
+    if (transitOverrideStatus === "fail") return "Fail";
+    if (transitOverrideStatus === "notVerified") return "Not Verified";
+    if (transitOverrideStatus === "notApplicable") return "Not Applicable";
+    // automatic
+    if (transitDisplayStatus === "pass" || transitDisplayStatus === "caution") return "Pass";
+    if (transitDisplayStatus === "fail") return "Fail";
+    return "Not Verified";
+  })();
+  const transitStatusSourceLabel = transitOverrideStatus === "automatic" ? "Automated Result" : "Manual Override";
+
+  async function runTransitLookupClient(address: string, opts: { forceRefresh?: boolean } = {}) {
+    const trimmed = address.trim();
+    if (!looksLikeCompleteAddress(trimmed)) {
+      setTransitError("Please enter a complete property address, including city, state, and ZIP code.");
+      return;
+    }
+    // Guard against duplicate simultaneous requests for the same address
+    // (spec section 6/18).
+    if (transitInFlightAddressRef.current === trimmed && !opts.forceRefresh) return;
+    transitInFlightAddressRef.current = trimmed;
+    setTransitLoading(true);
+    setTransitError(null);
+    try {
+      const response = await fetch("/api/transit/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: trimmed,
+          forceRefresh: !!opts.forceRefresh,
+          maxWalkSetting: transitEffectiveMaxWalkSetting,
+        }),
+      });
+      const data: TransitLookupResponseBody = await response.json();
+      if (data.success) {
+        setTransitResult(data.result);
+        setTransitResultAddress(trimmed);
+      } else {
+        setTransitError(data.error);
+      }
+    } catch {
+      setTransitError("Network error while checking transit access. Please try again.");
+    } finally {
+      setTransitLoading(false);
+      if (transitInFlightAddressRef.current === trimmed) transitInFlightAddressRef.current = null;
+    }
+  }
+
+  function handlePropertyAddressBlur() {
+    const trimmed = propertyAddress.trim();
+    if (!trimmed) return;
+    if (trimmed === transitResultAddress && transitResult) return; // nothing changed
+    if (!looksLikeCompleteAddress(trimmed)) return; // wait for a complete address, don't error on blur
+    void runTransitLookupClient(trimmed);
+  }
+
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
   const [processingImages, setProcessingImages] = useState(false);
@@ -3811,6 +4473,17 @@ export default function SharedHousingCalculator() {
     // the rest of the browser session -- image data URLs need no such
     // cleanup.
     setPropertyAddress("");
+    setTransitMaxWalkMode("time");
+    setTransitMaxWalkTimeSelection("15");
+    setTransitMaxWalkTimeCustomDraft("15");
+    setTransitMaxWalkDistanceSelection("0.50");
+    setTransitMaxWalkDistanceCustomDraft("0.50");
+    setTransitResult(null);
+    setTransitResultAddress("");
+    setTransitError(null);
+    setTransitShowAlternates(false);
+    setTransitOverrideStatus("automatic");
+    setTransitNotes("");
     setPropertyImages((prev) => {
       prev.forEach(revokeMediaFile);
       return [];
@@ -6155,6 +6828,45 @@ export default function SharedHousingCalculator() {
         roiBalloonYears: activeRoiBalloon?.balloonYears ?? 0,
         roiRefinanceAtBalloon: roiRefinanceControls?.atBalloon ?? true,
         roiRefinanceRatePct: roiRefinanceControls?.rateUsed ?? 0,
+
+        transit: ((): ExportTransitResult | null => {
+          if (!transitResult) return null;
+          const nearest = transitResult.nearestStop;
+          const automatedResult: "Pass" | "Fail" | "Not Verified" =
+            transitDisplayStatus === "pass" || transitDisplayStatus === "caution"
+              ? "Pass"
+              : transitDisplayStatus === "fail"
+                ? "Fail"
+                : "Not Verified";
+          return {
+            propertyAddress,
+            matchedAddress: transitResult.matchedAddress,
+            nearestBusStopName: nearest?.name ?? null,
+            stopAddress: nearest?.address ?? null,
+            walkingDistanceMiles: nearest?.hasValidWalkingRoute ? nearest.walkingMiles : null,
+            walkingTimeMinutes: nearest?.hasValidWalkingRoute ? nearest.walkingMinutes : null,
+            straightLineDistanceMiles: nearest?.straightLineMiles ?? null,
+            transitAgency: nearest?.transitAgency ?? null,
+            busRoutes: nearest?.busRoutes.join(", ") ?? "",
+            maxAllowedWalkingTimeMinutes: transitEffectiveMaxWalkSetting.minutes,
+            maxAllowedWalkingDistanceMiles: transitEffectiveMaxWalkSetting.miles,
+            maxAllowedWalkingMode: transitEffectiveMaxWalkSetting.mode === "time" ? "Walking Time" : "Walking Distance",
+            automatedResult,
+            transitResultUsed: transitStatusUsed,
+            resultSource: transitOverrideStatus === "automatic" ? "Automatic" : "Manual Override",
+            dataProvider: transitResult.dataSource,
+            dateChecked: new Date(transitResult.dateChecked).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            }),
+            transitNotes: transitNotes.trim(),
+            verificationStatus:
+              nearest?.busServiceConfidence === "confirmed"
+                ? "Bus service confirmed by provider data"
+                : "Bus service should be independently verified",
+          };
+        })(),
       };
 
       await exportUnderwritingToExcel(exportData);
@@ -6435,6 +7147,62 @@ export default function SharedHousingCalculator() {
           </div>
         </div>
 
+        {/* Transit summary (spec section 20): acquisition-criteria/
+            property-screening result only -- never feeds cash flow or
+            ROI math, so it is a separate strip rather than a sixth
+            headline tile. Shown once a lookup has run or a manual status
+            has been chosen; hidden before that so the summary band isn't
+            cluttered for a property that hasn't been checked yet. */}
+        {(transitResult || transitOverrideStatus !== "automatic") && (
+          <div className="print:hidden mt-4 border border-line bg-ink-2 p-5 sm:p-6">
+            <p className="eyebrow text-brass-light mb-3">Transit and Bus Stop Access</p>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-sm text-bone/80">
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Transit Status</span>
+                <span className="lg:block font-medium text-bone">{transitStatusUsed}</span>
+              </div>
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Nearest Bus Stop</span>
+                <span className="lg:block font-medium text-bone break-words">
+                  {transitResult?.nearestStop?.name ?? "Not checked"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Walking Time</span>
+                <span className="lg:block font-medium text-bone">
+                  {transitResult?.nearestStop?.hasValidWalkingRoute
+                    ? `${transitResult.nearestStop.walkingMinutes} minutes`
+                    : "Unavailable"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Walking Distance</span>
+                <span className="lg:block font-medium text-bone">
+                  {transitResult?.nearestStop?.hasValidWalkingRoute
+                    ? `${transitResult.nearestStop.walkingMiles} miles`
+                    : "Unavailable"}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Maximum Allowed</span>
+                <span className="lg:block font-medium text-bone">
+                  {formatMaxWalkLabel(transitEffectiveMaxWalkSetting)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3 lg:block">
+                <span className="text-bone/50">Status Source</span>
+                <span className="lg:block font-medium text-bone">{transitStatusSourceLabel}</span>
+              </div>
+              {transitNotes.trim() && (
+                <div className="sm:col-span-2 lg:col-span-2 flex justify-between gap-3 lg:block">
+                  <span className="text-bone/50">Transit Notes</span>
+                  <span className="lg:block font-medium text-bone break-words">{transitNotes.trim()}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="print:hidden mt-4 flex flex-wrap gap-3">
           <button
             type="button"
@@ -6477,6 +7245,7 @@ export default function SharedHousingCalculator() {
               type="text"
               value={propertyAddress}
               onChange={(e) => setPropertyAddress(e.target.value)}
+              onBlur={handlePropertyAddressBlur}
               placeholder="Enter the property address"
               className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
             />
@@ -6487,6 +7256,38 @@ export default function SharedHousingCalculator() {
             </p>
           </div>
         </div>
+
+        {/* ---------------------------------------------------------- */}
+        {/* Transit and Bus Stop Access                                 */}
+        {/* ---------------------------------------------------------- */}
+        <TransitAndBusStopAccessSection
+          address={propertyAddress}
+          maxWalkMode={transitMaxWalkMode}
+          onMaxWalkModeChange={setTransitMaxWalkMode}
+          maxWalkTimeSelection={transitMaxWalkTimeSelection}
+          onMaxWalkTimeSelectionChange={setTransitMaxWalkTimeSelection}
+          maxWalkTimeCustomDraft={transitMaxWalkTimeCustomDraft}
+          onMaxWalkTimeCustomChange={setTransitMaxWalkTimeCustomDraft}
+          maxWalkDistanceSelection={transitMaxWalkDistanceSelection}
+          onMaxWalkDistanceSelectionChange={setTransitMaxWalkDistanceSelection}
+          maxWalkDistanceCustomDraft={transitMaxWalkDistanceCustomDraft}
+          onMaxWalkDistanceCustomChange={setTransitMaxWalkDistanceCustomDraft}
+          effectiveMaxWalkSetting={transitEffectiveMaxWalkSetting}
+          onCheckClick={() => void runTransitLookupClient(propertyAddress, { forceRefresh: true })}
+          onRefreshClick={() => void runTransitLookupClient(propertyAddress, { forceRefresh: true })}
+          loading={transitLoading}
+          error={transitError}
+          result={transitResult}
+          outdated={transitOutdated}
+          showAlternates={transitShowAlternates}
+          onToggleAlternates={() => setTransitShowAlternates((prev) => !prev)}
+          overrideStatus={transitOverrideStatus}
+          onOverrideChange={setTransitOverrideStatus}
+          notes={transitNotes}
+          onNotesChange={setTransitNotes}
+          displayStatus={transitDisplayStatus}
+          displayMessage={transitDisplayMessage}
+        />
 
         {/* ---------------------------------------------------------- */}
         {/* Property Files (images and/or PDFs)                        */}
@@ -9887,6 +10688,13 @@ export default function SharedHousingCalculator() {
               </div>
             </div>
           </div>
+
+          <TransitPrintSection
+            propertyAddress={propertyAddress}
+            result={transitResult}
+            overrideStatus={transitOverrideStatus}
+            notes={transitNotes}
+          />
 
           {financingMode === "traditional" && traditionalLongTermRent !== null && (
             <TraditionalLtvPrintCard

@@ -236,6 +236,35 @@ export interface UnderwritingExportData {
   roiBalloonYears: number;
   roiRefinanceAtBalloon: boolean;
   roiRefinanceRatePct: number;
+
+  // Transit and Bus Stop Access: an acquisition-criteria/property-
+  // screening result, resolved entirely on the website (the same
+  // TransitLookupResult the printable report reads); this module never
+  // calls the Google Maps or OpenStreetMap APIs itself and never
+  // receives an API key, so there is nothing here that could leak one.
+  transit: ExportTransitResult | null;
+}
+
+export interface ExportTransitResult {
+  propertyAddress: string;
+  matchedAddress: string;
+  nearestBusStopName: string | null;
+  stopAddress: string | null;
+  walkingDistanceMiles: number | null;
+  walkingTimeMinutes: number | null;
+  straightLineDistanceMiles: number | null;
+  transitAgency: string | null;
+  busRoutes: string; // comma-joined, "" when none
+  maxAllowedWalkingTimeMinutes: number;
+  maxAllowedWalkingDistanceMiles: number;
+  maxAllowedWalkingMode: "Walking Time" | "Walking Distance";
+  automatedResult: "Pass" | "Fail" | "Not Verified";
+  transitResultUsed: "Pass" | "Fail" | "Not Verified" | "Not Applicable";
+  resultSource: "Automatic" | "Manual Override";
+  dataProvider: string;
+  dateChecked: string; // already formatted, e.g. "July 24, 2026"
+  transitNotes: string;
+  verificationStatus: string;
 }
 
 // ---------------------------------------------------------------------
@@ -538,6 +567,83 @@ function addSupportingDocumentsSheet(wb: ExcelJS.Workbook, data: UnderwritingExp
   writeRow("PadSplit Rental Data Uploaded", docs.padSplitUploaded ? "Yes" : "No");
   writeRow("PadSplit Rental Data File Type", docs.padSplitFileType || "Not Applicable");
   writeRow("PadSplit Rental Data Filename", docs.padSplitFilename || "Not entered");
+}
+
+// ---------------------------------------------------------------------
+// "Transit and Bus Stop Access" worksheet -- added to every export path
+// whenever a transit lookup has run (data.transit is non-null). Plain
+// label/value rows only, since this is an acquisition-criteria/
+// property-screening result rather than a cash-flow input -- no
+// formulas needed. Never includes an API key, raw JSON, authentication
+// headers, or private URLs/tokens (spec section 22): every value here is
+// a plain string or number the website already resolved.
+// ---------------------------------------------------------------------
+function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
+  const transit = data.transit;
+  if (!transit) return;
+
+  const ws = wb.addWorksheet("Transit and Bus Stop Access", { views: [{ showGridLines: false }] });
+  ws.getColumn(1).width = 2.5;
+  ws.getColumn(2).width = 34;
+  ws.getColumn(3).width = 40;
+
+  let row = 2;
+  const header = ws.getCell(row, 2);
+  header.value = "Transit and Bus Stop Access";
+  header.font = { bold: true, size: 13, color: { argb: COLOR_WHITE }, name: "Calibri" };
+  header.fill = FILL_HEADER;
+  ws.mergeCells(row, 2, row, 3);
+  ws.getRow(row).height = 22;
+  row++;
+
+  const writeRow = (label: string, value: string) => {
+    const l = ws.getCell(row, 2);
+    l.value = label;
+    fmtLabel(l);
+    const v = ws.getCell(row, 3);
+    v.value = value;
+    v.font = { size: 11, name: "Calibri" };
+    v.alignment = { horizontal: "left", wrapText: true };
+    row++;
+  };
+
+  writeRow("Property Address", transit.propertyAddress || "Not entered");
+  writeRow("Matched Address", transit.matchedAddress || "Not available");
+  writeRow("Nearest Bus Stop", transit.nearestBusStopName || "None found");
+  writeRow("Stop Address or Intersection", transit.stopAddress || "Not available");
+  writeRow(
+    "Walking Distance (Miles)",
+    transit.walkingDistanceMiles === null ? "Unavailable" : String(transit.walkingDistanceMiles)
+  );
+  writeRow(
+    "Walking Time (Minutes)",
+    transit.walkingTimeMinutes === null ? "Unavailable" : String(transit.walkingTimeMinutes)
+  );
+  writeRow(
+    "Straight-Line Distance (Miles)",
+    transit.straightLineDistanceMiles === null ? "Not retained" : String(transit.straightLineDistanceMiles)
+  );
+  writeRow("Transit Agency", transit.transitAgency || "Not available");
+  writeRow("Bus Routes", transit.busRoutes || "Not available");
+  writeRow("Maximum Allowed Walking Mode", transit.maxAllowedWalkingMode);
+  writeRow("Maximum Allowed Walking Time (Minutes)", String(transit.maxAllowedWalkingTimeMinutes));
+  writeRow("Maximum Allowed Walking Distance (Miles)", String(transit.maxAllowedWalkingDistanceMiles));
+  writeRow("Automated Pass or Fail Result", transit.automatedResult);
+  writeRow("Transit Result Used in Underwriting", transit.transitResultUsed);
+  writeRow("Automatic or Manual Source", transit.resultSource);
+  writeRow("Data Provider", transit.dataProvider);
+  writeRow("Date Checked", transit.dateChecked);
+  writeRow("Transit Notes", transit.transitNotes || "None entered");
+  writeRow("Verification Status", transit.verificationStatus);
+
+  row++;
+  const notice = ws.getCell(row, 2);
+  ws.mergeCells(row, 2, row, 3);
+  notice.value =
+    "Walking time and distance are estimates. Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route schedules, and current bus service before acquiring the property.";
+  notice.font = { italic: true, size: 9, name: "Calibri" };
+  notice.alignment = { wrapText: true, vertical: "top" };
+  ws.getRow(row).height = 45;
 }
 
 // ---------------------------------------------------------------------
@@ -1340,6 +1446,7 @@ export async function buildTemplateWorkbook(data: UnderwritingExportData): Promi
   addScopeOfWorkSheet(wb, data);
   addRoiProjectionSheet(wb, data);
   addSupportingDocumentsSheet(wb, data);
+  addTransitSheet(wb, data);
   return wb;
 }
 
@@ -1673,6 +1780,7 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
   addScopeOfWorkSheet(wb, data);
   addRoiProjectionSheet(wb, data);
   addSupportingDocumentsSheet(wb, data);
+  addTransitSheet(wb, data);
 
   return wb;
 }
