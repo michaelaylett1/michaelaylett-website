@@ -112,6 +112,16 @@ export interface UnderwritingExportData {
   purchasePrice: number;
   paymentType: "piti" | "pi";
 
+  // Effective Tax Rate feature: annualPropertyTaxes above is always
+  // "Property Taxes Used in Underwriting" (drives every downstream
+  // calculation, unchanged); these five fields are purely informational/
+  // reference figures shown alongside it.
+  propertyTaxCounty: string;
+  propertyTaxRatePct: number;
+  propertyTaxRateSource: string;
+  calculatedAnnualPropertyTaxes: number;
+  propertyTaxSource: string;
+
   // Subject To / Seller Financing (shared fields)
   loanBalance: number;
   sellerDownPayment: number;
@@ -1236,10 +1246,33 @@ function populateTemplateWorkbook(ws: ExcelJS.Worksheet, data: UnderwritingExpor
   headerCell.border = { bottom: { style: "double" } };
   headerCell.alignment = { horizontal: "left" };
 
+  // Effective Tax Rate detail rows for this panel: written immediately
+  // after "Purchase Price" (row 3, value cell G3) so "Effective Tax
+  // Rate" always lands at row 5 (G5) and "Calculated Annual Property
+  // Taxes" can reference both directly via the fixed formula "G3*G5".
+  // Every row below this block shifts down by 6 as a result, which is
+  // why the "Estimated Equity" formulas further down were updated from
+  // their original G4/G9 references to G10/G15 (hybrid) and G4 to G10
+  // (non-hybrid).
+  const propertyTaxPanelRows: KVRow[] = [
+    { label: "Selected County", value: data.propertyTaxCounty || "Not Selected" },
+    { label: "Effective Tax Rate", value: pct(data.propertyTaxRatePct), format: FMT_PERCENT, input: true },
+    { label: "Rate Source", value: data.propertyTaxRateSource },
+    { label: "Calculated Annual Property Taxes", formula: "G3*G5", format: FMT_CURRENCY },
+    { label: "Property Tax Source", value: data.propertyTaxSource },
+    {
+      label: "Property Taxes Used in Underwriting",
+      value: money(data.annualPropertyTaxes),
+      format: FMT_CURRENCY,
+      input: true,
+    },
+  ];
+
   let nextRow: number;
   if (isHybrid) {
     nextRow = writeKVBlock(ws, 3, 6, 7, [
       { label: "Purchase Price", formula: "C3", format: TEMPLATE_CURRENCY_FMT },
+      ...propertyTaxPanelRows,
       { label: "Existing Mortgage Balance", value: money(data.hybridExistingMortgageBalance), format: FMT_CURRENCY, input: true },
       { label: "Existing Mortgage Interest Rate", value: pct(data.hybridExistingMortgageRatePct), format: FMT_PERCENT, input: true },
       { label: "Existing Mortgage Remaining Amortization", value: data.hybridExistingMortgageAmortizationYears, format: FMT_YEARS, input: true },
@@ -1264,7 +1297,7 @@ function populateTemplateWorkbook(ws: ExcelJS.Worksheet, data: UnderwritingExpor
       { label: "Arrears", formula: "C19", format: TEMPLATE_CURRENCY_FMT },
       {
         label: "Estimated Equity",
-        formula: "C3-G4-G9",
+        formula: "C3-G10-G15",
         format: FMT_CURRENCY,
         emphasis: true,
       },
@@ -1272,6 +1305,7 @@ function populateTemplateWorkbook(ws: ExcelJS.Worksheet, data: UnderwritingExpor
   } else {
     nextRow = writeKVBlock(ws, 3, 6, 7, [
       { label: "Purchase Price", formula: "C3", format: TEMPLATE_CURRENCY_FMT },
+      ...propertyTaxPanelRows,
       { label: "Existing Mortgage Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
       { label: "Existing Mortgage Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
       { label: "Existing Mortgage Remaining Amortization", value: data.loanRemainingAmortizationYears, format: FMT_YEARS, input: true },
@@ -1351,17 +1385,48 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
   ];
 }
 
+// Effective Tax Rate detail block, shared across Traditional, Seller
+// Financing, and Stack Method (the three financingDetailsRows() paths
+// below). Spliced in immediately after "Purchase Price" in each of
+// those arrays, since "Purchase Price" is always that section's first
+// data row -- fixed at cell C3 on the "Financing Details" sheet -- so
+// the Calculated Annual Property Taxes formula below can reference it
+// directly (C3) along with the Effective Tax Rate row placed right
+// after it (C5), without needing the dynamic rowAddress lookup map.
+// "Property Taxes Used in Underwriting" replaces the old bare "Annual
+// Property Taxes" row and is the only one of these that ever feeds a
+// downstream cash-flow formula elsewhere in the workbook.
+function propertyTaxDetailRows(data: UnderwritingExportData): KVRow[] {
+  return [
+    { label: "Selected County", value: data.propertyTaxCounty || "Not Selected" },
+    { label: "Effective Tax Rate", value: pct(data.propertyTaxRatePct), format: FMT_PERCENT, input: true },
+    { label: "Rate Source", value: data.propertyTaxRateSource },
+    {
+      label: "Calculated Annual Property Taxes",
+      formula: "C3*C5",
+      format: FMT_CURRENCY,
+    },
+    { label: "Property Tax Source", value: data.propertyTaxSource },
+    {
+      label: "Property Taxes Used in Underwriting",
+      value: money(data.annualPropertyTaxes),
+      format: FMT_CURRENCY,
+      input: true,
+    },
+  ];
+}
+
 function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   if (data.financingMode === "traditional") {
     return [
       { label: "Purchase Price", value: money(data.purchasePrice), format: FMT_CURRENCY, input: true },
+      ...propertyTaxDetailRows(data),
       { label: "Down Payment Percentage", value: pct(data.traditionalDownPaymentPct), format: FMT_PERCENT, input: true },
       { label: "Estimated Down Payment", value: money(data.traditionalDownPaymentAmount), format: FMT_CURRENCY },
       { label: "Estimated Loan Balance", value: money(data.traditionalLoanBalance), format: FMT_CURRENCY },
       { label: "Interest Rate", value: pct(data.traditionalInterestRatePct), format: FMT_PERCENT, input: true },
       { label: "Amortization Term", value: "30 Years (360 Monthly Payments)" },
       { label: "Monthly Principal and Interest", value: money(data.traditionalMonthlyPI), format: FMT_CURRENCY },
-      { label: "Annual Property Taxes", value: money(data.annualPropertyTaxes), format: FMT_CURRENCY, input: true },
       { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
       { label: "Estimated Monthly PITI", value: money(data.monthlyHousingPayment), format: FMT_CURRENCY },
       { label: "Traditional Closing Cost Percentage", value: pct(data.traditionalClosingCostPct), format: FMT_PERCENT, input: true },
@@ -1378,11 +1443,11 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   if (data.financingMode === "sellerFinancing") {
     return [
       { label: "Purchase Price", value: money(data.purchasePrice), format: FMT_CURRENCY, input: true },
+      ...propertyTaxDetailRows(data),
       { label: "Loan Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
       { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
       { label: "Monthly Payment Type", value: data.paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
       { label: data.housingPaymentLabel, value: money(data.monthlyPayment), format: FMT_CURRENCY, input: true },
-      { label: "Annual Property Taxes", value: money(data.annualPropertyTaxes), format: FMT_CURRENCY, input: true },
       { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
       { label: "Loan Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
       { label: "Remaining Amortization", value: data.loanRemainingAmortizationYears, format: FMT_YEARS, input: true },
@@ -1393,6 +1458,7 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   // Stack Method
   return [
     { label: "Purchase Price", value: money(data.purchasePrice), format: FMT_CURRENCY, input: true },
+    ...propertyTaxDetailRows(data),
     { label: "Seller's Current First Loan Balance", value: money(data.stackSellerFirstLoanBalance), format: FMT_CURRENCY, input: true },
     { label: "Existing Second Lien", value: money(data.stackSellerSecondLien), format: FMT_CURRENCY, input: true },
     { label: "Miscellaneous Liens", value: money(data.stackMiscLiens), format: FMT_CURRENCY, input: true },
@@ -1402,7 +1468,6 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
     { label: "Bank Interest Rate", value: pct(data.stackBankInterestRatePct), format: FMT_PERCENT, input: true },
     { label: "Bank Amortization", value: data.stackBankAmortizationYears, format: FMT_YEARS, input: true },
     { label: "Monthly Bank Principal and Interest", value: money(data.stackBankMonthlyPI), format: FMT_CURRENCY },
-    { label: "Annual Property Taxes", value: money(data.annualPropertyTaxes), format: FMT_CURRENCY, input: true },
     { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
     { label: "Estimated Monthly Bank PITI", value: money(data.stackMonthlyBankPITI), format: FMT_CURRENCY },
     { label: "Estimated Seller-Financed Balance", value: money(data.stackSellerFinancedBalance), format: FMT_CURRENCY },

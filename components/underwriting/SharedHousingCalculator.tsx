@@ -2245,6 +2245,23 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   traditionalAppreciationPct: 2,
 };
 
+// ---------------------------------------------------------------------
+// Effective Tax Rate: one shared county rate table, used identically by
+// every financing structure (Traditional, Subject To, Seller Financing,
+// Hybrid, Stack Method). Centralized here -- never duplicated per
+// structure -- so adding, removing, or re-pricing a county only ever
+// requires one edit.
+// ---------------------------------------------------------------------
+const COUNTY_EFFECTIVE_TAX_RATES: Record<string, number> = {
+  "Dallas County, TX": 2.23,
+  "Tarrant County, TX": 2.34,
+  "DeKalb County, GA": 1.95,
+  "Mecklenburg County, NC": 0.8,
+  "Maricopa County, AZ": 0.3,
+  "Clark County, NV": 0.8,
+};
+const PROPERTY_TAX_COUNTY_OPTIONS = [...Object.keys(COUNTY_EFFECTIVE_TAX_RATES), "Custom"];
+
 // The subset of PercentKey that represent an Annual Property
 // Appreciation assumption: these allow negative values (a property can
 // depreciate) and clamp to +/-20% instead of the 0-100% used by every
@@ -2496,6 +2513,178 @@ function ReadOnlyStat({
   );
 }
 
+// The Effective Tax Rate feature's on-page section, shared verbatim by
+// all five financing structures (Traditional, Subject To, Seller
+// Financing, Hybrid, Stack Method). Purely presentational -- every value
+// and handler is owned by the parent, exactly like every other panel in
+// this file. `idPrefix` keeps DOM ids unique across the (up to four)
+// simultaneously-mounted copies of this section.
+function PropertyTaxSection({
+  idPrefix,
+  county,
+  onCountyChange,
+  rateDraft,
+  onRateChange,
+  onRateBlur,
+  rateSource,
+  calculatedTax,
+  usedTaxDraft,
+  onUsedTaxChange,
+  onUsedTaxBlur,
+  taxSource,
+  onUseCalculated,
+  usedTaxDisabled,
+  usedTaxHelperText,
+}: {
+  idPrefix: string;
+  county: string;
+  onCountyChange: (county: string) => void;
+  rateDraft: string;
+  onRateChange: (raw: string) => void;
+  onRateBlur: () => void;
+  rateSource: string;
+  calculatedTax: number;
+  usedTaxDraft: string;
+  onUsedTaxChange: (raw: string) => void;
+  onUsedTaxBlur: () => void;
+  taxSource: string;
+  onUseCalculated: () => void;
+  usedTaxDisabled?: boolean;
+  usedTaxHelperText?: string;
+}) {
+  return (
+    <div className="mt-6 pt-5 border-t border-line-dark">
+      <p className="eyebrow text-brass mb-1">Property Tax</p>
+      <p className="text-sm text-ink/70 leading-[1.45] mb-4 max-w-2xl">
+        Effective tax rates are estimates and may not equal the property&apos;s actual tax bill.
+        Actual taxes may vary due to assessed value, exemptions, taxing districts, reassessment
+        rules, and future rate changes.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-5">
+        <div>
+          <label htmlFor={`${idPrefix}County`} className="block mb-2">
+            <FieldLabel info="Selecting a county populates Effective Tax Rate with that county's stored rate and recalculates immediately. Choose Custom to enter any rate freely.">
+              County
+            </FieldLabel>
+          </label>
+          <select
+            id={`${idPrefix}County`}
+            value={county}
+            onChange={(e) => onCountyChange(e.target.value)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            <option value="">Select County</option>
+            {PROPERTY_TAX_COUNTY_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+        <PercentField
+          id={`${idPrefix}EffectiveTaxRate`}
+          label="Effective Tax Rate"
+          draft={rateDraft}
+          onChange={onRateChange}
+          onBlur={onRateBlur}
+          info="Enter as a percentage, e.g. 2.23 for 2.23%, never 0.0223. Decimals allowed, 0-10%."
+        />
+        <ReadOnlyStat
+          label="Calculated Annual Property Taxes"
+          value={formatCents(calculatedTax)}
+          helperText="Purchase Price x Effective Tax Rate."
+        />
+        <div>
+          <div className="mb-2">
+            <FieldLabel>Rate Source</FieldLabel>
+          </div>
+          <div className="w-full bg-paper-2 border border-line-dark px-3 py-2.5 text-ink/70">{rateSource}</div>
+        </div>
+        <CurrencyField
+          id={`${idPrefix}UsedInUnderwriting`}
+          label="Property Taxes Used in Underwriting"
+          draft={usedTaxDraft}
+          onChange={onUsedTaxChange}
+          onBlur={onUsedTaxBlur}
+          disabled={usedTaxDisabled}
+          helperText={
+            usedTaxHelperText ??
+            "Used in every underwriting calculation below. Edit directly to override the calculated amount."
+          }
+          info="Preserves the calculated amount separately -- editing this field only overrides the figure actually used in the underwriting."
+        />
+        <div>
+          <div className="mb-2">
+            <FieldLabel>Property Tax Source</FieldLabel>
+          </div>
+          <div className="w-full bg-paper-2 border border-line-dark px-3 py-2.5 text-ink/70">{taxSource}</div>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onUseCalculated}
+        className="mt-4 inline-flex items-center gap-2 border border-line-dark px-4 py-2 text-sm text-ink/70 hover:border-brass hover:text-ink transition-colors"
+      >
+        Use Calculated Tax Amount
+      </button>
+    </div>
+  );
+}
+
+// The printable-report counterpart to PropertyTaxSection: the same six
+// figures (County, Effective Tax Rate, Rate Source, Calculated Annual
+// Property Taxes, Property Taxes Used in Underwriting, Property Tax
+// Source) plus the tax-rate disclosure note, in whichever of this
+// report's two row styles the surrounding card already uses. Never
+// shows the county dropdown itself in print (per spec) -- only the
+// selected county's name as plain text. Omitted entirely while no
+// county has been selected and no rate has been entered, so a property
+// with no tax-rate assumption modeled doesn't print six empty-looking
+// rows.
+function PropertyTaxPrintRows({
+  dense,
+  county,
+  ratePct,
+  rateSource,
+  calculatedTax,
+  usedTax,
+  taxSource,
+}: {
+  dense?: boolean;
+  county: string;
+  ratePct: number;
+  rateSource: string;
+  calculatedTax: number;
+  usedTax: number;
+  taxSource: string;
+}) {
+  if (county === "" && ratePct <= 0) return null;
+  const rowClass = dense ? "flex justify-between gap-3" : "flex justify-between";
+  const labelClass = dense ? "text-ink/60 min-w-0" : "text-ink/60";
+  const valueClass = dense ? "text-ink flex-shrink-0 text-right" : "font-medium text-ink";
+  const row = (label: string, value: string) => (
+    <div className={rowClass} key={label}>
+      <span className={labelClass}>{label}</span>
+      <span className={valueClass}>{value}</span>
+    </div>
+  );
+  return (
+    <>
+      {row("County", county === "" ? "Not Selected" : county)}
+      {row("Effective Tax Rate", `${ratePct.toFixed(2)}%`)}
+      {row("Rate Source", rateSource)}
+      {row("Calculated Annual Property Taxes", formatCents(calculatedTax))}
+      {row("Property Taxes Used in Underwriting", formatCents(usedTax))}
+      {row("Property Tax Source", taxSource)}
+      <p className={`col-span-2 text-[8pt] text-ink leading-relaxed ${dense ? "" : "mt-1"}`}>
+        Effective tax rates are estimates and may not equal the property&apos;s actual tax bill.
+        Actual taxes may vary due to assessed value, exemptions, taxing districts, reassessment
+        rules, and future rate changes.
+      </p>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------
 // Breakdown row types, shared by the on-page table, CSV export, and the
 // printable summary
@@ -2510,6 +2699,23 @@ export default function SharedHousingCalculator() {
   const [financingDraft, setFinancingDraft] = useState<Record<FinancingKey, string>>(
     makeDraft(FINANCING_DEFAULTS)
   );
+
+  // Effective Tax Rate: one shared assumption (county + rate), used by
+  // every financing structure, that drives Calculated Annual Property
+  // Taxes = Purchase Price x Effective Tax Rate. "" is "Select County".
+  // The Effective Tax Rate itself allows decimals and is never forced
+  // back to the county default once the user edits it (see the derived
+  // propertyTaxRateSource / stackEstimatedCash-style comparison below).
+  const [propertyTaxCounty, setPropertyTaxCounty] = useState<string>("");
+  const [propertyTaxRatePct, setPropertyTaxRatePct] = useState<number>(0);
+  const [propertyTaxRateDraft, setPropertyTaxRateDraft] = useState<string>("");
+  // Property Taxes Used in Underwriting (financing.annualPropertyTaxes,
+  // the same pre-existing field every downstream calculation already
+  // reads) normally tracks the calculated amount automatically. Once the
+  // user edits that field directly, this flips true and the field stops
+  // following the calculation until "Use Calculated Tax Amount" is
+  // pressed (or Reset to Defaults runs).
+  const [propertyTaxManualOverride, setPropertyTaxManualOverride] = useState<boolean>(false);
 
   const [capital, setCapital] = useState<Record<CapitalKey, number>>(CAPITAL_DEFAULTS);
   const [capitalDraft, setCapitalDraft] = useState<Record<CapitalKey, string>>(
@@ -2907,6 +3113,92 @@ export default function SharedHousingCalculator() {
       return { ...prev, [key]: clamped };
     });
   }
+
+  // Property Taxes Used in Underwriting (financing.annualPropertyTaxes)
+  // has its own change handler -- identical to handleFinancingChange,
+  // except it also flips propertyTaxManualOverride to true, since typing
+  // directly into that field is exactly what "manually edits Annual
+  // Property Taxes after it has been calculated" means.
+  function handlePropertyTaxUsedChange(raw: string) {
+    setPropertyTaxManualOverride(true);
+    handleFinancingChange("annualPropertyTaxes", raw);
+  }
+
+  // Effective Tax Rate: 0-10%, decimals allowed, never negative.
+  function handlePropertyTaxRateChange(raw: string) {
+    setPropertyTaxRateDraft(raw);
+    const cleaned = raw.replace(/[^0-9.]/g, "");
+    const n = cleaned ? Number(cleaned) : 0;
+    setPropertyTaxRatePct(!Number.isFinite(n) || n < 0 ? 0 : Math.min(10, n));
+  }
+  function handlePropertyTaxRateBlur() {
+    setPropertyTaxRatePct((prev) => {
+      const clamped = Math.min(10, Math.max(0, prev));
+      setPropertyTaxRateDraft(clamped.toFixed(2));
+      return clamped;
+    });
+  }
+  function handlePropertyTaxCountyChange(county: string) {
+    setPropertyTaxCounty(county);
+    // Selecting a real county populates the rate from the table and
+    // recalculates immediately; selecting "Select County" or "Custom"
+    // never auto-populates a rate (spec sections 3 and 6) -- whatever
+    // rate is currently entered is left exactly as-is.
+    const rate = COUNTY_EFFECTIVE_TAX_RATES[county];
+    if (rate !== undefined) {
+      setPropertyTaxRatePct(rate);
+      setPropertyTaxRateDraft(rate.toFixed(2));
+    }
+  }
+  function useCalculatedPropertyTax() {
+    setPropertyTaxManualOverride(false);
+    const calculated = round2(financing.purchasePrice * (propertyTaxRatePct / 100));
+    setFinancing((prev) => ({ ...prev, annualPropertyTaxes: calculated }));
+    setFinancingDraft((prev) => ({ ...prev, annualPropertyTaxes: formatCents(calculated) }));
+  }
+
+  // Calculated Annual Property Taxes = Purchase Price x Effective Tax
+  // Rate, unrounded internally until this single rounding step.
+  const calculatedAnnualPropertyTaxes = useMemo(
+    () => round2(financing.purchasePrice * (propertyTaxRatePct / 100)),
+    [financing.purchasePrice, propertyTaxRatePct]
+  );
+
+  // Rate Source: "Custom" once that option is selected; "County Default"
+  // only while the entered rate still matches that county's stored
+  // rate exactly; "Manual Override" the moment it diverges (including
+  // a rate typed in before any county was ever selected).
+  const propertyTaxRateSource: "County Default" | "Manual Override" | "Custom" | "N/A" = (() => {
+    if (propertyTaxCounty === "Custom") return "Custom";
+    if (propertyTaxCounty === "") return propertyTaxRatePct > 0 ? "Manual Override" : "N/A";
+    const countyRate = COUNTY_EFFECTIVE_TAX_RATES[propertyTaxCounty];
+    return countyRate !== undefined && Math.abs(propertyTaxRatePct - countyRate) < 0.005
+      ? "County Default"
+      : "Manual Override";
+  })();
+
+  const propertyTaxSource: "Calculated" | "Manual Override" = propertyTaxManualOverride ? "Manual Override" : "Calculated";
+
+  // Live recalculation (spec section 8): whenever Purchase Price, County,
+  // or Effective Tax Rate changes, Property Taxes Used in Underwriting
+  // (financing.annualPropertyTaxes, read by every downstream calculation
+  // already) is kept in sync with the freshly calculated amount -- unless
+  // the user has manually overridden it, in which case this effect does
+  // nothing until "Use Calculated Tax Amount" is pressed or Reset to
+  // Defaults runs.
+  useEffect(() => {
+    if (propertyTaxManualOverride) return;
+    setFinancing((prev) =>
+      prev.annualPropertyTaxes === calculatedAnnualPropertyTaxes
+        ? prev
+        : { ...prev, annualPropertyTaxes: calculatedAnnualPropertyTaxes }
+    );
+    setFinancingDraft((prev) =>
+      prev.annualPropertyTaxes === formatCents(calculatedAnnualPropertyTaxes)
+        ? prev
+        : { ...prev, annualPropertyTaxes: formatCents(calculatedAnnualPropertyTaxes) }
+    );
+  }, [calculatedAnnualPropertyTaxes, propertyTaxManualOverride]);
 
   function handleCapitalChange(key: CapitalKey, raw: string) {
     setCapitalDraft((prev) => ({ ...prev, [key]: raw }));
@@ -3357,6 +3649,15 @@ export default function SharedHousingCalculator() {
     setPaymentType(PAYMENT_TYPE_DEFAULT);
     setFinancing(FINANCING_DEFAULTS);
     setFinancingDraft(makeDraft(FINANCING_DEFAULTS));
+    // Effective Tax Rate: County goes back to "Select County" (never
+    // auto-selects a county), the rate clears, and the manual override
+    // on Property Taxes Used in Underwriting clears -- financing.
+    // annualPropertyTaxes is already restored to its existing default
+    // (0) by setFinancing(FINANCING_DEFAULTS) above.
+    setPropertyTaxCounty("");
+    setPropertyTaxRatePct(0);
+    setPropertyTaxRateDraft("");
+    setPropertyTaxManualOverride(false);
     setCapital(CAPITAL_DEFAULTS);
     setCapitalDraft(makeDraft(CAPITAL_DEFAULTS));
     setPercent(PERCENT_DEFAULTS);
@@ -5676,6 +5977,12 @@ export default function SharedHousingCalculator() {
         annualPropertyTaxes: financing.annualPropertyTaxes,
         annualPropertyInsurance: financing.annualPropertyInsurance,
 
+        propertyTaxCounty: propertyTaxCounty,
+        propertyTaxRatePct: propertyTaxRatePct,
+        propertyTaxRateSource: propertyTaxRateSource,
+        calculatedAnnualPropertyTaxes: calculatedAnnualPropertyTaxes,
+        propertyTaxSource: propertyTaxSource,
+
         purchasePrice: financing.purchasePrice,
         paymentType,
 
@@ -6551,6 +6858,7 @@ export default function SharedHousingCalculator() {
               dedicated section below instead -- it is still the exact
               same field either way. */}
           {(financingMode === "sellerFinancing" || financingMode === "subjectTo" || financingMode === "") && (
+            <>
             <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
               <CurrencyField
                 id="purchasePrice"
@@ -6616,19 +6924,6 @@ export default function SharedHousingCalculator() {
               />
 
               <CurrencyField
-                id="annualPropertyTaxes"
-                label="Annual Property Taxes"
-                draft={financingDraft.annualPropertyTaxes}
-                onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
-                onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
-                disabled={paymentType === "piti"}
-                helperText={
-                  paymentType === "piti"
-                    ? "Already included in the PITI payment above, not counted separately."
-                    : "Added to the monthly housing payment."
-                }
-              />
-              <CurrencyField
                 id="annualPropertyInsurance"
                 label="Annual Property Insurance"
                 draft={financingDraft.annualPropertyInsurance}
@@ -6671,6 +6966,29 @@ export default function SharedHousingCalculator() {
                 </>
               )}
             </div>
+
+            <PropertyTaxSection
+              idPrefix="subjectToSeller"
+              county={propertyTaxCounty}
+              onCountyChange={handlePropertyTaxCountyChange}
+              rateDraft={propertyTaxRateDraft}
+              onRateChange={handlePropertyTaxRateChange}
+              onRateBlur={handlePropertyTaxRateBlur}
+              rateSource={propertyTaxRateSource}
+              calculatedTax={calculatedAnnualPropertyTaxes}
+              usedTaxDraft={financingDraft.annualPropertyTaxes}
+              onUsedTaxChange={handlePropertyTaxUsedChange}
+              onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+              taxSource={propertyTaxSource}
+              onUseCalculated={useCalculatedPropertyTax}
+              usedTaxDisabled={paymentType === "piti"}
+              usedTaxHelperText={
+                paymentType === "piti"
+                  ? "Already included in the PITI payment above, not counted separately."
+                  : "Added to the monthly housing payment."
+              }
+            />
+            </>
           )}
 
           {financingMode === "subjectTo" && (
@@ -6800,14 +7118,6 @@ export default function SharedHousingCalculator() {
                   value="30 Years (360 Monthly Payments)"
                 />
                 <CurrencyField
-                  id="annualPropertyTaxesTraditional"
-                  label="Annual Property Taxes"
-                  draft={financingDraft.annualPropertyTaxes}
-                  onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
-                  onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
-                  helperText="Added to the monthly principal and interest payment below."
-                />
-                <CurrencyField
                   id="annualPropertyInsuranceTraditional"
                   label="Annual Property Insurance"
                   draft={financingDraft.annualPropertyInsurance}
@@ -6829,6 +7139,23 @@ export default function SharedHousingCalculator() {
                   helperText="Estimated Loan Balance x Closing Cost Percentage."
                 />
               </div>
+
+              <PropertyTaxSection
+                idPrefix="traditional"
+                county={propertyTaxCounty}
+                onCountyChange={handlePropertyTaxCountyChange}
+                rateDraft={propertyTaxRateDraft}
+                onRateChange={handlePropertyTaxRateChange}
+                onRateBlur={handlePropertyTaxRateBlur}
+                rateSource={propertyTaxRateSource}
+                calculatedTax={calculatedAnnualPropertyTaxes}
+                usedTaxDraft={financingDraft.annualPropertyTaxes}
+                onUsedTaxChange={handlePropertyTaxUsedChange}
+                onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                taxSource={propertyTaxSource}
+                onUseCalculated={useCalculatedPropertyTax}
+                usedTaxHelperText="Added to the monthly principal and interest payment below."
+              />
 
               {/* Long-Term Rent LTV Qualification: an optional check
                   comparing what the property could rent for on a
@@ -7056,6 +7383,23 @@ export default function SharedHousingCalculator() {
                   helperText="Cash paid to the seller at closing."
                 />
               </div>
+
+              <PropertyTaxSection
+                idPrefix="hybrid"
+                county={propertyTaxCounty}
+                onCountyChange={handlePropertyTaxCountyChange}
+                rateDraft={propertyTaxRateDraft}
+                onRateChange={handlePropertyTaxRateChange}
+                onRateBlur={handlePropertyTaxRateBlur}
+                rateSource={propertyTaxRateSource}
+                calculatedTax={calculatedAnnualPropertyTaxes}
+                usedTaxDraft={financingDraft.annualPropertyTaxes}
+                onUsedTaxChange={handlePropertyTaxUsedChange}
+                onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                taxSource={propertyTaxSource}
+                onUseCalculated={useCalculatedPropertyTax}
+                usedTaxHelperText="Reference only -- the Total Monthly Housing Payment above already uses the existing mortgage's full PITI payment entered directly, which already includes property taxes."
+              />
 
               {financing.hybridExistingMortgageBalance +
                 financing.sellerDownPayment +
@@ -7666,13 +8010,6 @@ export default function SharedHousingCalculator() {
                     helperText="Fixed at a standard 30-year (360 monthly payment) amortization; not editable."
                   />
                   <CurrencyField
-                    id="annualPropertyTaxesStack"
-                    label="Annual Property Taxes"
-                    draft={financingDraft.annualPropertyTaxes}
-                    onChange={(raw) => handleFinancingChange("annualPropertyTaxes", raw)}
-                    onBlur={() => handleFinancingBlur("annualPropertyTaxes")}
-                  />
-                  <CurrencyField
                     id="annualPropertyInsuranceStack"
                     label="Annual Property Insurance"
                     draft={financingDraft.annualPropertyInsurance}
@@ -7680,6 +8017,23 @@ export default function SharedHousingCalculator() {
                     onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
                   />
                 </div>
+
+                <PropertyTaxSection
+                  idPrefix="stack"
+                  county={propertyTaxCounty}
+                  onCountyChange={handlePropertyTaxCountyChange}
+                  rateDraft={propertyTaxRateDraft}
+                  onRateChange={handlePropertyTaxRateChange}
+                  onRateBlur={handlePropertyTaxRateBlur}
+                  rateSource={propertyTaxRateSource}
+                  calculatedTax={calculatedAnnualPropertyTaxes}
+                  usedTaxDraft={financingDraft.annualPropertyTaxes}
+                  onUsedTaxChange={handlePropertyTaxUsedChange}
+                  onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+                  taxSource={propertyTaxSource}
+                  onUseCalculated={useCalculatedPropertyTax}
+                />
+
                 <div className="mt-6 grid sm:grid-cols-2 gap-5">
                   <ReadOnlyStat
                     label="Monthly Bank Principal and Interest"
@@ -9304,12 +9658,14 @@ export default function SharedHousingCalculator() {
                       <span className="font-semibold text-ink">Monthly Principal and Interest</span>
                       <span className="font-semibold text-ink">{formatCents(traditionalMonthlyPI)}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-ink/60">Annual Property Taxes</span>
-                      <span className="font-medium text-ink">
-                        {formatCents(financing.annualPropertyTaxes)}
-                      </span>
-                    </div>
+                    <PropertyTaxPrintRows
+                      county={propertyTaxCounty}
+                      ratePct={propertyTaxRatePct}
+                      rateSource={propertyTaxRateSource}
+                      calculatedTax={calculatedAnnualPropertyTaxes}
+                      usedTax={financing.annualPropertyTaxes}
+                      taxSource={propertyTaxSource}
+                    />
                     <div className="flex justify-between">
                       <span className="text-ink/60">Annual Property Insurance</span>
                       <span className="font-medium text-ink">
@@ -9375,6 +9731,14 @@ export default function SharedHousingCalculator() {
                         </div>
                       </>
                     )}
+                    <PropertyTaxPrintRows
+                      county={propertyTaxCounty}
+                      ratePct={propertyTaxRatePct}
+                      rateSource={propertyTaxRateSource}
+                      calculatedTax={calculatedAnnualPropertyTaxes}
+                      usedTax={financing.annualPropertyTaxes}
+                      taxSource={propertyTaxSource}
+                    />
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
                       <span className="font-semibold text-ink">Total PITI</span>
                       <span className="font-semibold text-ink">
@@ -9402,6 +9766,14 @@ export default function SharedHousingCalculator() {
                         {formatLeverageRatio(stackLeverageRatioDecimal)}
                       </span>
                     </div>
+                    <PropertyTaxPrintRows
+                      county={propertyTaxCounty}
+                      ratePct={propertyTaxRatePct}
+                      rateSource={propertyTaxRateSource}
+                      calculatedTax={calculatedAnnualPropertyTaxes}
+                      usedTax={financing.annualPropertyTaxes}
+                      taxSource={propertyTaxSource}
+                    />
                     <div className="flex justify-between pt-1.5 border-t border-ink/10">
                       <span className="font-semibold text-ink">Total PITI</span>
                       <span className="font-semibold text-ink">
@@ -9429,17 +9801,19 @@ export default function SharedHousingCalculator() {
                           <span className="font-medium text-ink">{formatCents(financing.monthlyPayment)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-ink/60">Annual Property Taxes</span>
-                          <span className="font-medium text-ink">
-                            {formatCents(financing.annualPropertyTaxes)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
                           <span className="text-ink/60">Annual Property Insurance</span>
                           <span className="font-medium text-ink">
                             {formatCents(financing.annualPropertyInsurance)}
                           </span>
                         </div>
+                        <PropertyTaxPrintRows
+                          county={propertyTaxCounty}
+                          ratePct={propertyTaxRatePct}
+                          rateSource={propertyTaxRateSource}
+                          calculatedTax={calculatedAnnualPropertyTaxes}
+                          usedTax={financing.annualPropertyTaxes}
+                          taxSource={propertyTaxSource}
+                        />
                         <div className="flex justify-between pt-1.5 border-t border-ink/10">
                           <span className="font-semibold text-ink">Monthly Housing Payment</span>
                           <span className="font-semibold text-ink">
@@ -9548,13 +9922,18 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(stackBankMonthlyPI)}</span>
                 </div>
                 <div className="flex justify-between gap-3">
-                  <span className="text-ink/60 min-w-0">Annual Property Taxes</span>
-                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.annualPropertyTaxes)}</span>
-                </div>
-                <div className="flex justify-between gap-3">
                   <span className="text-ink/60 min-w-0">Annual Property Insurance</span>
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.annualPropertyInsurance)}</span>
                 </div>
+                <PropertyTaxPrintRows
+                  dense
+                  county={propertyTaxCounty}
+                  ratePct={propertyTaxRatePct}
+                  rateSource={propertyTaxRateSource}
+                  calculatedTax={calculatedAnnualPropertyTaxes}
+                  usedTax={financing.annualPropertyTaxes}
+                  taxSource={propertyTaxSource}
+                />
                 <div className="flex justify-between gap-3">
                   <span className="text-ink/60 min-w-0">Estimated Monthly Bank PITI</span>
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlyBankPITI)}</span>
