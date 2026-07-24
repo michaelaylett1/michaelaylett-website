@@ -2252,15 +2252,70 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
 // structure -- so adding, removing, or re-pricing a county only ever
 // requires one edit.
 // ---------------------------------------------------------------------
-const COUNTY_EFFECTIVE_TAX_RATES: Record<string, number> = {
-  "Dallas County, TX": 2.23,
-  "Tarrant County, TX": 2.34,
-  "DeKalb County, GA": 1.95,
-  "Mecklenburg County, NC": 0.8,
-  "Maricopa County, AZ": 0.3,
-  "Clark County, NV": 0.8,
-};
-const PROPERTY_TAX_COUNTY_OPTIONS = [...Object.keys(COUNTY_EFFECTIVE_TAX_RATES), "Custom"];
+interface CountyTaxEntry {
+  state: string;
+  city: string;
+  county: string;
+  rate: number;
+}
+// Every supported county, state + city included so the dropdown below
+// can be grouped and labeled by market. Order here does not matter --
+// the grouped/sorted structure used for rendering (COUNTY_TAX_GROUPS)
+// and the flat lookup used for calculations (COUNTY_EFFECTIVE_TAX_RATES)
+// are both derived from this single list, so adding, removing, or
+// re-pricing a county only ever requires one edit, here.
+const COUNTY_TAX_TABLE: CountyTaxEntry[] = [
+  { state: "Arizona", city: "Phoenix", county: "Maricopa County, AZ", rate: 0.3 },
+  { state: "Florida", city: "Jacksonville", county: "Duval County, FL", rate: 2.3 },
+  { state: "Florida", city: "Orlando", county: "Orange County, FL", rate: 1.81 },
+  { state: "Florida", city: "Orlando", county: "Seminole County, FL", rate: 1.54 },
+  { state: "Florida", city: "Tampa", county: "Hillsborough County, FL", rate: 1.84 },
+  { state: "Florida", city: "Tampa", county: "Pasco County, FL", rate: 1.34 },
+  { state: "Florida", city: "Tampa", county: "Pinellas County, FL", rate: 1.61 },
+  { state: "Georgia", city: "Atlanta", county: "Clayton County, GA", rate: 1.57 },
+  { state: "Georgia", city: "Atlanta", county: "Cobb County, GA", rate: 0.82 },
+  { state: "Georgia", city: "Atlanta", county: "DeKalb County, GA", rate: 1.95 },
+  { state: "Georgia", city: "Atlanta", county: "Fulton County, GA", rate: 1.25 },
+  { state: "Nevada", city: "Las Vegas", county: "Clark County, NV", rate: 0.8 },
+  { state: "North Carolina", city: "Charlotte", county: "Mecklenburg County, NC", rate: 0.8 },
+  { state: "North Carolina", city: "Raleigh", county: "Wake County, NC", rate: 0.89 },
+  { state: "Texas", city: "Dallas", county: "Dallas County, TX", rate: 2.23 },
+  { state: "Texas", city: "Fort Worth", county: "Tarrant County, TX", rate: 2.34 },
+  { state: "Texas", city: "Plano", county: "Collin County, TX", rate: 1.71 },
+];
+const COUNTY_EFFECTIVE_TAX_RATES: Record<string, number> = Object.fromEntries(
+  COUNTY_TAX_TABLE.map((entry) => [entry.county, entry.rate])
+);
+// Grouped for <optgroup> rendering: states alphabetical, cities
+// alphabetical within each state, counties alphabetical within each
+// city -- computed once from COUNTY_TAX_TABLE above rather than
+// hand-ordered, so the sort order can never drift out of sync with the
+// underlying data.
+interface CountyTaxCityGroup {
+  label: string;
+  counties: CountyTaxEntry[];
+}
+const COUNTY_TAX_GROUPS: CountyTaxCityGroup[] = (() => {
+  const byState = new Map<string, Map<string, CountyTaxEntry[]>>();
+  for (const entry of COUNTY_TAX_TABLE) {
+    if (!byState.has(entry.state)) byState.set(entry.state, new Map());
+    const byCity = byState.get(entry.state)!;
+    if (!byCity.has(entry.city)) byCity.set(entry.city, []);
+    byCity.get(entry.city)!.push(entry);
+  }
+  const groups: CountyTaxCityGroup[] = [];
+  for (const state of Array.from(byState.keys()).sort()) {
+    const byCity = byState.get(state)!;
+    for (const city of Array.from(byCity.keys()).sort()) {
+      const counties = byCity
+        .get(city)!
+        .slice()
+        .sort((a, b) => a.county.localeCompare(b.county));
+      groups.push({ label: `${state} - ${city}`, counties });
+    }
+  }
+  return groups;
+})();
 
 // The subset of PercentKey that represent an Annual Property
 // Appreciation assumption: these allow negative values (a property can
@@ -2574,11 +2629,16 @@ function PropertyTaxSection({
             className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
           >
             <option value="">Select County</option>
-            {PROPERTY_TAX_COUNTY_OPTIONS.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
+            {COUNTY_TAX_GROUPS.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.counties.map((entry) => (
+                  <option key={entry.county} value={entry.county}>
+                    {entry.county} - {entry.rate.toFixed(2)}%
+                  </option>
+                ))}
+              </optgroup>
             ))}
+            <option value="Custom">Custom</option>
           </select>
         </div>
         <PercentField
