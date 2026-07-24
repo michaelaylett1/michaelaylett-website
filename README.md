@@ -113,6 +113,10 @@ Open [http://localhost:3000](http://localhost:3000).
    notifications and file uploads" below. Set
    `SHARED_HOUSING_CALCULATOR_PASSWORD` if you want to change the
    Shared Housing Calculator's password from its default (`padsplit`).
+   The Underwriting page's "Transit and Bus Stop Access" feature needs
+   `GOOGLE_MAPS_API_KEY` set before it can look up real bus stops; see
+   "Transit and Bus Stop Access (Google Maps Platform)" below. Every
+   other part of the Underwriting calculator works without it.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -400,6 +404,98 @@ is not compatible with this code (`put()` calls request
 `access: "private"` explicitly, so uploads will fail against a
 public-only store rather than silently becoming public).
 
+## Transit and Bus Stop Access (Google Maps Platform)
+
+The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
+Access" section that looks up the nearest bus stop within walking
+distance of the property address, using an actual pedestrian walking
+route rather than straight-line distance. This calls Google Maps
+Platform from a server-side API route
+(`app/api/transit/lookup/route.ts`); the key is never sent to the
+browser. The rest of the Underwriting calculator (all five financing
+structures, the printable report, and the Excel export) works fully
+without this key -- only the transit lookup itself is affected.
+
+### 1. Create a Google Maps Platform API key
+
+1. Open the [Google Cloud Console](https://console.cloud.google.com/) and
+   select or create a project.
+2. Go to **APIs & Services > Library** and enable each of these APIs for
+   that project:
+   - **Geocoding API** (turns the property address into coordinates)
+   - **Places API** (finds nearby bus stations)
+   - **Routes API** (computes the actual pedestrian walking route)
+   - **Directions API** (used only to confirm bus-route numbers/agency
+     for the small number of finalist stops)
+3. Go to **APIs & Services > Credentials**, click **Create Credentials >
+   API Key**, and copy the key.
+4. Click the new key to edit it, and under **API restrictions**, restrict
+   it to only the four APIs above (rather than leaving it unrestricted).
+   Since this key is only ever called from your Vercel server, not a
+   browser, you do not need an HTTP referrer restriction; if your Vercel
+   project uses a static outbound IP range, you can optionally add an IP
+   restriction instead. Leaving it completely unrestricted works but is
+   not recommended.
+5. Confirm billing is enabled on the Google Cloud project. All four APIs
+   above require an active billing account, even within Google's free
+   monthly usage credit.
+
+### 2. Create the GOOGLE_MAPS_API_KEY environment variable in Vercel
+
+Same pattern as `RESEND_API_KEY` above:
+
+1. Open your project on [vercel.com](https://vercel.com).
+2. Go to **Settings > Environment Variables**.
+3. Click **Add New**.
+   - **Key**: `GOOGLE_MAPS_API_KEY`
+   - **Value**: the key you copied in step 1.
+   - **Environments**: check **Production**, and **Preview**/
+     **Development** if you want transit lookups to work on preview
+     deployments or `vercel dev`.
+4. Click **Save**, then **redeploy**. As with every other environment
+   variable in this project, adding or changing it does not affect
+   deployments that already exist -- you must trigger a new one
+   (Deployments tab > ... menu on the latest deployment > Redeploy, or
+   push a new commit).
+
+For local development, copy `.env.example` to `.env.local` and fill in
+the same value; `.env.local` is already gitignored and never committed.
+
+### 3. Cost and usage notes
+
+- Google Maps Platform billing and usage limits apply. Review current
+  pricing at [mapsplatform.google.com/pricing](https://mapsplatform.google.com/pricing)
+  before relying on this in production, and consider setting a daily
+  quota or budget alert in the Google Cloud Console.
+- This project caps API cost per lookup: only the geographically closest
+  candidates within about two miles get an actual routed walking-distance
+  request (capped at 8), and only the top few ranked finalists get a
+  secondary request for bus-route/agency details (capped at 5). Results
+  are cached server-side by normalized address (see
+  `lib/transit/cache.ts`) so editing unrelated fields, or changing the
+  Maximum Walking Distance setting, never triggers a repeat request for
+  the same address.
+- The cache is in-memory per server instance, not a database -- it
+  avoids repeat calls for the same address within a single warm Vercel
+  Function instance, but is not durable across instances or deployments.
+
+### 4. If the key is not set
+
+The Underwriting page still works. The "Transit and Bus Stop Access"
+section shows "Transit lookup is not configured. Add the Google Maps API
+key in the Vercel environment variables." when a lookup is attempted, and
+falls back to OpenStreetMap's public Nominatim/Overpass data only if you
+explicitly want a no-key fallback for local testing -- see the comments
+in `lib/transit/osm.ts` for that fallback's limitations (it does not
+compute an actual walking route, since Nominatim/Overpass have no
+production-grade routing API of their own; it will report the walking
+route as unavailable rather than substituting straight-line distance).
+
+**Never commit a real API key to this repository.** `GOOGLE_MAPS_API_KEY`
+must only ever be set as a Vercel Environment Variable (or in your local,
+gitignored `.env.local`), never hard-coded in source, and this ZIP does
+not include one.
+
 ## Content guardrails in place
 
 - No em dash characters anywhere in the project.
@@ -436,6 +532,10 @@ public-only store rather than silently becoming public).
   IBM Plex Mono (data/labels)
 - `resend` for transactional email notifications
 - `@vercel/blob` for private, time-limited-link file storage
+- `exceljs` for the Underwriting page's Excel export
+- Google Maps Platform (Geocoding, Places, Routes, Directions APIs),
+  called server-side only, for the Underwriting page's Transit and Bus
+  Stop Access lookup
 
 ## Deploying
 
@@ -447,6 +547,9 @@ notifications and file uploads" above:
 - `RESEND_FROM_EMAIL` (optional until your sending domain is verified)
 - A private Vercel Blob store connected to the project (required for the
   Capital Partner and RV Park file uploads)
+- `GOOGLE_MAPS_API_KEY` (optional; required only for the Underwriting
+  page's "Transit and Bus Stop Access" lookup -- see "Transit and Bus
+  Stop Access (Google Maps Platform)" above)
 
 To push to your existing GitHub repo: unzip this project over (or into)
 your repo, commit, and push. Vercel will pick up the changes
