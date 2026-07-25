@@ -81,7 +81,7 @@ import {
   buildMapsDirectionsEmbedUrl,
   buildMapsDirectionsSearchUrl,
 } from "@/lib/transit/manual";
-import type { ManualTransitVerification } from "@/lib/transit/manual";
+import type { TransitResult } from "@/lib/transit/manual";
 // Type-only import -- the actual lookup logic in googleLookup.ts only
 // ever runs server-side (from app/api/transit/auto-lookup/route.ts),
 // but its response shapes are useful here to type the fetch() call
@@ -2801,8 +2801,6 @@ function TransitAndBusStopAccessSection({
   onWalkingDistanceDraftChange,
   notesDraft,
   onNotesDraftChange,
-  onSave,
-  outdated,
   autoStatus,
   autoStopCoords,
 }: {
@@ -2815,8 +2813,6 @@ function TransitAndBusStopAccessSection({
   onWalkingDistanceDraftChange: (value: string) => void;
   notesDraft: string;
   onNotesDraftChange: (value: string) => void;
-  onSave: () => void;
-  outdated: boolean;
   autoStatus: TransitAutoStatus;
   autoStopCoords: { lat: number; lng: number } | null;
 }) {
@@ -2835,8 +2831,8 @@ function TransitAndBusStopAccessSection({
       <p className="eyebrow text-brass mb-1">Transit and Bus Stop Access</p>
       <p className="text-sm text-ink/70 leading-[1.45] mb-5 max-w-2xl">
         Enter a Property Address above and the nearest bus stop, walking time, and walking distance
-        are looked up automatically using Google Maps. Review the map and edit any field below
-        before saving.
+        are looked up automatically using Google Maps and filled in below. Edit any field directly
+        at any time -- changes are used immediately, with no separate save step.
       </p>
 
       {/* Embedded Google Maps panel -- shows a walking-directions route
@@ -2874,7 +2870,7 @@ function TransitAndBusStopAccessSection({
       <div className="mb-3 flex justify-center">
         <p className="text-xs text-ink/50 text-center max-w-[850px]">
           {autoStatus === "loading" && "Looking up the nearest bus stop..."}
-          {autoStatus === "found" && "Automatically detected. Review and edit the fields below before saving."}
+          {autoStatus === "found" && "Automatically detected. Review and edit the fields below if needed."}
           {autoStatus === "notFound" &&
             "Automatic lookup did not find a nearby bus stop for this address. Enter the details manually below."}
           {autoStatus === "notConfigured" &&
@@ -2904,18 +2900,12 @@ function TransitAndBusStopAccessSection({
         </a>
       </div>
 
-      {outdated && (
-        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
-          The property address changed. Verify transit access again.
-        </p>
-      )}
-
-      {/* Manual verification fields -- Nearest Bus Stop full width,
-          Walking Time/Distance side by side, Transit Notes full width.
-          No Transit Agency, Bus Route Numbers, or Date Verified fields,
-          no maximum walking distance/time setting, and no Pass/Fail
-          judgment of any kind -- this section only reports the actual
-          transit data found. */}
+      {/* Nearest Bus Stop full width, Walking Time/Distance side by side,
+          Transit Notes full width. No Transit Agency, Bus Route Numbers,
+          or Date Verified fields, no maximum walking distance/time
+          setting, and no Pass/Fail judgment of any kind -- this section
+          only reports the actual transit data found, filled in
+          automatically and editable by hand at any time. */}
       <div className="grid sm:grid-cols-2 gap-5 mb-5">
         <div className="sm:col-span-2">
           <label htmlFor="transitNearestStop" className="block mb-2">
@@ -2979,28 +2969,19 @@ function TransitAndBusStopAccessSection({
         </div>
       </div>
 
-      <div className="mb-6">
-        <button
-          type="button"
-          onClick={onSave}
-          className="inline-flex items-center gap-2 border border-brass bg-brass/10 px-4 py-2.5 text-sm text-ink hover:bg-brass/20 transition-colors w-full sm:w-auto justify-center"
-        >
-          Save Verified Transit Result
-        </button>
-      </div>
-
       <p className="text-xs text-ink/50 leading-relaxed max-w-2xl">
         Nearest bus stop, walking time, and walking distance are looked up automatically using
-        Google Maps, then can be edited before saving. Verify sidewalks, road crossings, lighting,
+        Google Maps and update the underwriting result immediately -- edits to any field take
+        effect right away, with no separate save step. Verify sidewalks, road crossings, lighting,
         terrain, accessibility, stop activity, route schedules, and current bus service before
         acquiring the property.
       </p>
 
-      {/* Temporary deployment marker (spec section 9) -- confirms which
-          build/component is actually live. Safe to remove once the
-          correct deployment has been confirmed. */}
+      {/* Temporary deployment marker -- confirms which build/component is
+          actually live. Safe to remove once the correct deployment has
+          been confirmed. */}
       <p className="print:hidden mt-4 text-[10px] text-ink/30">
-        Transit Interface Version: Google Maps Embed + Automatic Lookup 1.0
+        Transit Interface Version: Google Maps Embed + Automatic Lookup 2.0
       </p>
     </div>
   );
@@ -3008,17 +2989,16 @@ function TransitAndBusStopAccessSection({
 
 // The printable-report counterpart to TransitAndBusStopAccessSection.
 // Never includes the embedded map, lookup buttons, or loading indicators
-// (spec section 10) -- only the saved, manually verified figures.
+// -- only the current transit figures, found automatically and editable
+// by hand at any time on the underwriting page.
 function TransitPrintSection({
   propertyAddress,
-  saved,
-  outdated,
+  data,
 }: {
   propertyAddress: string;
-  saved: ManualTransitVerification | null;
-  outdated: boolean;
+  data: TransitResult | null;
 }) {
-  if (!saved) return null;
+  if (!data) return null;
 
   const row = (label: string, value: string) => (
     <div className="flex justify-between gap-3" key={label}>
@@ -3037,31 +3017,27 @@ function TransitPrintSection({
       </div>
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
         {row("Property Address", propertyAddress.trim() || "Not entered")}
-        {row("Nearest Bus Stop", saved.nearestStop.trim() || "Not entered")}
+        {row("Nearest Bus Stop", data.nearestStop.trim() || "Not entered")}
         {row(
           "Walking Time",
-          saved.walkingTimeMinutes !== null ? `${saved.walkingTimeMinutes} minutes` : "Not entered"
+          data.walkingTimeMinutes !== null ? `${data.walkingTimeMinutes} minutes` : "Not entered"
         )}
         {row(
           "Walking Distance",
-          saved.walkingDistanceMiles !== null ? `${saved.walkingDistanceMiles} miles` : "Not entered"
+          data.walkingDistanceMiles !== null ? `${data.walkingDistanceMiles} miles` : "Not entered"
         )}
-        {row("Verification Source", "Google Maps (Automatic Lookup, Reviewed)")}
+        {row("Data Source", "Google Maps (Automatic Lookup)")}
       </div>
-      {outdated && (
-        <p className="mt-1 text-[9pt] text-amber-700 leading-relaxed">
-          The property address changed since this result was verified.
-        </p>
-      )}
-      {saved.notes.trim() && (
+      {data.notes.trim() && (
         <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
-          Transit Notes: {saved.notes.trim()}
+          Transit Notes: {data.notes.trim()}
         </p>
       )}
       <p className="mt-2 text-[8pt] text-ink leading-relaxed">
-        Nearest bus stop, walking time, and walking distance were looked up using Google Maps and
-        reviewed before saving. Verify sidewalks, road crossings, lighting, terrain, accessibility,
-        stop activity, route schedules, and current bus service before acquiring the property.
+        Nearest bus stop, walking time, and walking distance are looked up automatically using
+        Google Maps and can be edited on the underwriting page. Verify sidewalks, road crossings,
+        lighting, terrain, accessibility, stop activity, route schedules, and current bus service
+        before acquiring the property.
       </p>
     </div>
   );
@@ -3416,49 +3392,40 @@ export default function SharedHousingCalculator() {
 
   // Transit and Bus Stop Access: single, financing-mode-independent state
   // block (Property Address itself is not duplicated per structure, so
-  // neither is this). Manual-verification architecture (see
-  // lib/transit/manual.ts): the draft fields below are what the person
-  // underwriting the deal types in after looking up nearby stops in the
-  // embedded map; transitSaved is the committed snapshot created by
-  // "Save Verified Transit Result," tagged with the Property Address it
-  // was saved against so a later address change can be detected without
-  // erasing the saved record (spec section 9).
+  // neither is this). Fully automatic -- as soon as the Property
+  // Address looks complete, the effect below fills these fields in from
+  // Google Maps. Every field stays editable by hand at any time, and
+  // whatever is currently in them is used immediately: there is no
+  // separate save or verification step, and no committed snapshot
+  // distinct from these live fields.
   const [transitNearestStopDraft, setTransitNearestStopDraft] = useState("");
   const [transitWalkingTimeDraft, setTransitWalkingTimeDraft] = useState("");
   const [transitWalkingDistanceDraft, setTransitWalkingDistanceDraft] = useState("");
   const [transitNotes, setTransitNotes] = useState("");
 
-  const [transitSaved, setTransitSaved] = useState<ManualTransitVerification | null>(null);
-
-  // True once a result has been saved for an address that no longer
-  // matches the current Property Address -- the saved figures are kept
-  // (not erased), but the UI shows a notice that they should be
-  // re-verified for the new address (spec section 9: "Do not silently
-  // reuse the prior stop result").
-  const transitOutdated = Boolean(transitSaved && transitSaved.savedAtAddress !== propertyAddress.trim());
-
-  function handleSaveTransitResult() {
-    const trimmedAddress = propertyAddress.trim();
+  // The current transit result, derived directly from the fields above
+  // -- null once all of them are empty, so the summary strip, print
+  // report, and Excel export can skip the section entirely rather than
+  // showing an all-blank card.
+  const transitResult: TransitResult | null = useMemo(() => {
+    const nearestStop = transitNearestStopDraft.trim();
+    const notes = transitNotes.trim();
     const parsedTime = transitWalkingTimeDraft.trim() === "" ? null : Number(transitWalkingTimeDraft);
     const parsedDistance = transitWalkingDistanceDraft.trim() === "" ? null : Number(transitWalkingDistanceDraft);
-    setTransitSaved({
-      nearestStop: transitNearestStopDraft.trim(),
-      walkingTimeMinutes: parsedTime !== null && Number.isFinite(parsedTime) ? parsedTime : null,
-      walkingDistanceMiles: parsedDistance !== null && Number.isFinite(parsedDistance) ? parsedDistance : null,
-      notes: transitNotes,
-      savedAtAddress: trimmedAddress,
-      savedAt: new Date().toISOString(),
-    });
-  }
+    const walkingTimeMinutes = parsedTime !== null && Number.isFinite(parsedTime) ? parsedTime : null;
+    const walkingDistanceMiles = parsedDistance !== null && Number.isFinite(parsedDistance) ? parsedDistance : null;
+    if (!nearestStop && !notes && walkingTimeMinutes === null && walkingDistanceMiles === null) return null;
+    return { nearestStop, walkingTimeMinutes, walkingDistanceMiles, notes };
+  }, [transitNearestStopDraft, transitWalkingTimeDraft, transitWalkingDistanceDraft, transitNotes]);
 
   // Automatic bus-stop lookup (Places + Directions "walking" route,
   // server-side via app/api/transit/auto-lookup -- see lib/transit/
   // googleLookup.ts). Runs once per distinct, complete-looking Property
-  // Address and pre-fills the draft fields above with whatever it
-  // finds; the person underwriting the deal can still edit any of
-  // those fields before saving, and nothing here writes to
-  // transitSaved directly -- only handleSaveTransitResult (triggered
-  // by clicking "Save Verified Transit Result") does that.
+  // Address and writes straight into the fields above. The per-address
+  // ref below is what keeps this from re-firing (and clobbering any
+  // hand edits) on every render for an address it has already looked
+  // up; a genuine address change clears the ref and triggers a fresh
+  // lookup for the new property.
   const [transitAutoStatus, setTransitAutoStatus] = useState<TransitAutoStatus>("idle");
   const [transitAutoStopCoords, setTransitAutoStopCoords] = useState<{ lat: number; lng: number } | null>(null);
   const transitAutoLookupAddressRef = useRef("");
@@ -3474,7 +3441,8 @@ export default function SharedHousingCalculator() {
     }
 
     // Already ran (or attempted) a lookup for this exact address --
-    // avoid re-firing on every render/keystroke once it has settled.
+    // avoid re-firing on every render/keystroke once it has settled,
+    // and avoid clobbering any edits the person has since made.
     if (transitAutoLookupAddressRef.current === trimmed) {
       return;
     }
@@ -3483,14 +3451,6 @@ export default function SharedHousingCalculator() {
     // drawn for the previous address never lingers while a new lookup
     // is in flight for this one.
     setTransitAutoStopCoords(null);
-
-    // A person already manually verified and saved a result for this
-    // exact address -- leave their figures alone rather than silently
-    // overwriting the draft fields with a fresh automatic guess.
-    if (transitSaved && transitSaved.savedAtAddress === trimmed && !transitOutdated) {
-      setTransitAutoStatus("idle");
-      return;
-    }
 
     let cancelled = false;
     setTransitAutoStatus("loading");
@@ -3527,7 +3487,7 @@ export default function SharedHousingCalculator() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [propertyAddress, transitSaved, transitOutdated]);
+  }, [propertyAddress]);
 
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
@@ -4254,7 +4214,6 @@ export default function SharedHousingCalculator() {
     setTransitWalkingTimeDraft("");
     setTransitWalkingDistanceDraft("");
     setTransitNotes("");
-    setTransitSaved(null);
     setTransitAutoStatus("idle");
     setTransitAutoStopCoords(null);
     transitAutoLookupAddressRef.current = "";
@@ -6604,15 +6563,14 @@ export default function SharedHousingCalculator() {
         roiRefinanceRatePct: roiRefinanceControls?.rateUsed ?? 0,
 
         transit: ((): ExportTransitResult | null => {
-          if (!transitSaved) return null;
+          if (!transitResult) return null;
           return {
             propertyAddress,
-            nearestBusStop: transitSaved.nearestStop || null,
-            walkingTimeMinutes: transitSaved.walkingTimeMinutes,
-            walkingDistanceMiles: transitSaved.walkingDistanceMiles,
-            transitNotes: transitSaved.notes.trim(),
-            outdated: transitOutdated,
-            verificationSource: "Google Maps (Automatic Lookup, Reviewed)",
+            nearestBusStop: transitResult.nearestStop || null,
+            walkingTimeMinutes: transitResult.walkingTimeMinutes,
+            walkingDistanceMiles: transitResult.walkingDistanceMiles,
+            transitNotes: transitResult.notes,
+            dataSource: "Google Maps (Automatic Lookup)",
           };
         })(),
       };
@@ -6895,51 +6853,44 @@ export default function SharedHousingCalculator() {
           </div>
         </div>
 
-        {/* Transit summary (spec section 20): purely informational
-            reference data -- never feeds cash flow or ROI math, so it is
-            a separate strip rather than a sixth headline tile. Shown
-            once a result has been saved; hidden before that so the
-            summary band isn't cluttered for a property that hasn't been
-            checked yet. Reports the actual transit figures found -- no
-            Pass/Fail judgment or threshold comparison. */}
-        {transitSaved && (
+        {/* Transit summary: purely informational reference data -- never
+            feeds cash flow or ROI math, so it is a separate strip rather
+            than a sixth headline tile. Shown once the automatic lookup
+            (or a hand-typed entry) has produced any transit data; hidden
+            before that so the summary band isn't cluttered for a
+            property that hasn't been looked up yet. Reports the actual
+            transit figures found -- no Pass/Fail judgment or threshold
+            comparison. */}
+        {transitResult && (
           <div className="print:hidden mt-4 border border-line bg-ink-2 p-5 sm:p-6">
             <p className="eyebrow text-brass-light mb-3">Transit and Bus Stop Access</p>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-sm text-bone/80">
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Nearest Bus Stop</span>
                 <span className="lg:block font-medium text-bone break-words">
-                  {transitSaved.nearestStop || "Not entered"}
+                  {transitResult.nearestStop || "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Walking Time</span>
                 <span className="lg:block font-medium text-bone">
-                  {transitSaved.walkingTimeMinutes !== null ? `${transitSaved.walkingTimeMinutes} minutes` : "Not entered"}
+                  {transitResult.walkingTimeMinutes !== null ? `${transitResult.walkingTimeMinutes} minutes` : "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Walking Distance</span>
                 <span className="lg:block font-medium text-bone">
-                  {transitSaved.walkingDistanceMiles !== null ? `${transitSaved.walkingDistanceMiles} miles` : "Not entered"}
+                  {transitResult.walkingDistanceMiles !== null ? `${transitResult.walkingDistanceMiles} miles` : "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
-                <span className="text-bone/50">Status Source</span>
-                <span className="lg:block font-medium text-bone">Google Maps (Automatic Lookup, Reviewed)</span>
+                <span className="text-bone/50">Data Source</span>
+                <span className="lg:block font-medium text-bone">Google Maps (Automatic Lookup)</span>
               </div>
-              {transitOutdated && (
-                <div className="sm:col-span-2 lg:col-span-4 flex justify-between gap-3 lg:block">
-                  <span className="text-amber-400/80">Notice</span>
-                  <span className="lg:block font-medium text-amber-300">
-                    The property address changed. Verify transit access again.
-                  </span>
-                </div>
-              )}
-              {transitSaved.notes.trim() && (
+              {transitResult.notes.trim() && (
                 <div className="sm:col-span-2 lg:col-span-2 flex justify-between gap-3 lg:block">
                   <span className="text-bone/50">Transit Notes</span>
-                  <span className="lg:block font-medium text-bone break-words">{transitSaved.notes.trim()}</span>
+                  <span className="lg:block font-medium text-bone break-words">{transitResult.notes.trim()}</span>
                 </div>
               )}
             </div>
@@ -7012,8 +6963,6 @@ export default function SharedHousingCalculator() {
           onWalkingDistanceDraftChange={setTransitWalkingDistanceDraft}
           notesDraft={transitNotes}
           onNotesDraftChange={setTransitNotes}
-          onSave={handleSaveTransitResult}
-          outdated={transitOutdated}
           autoStatus={transitAutoStatus}
           autoStopCoords={transitAutoStopCoords}
         />
@@ -10420,8 +10369,7 @@ export default function SharedHousingCalculator() {
 
           <TransitPrintSection
             propertyAddress={propertyAddress}
-            saved={transitSaved}
-            outdated={transitOutdated}
+            data={transitResult}
           />
 
           {financingMode === "traditional" && traditionalLongTermRent !== null && (

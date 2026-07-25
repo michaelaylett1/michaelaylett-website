@@ -237,10 +237,10 @@ export interface UnderwritingExportData {
   roiRefinanceAtBalloon: boolean;
   roiRefinanceRatePct: number;
 
-  // Transit and Bus Stop Access: a manually-verified property-screening
-  // result. The person underwriting the deal looks up nearby bus stops
-  // themselves in an embedded Google Maps search panel and types in what
-  // they found (see lib/transit/manual.ts); this module never calls any
+  // Transit and Bus Stop Access: the current, purely informational
+  // transit figures for the property -- found automatically via Google
+  // Maps (see lib/transit/manual.ts and lib/transit/googleLookup.ts) and
+  // editable by hand at any time. This module never calls any
   // transit/maps API itself and never receives an API key, so there is
   // nothing here that could leak one.
   transit: ExportTransitResult | null;
@@ -252,8 +252,7 @@ export interface ExportTransitResult {
   walkingTimeMinutes: number | null;
   walkingDistanceMiles: number | null;
   transitNotes: string;
-  outdated: boolean;
-  verificationSource: string; // "Google Maps (Automatic Lookup, Reviewed)"
+  dataSource: string; // "Google Maps (Automatic Lookup)"
 }
 
 // ---------------------------------------------------------------------
@@ -560,14 +559,14 @@ function addSupportingDocumentsSheet(wb: ExcelJS.Workbook, data: UnderwritingExp
 
 // ---------------------------------------------------------------------
 // "Transit and Bus Stop Access" worksheet -- added to every export path
-// whenever a manually verified transit result has been saved on the
-// underwriting page (data.transit is non-null). Plain label/value rows
-// only, since this is an acquisition-criteria/property-screening result
-// rather than a cash-flow input -- no formulas needed. This result comes
-// entirely from what the person underwriting the deal typed in after
-// looking up the address in the embedded Google Maps search panel; no
-// API key, raw JSON, authentication header, or private URL/token is ever
-// involved, so there is nothing here that could leak one.
+// whenever the underwriting page has any transit data entered
+// (data.transit is non-null). Plain label/value rows only, since this
+// is purely informational reference data rather than a cash-flow input
+// -- no formulas needed. The nearest bus stop, walking time, and
+// walking distance are found automatically via Google Maps and can be
+// edited by hand at any time; this module never calls any transit/maps
+// API itself and never receives an API key, so there is nothing here
+// that could leak one.
 // ---------------------------------------------------------------------
 function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
   const transit = data.transit;
@@ -609,19 +608,13 @@ function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
     transit.walkingDistanceMiles === null ? "Not entered" : String(transit.walkingDistanceMiles)
   );
   writeRow("Transit Notes", transit.transitNotes || "None entered");
-  if (transit.outdated) {
-    writeRow(
-      "Outdated Notice",
-      "The property address changed after this transit result was saved. Verify transit access again."
-    );
-  }
-  writeRow("Verification Source", transit.verificationSource);
+  writeRow("Data Source", transit.dataSource);
 
   row++;
   const notice = ws.getCell(row, 2);
   ws.mergeCells(row, 2, row, 3);
   notice.value =
-    "This result was verified manually using the embedded Google Maps search panel on the underwriting page, not an automatic lookup. Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route schedules, and current bus service before acquiring the property.";
+    "Nearest bus stop, walking time, and walking distance are looked up automatically using Google Maps and can be edited on the underwriting page. Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route schedules, and current bus service before acquiring the property.";
   notice.font = { italic: true, size: 9, name: "Calibri" };
   notice.alignment = { wrapText: true, vertical: "top" };
   ws.getRow(row).height = 45;

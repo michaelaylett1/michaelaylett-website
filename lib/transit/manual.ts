@@ -1,17 +1,17 @@
 /**
- * "Transit and Bus Stop Access" -- Google Maps automatic lookup +
- * manual-verification architecture.
+ * "Transit and Bus Stop Access" -- fully automatic, continuously
+ * editable Google Maps lookup.
  *
- * The nearest bus stop and walking route are now found automatically
- * (see lib/transit/googleLookup.ts and app/api/transit/auto-lookup/,
- * which call the Places, Directions, and Geocoding APIs server-side)
- * and used to pre-fill the fields below, but the person underwriting
- * the deal always has the final say: every field stays editable, the
- * embedded map is a visible check on what was found, and nothing is
- * saved to the underwriting result until "Save Verified Transit
- * Result" is clicked. If the automatic lookup is unavailable or finds
- * nothing, the fields simply stay blank for manual entry -- there is
- * no automatic "no bus stops were found" failure result. See
+ * The nearest bus stop and walking route are found automatically (see
+ * lib/transit/googleLookup.ts and app/api/transit/auto-lookup/, which
+ * call the Places, Directions, and Geocoding APIs server-side) as soon
+ * as a complete-looking Property Address is entered, and pre-fill the
+ * fields below immediately -- there is no separate save or verification
+ * step. Every field stays editable at all times, and whatever is
+ * currently in them is what feeds the underwriting summary, print
+ * report, and Excel export. If the automatic lookup is unavailable or
+ * finds nothing, the fields simply stay blank for hand entry -- there
+ * is no automatic "no bus stops were found" failure result. See
  * components/underwriting/SharedHousingCalculator.tsx's
  * TransitAndBusStopAccessSection for the UI that uses this module.
  *
@@ -20,29 +20,24 @@
  * component directly. The functions that actually call Google's APIs
  * live server-side in lib/transit/googleLookup.ts instead.
  *
- * Fields kept on the saved result: nearest stop, walking time, walking
- * distance, notes. There is no Transit Agency field, no Bus Route
- * Numbers field, no Date Verified field, and no maximum walking
- * time/distance setting. This section is purely informational -- it
- * does not judge whether a property passes or fails any threshold.
- * There is no Pass/Fail status, no qualification message, and no
- * benchmark comparison anywhere in this module.
+ * Fields: nearest stop, walking time, walking distance, notes. There is
+ * no Transit Agency field, no Bus Route Numbers field, no Date Verified
+ * field, and no maximum walking time/distance setting. This section is
+ * purely informational -- it does not judge whether a property passes
+ * or fails any threshold. There is no Pass/Fail status, no
+ * qualification message, and no benchmark comparison anywhere in this
+ * module.
  */
 
-/** The record created by clicking "Save Verified Transit Result." Kept
- * distinct from the live draft inputs so an address change can mark this
- * specific saved record outdated (spec section 9) without erasing what
- * the person typed. */
-export interface ManualTransitVerification {
+/** The current transit result, built directly from whatever is in the
+ * fields right now (automatically filled, hand-edited, or a mix of
+ * both) -- there is no separate saved/verified snapshot distinct from
+ * the live fields. */
+export interface TransitResult {
   nearestStop: string;
   walkingTimeMinutes: number | null;
   walkingDistanceMiles: number | null;
   notes: string;
-  /** The Property Address value at the moment this result was saved --
-   * compared against the current Property Address to detect staleness. */
-  savedAtAddress: string;
-  /** ISO timestamp of the save action, kept for record-keeping. */
-  savedAt: string;
 }
 
 /** Loose "is there anything worth searching for" check -- unlike the old

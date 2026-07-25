@@ -119,7 +119,7 @@ Open [http://localhost:3000](http://localhost:3000).
    automatically find the nearest bus stop and walking route; see
    "Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed)"
    below. Every other part of the Underwriting calculator, including the
-   manual verification fields, works without either key.
+   transit fields' ability to be hand-edited, works without either key.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -412,12 +412,12 @@ public-only store rather than silently becoming public).
 The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
 Access" section. As soon as a complete-looking Property Address is
 entered, it automatically finds the nearest bus stop and the actual
-walking route to it (not straight-line distance), and pre-fills the
-nearest stop, walking time, and walking distance fields below the map.
-Every field stays editable, and nothing affects the underwriting result
-until **Save Verified Transit Result** is clicked -- the automatic
-lookup is a starting point the person underwriting the deal reviews and
-can correct, never a silent, unreviewable result.
+walking route to it (not straight-line distance), and fills in the
+nearest stop, walking time, and walking distance fields below the map --
+those figures update the underwriting result immediately. Every field
+stays editable at any time, with no separate save or verification step:
+whatever is currently in the fields, whether auto-filled or hand-edited,
+is what feeds the summary, print report, and Excel export.
 
 Two independent Google Maps Platform keys are involved, and the section
 degrades gracefully if either (or both) are missing:
@@ -546,29 +546,52 @@ ever be set as Vercel Environment Variables (or in your local,
 gitignored `.env.local`), never hard-coded in source, and this ZIP does
 not include either one.
 
-### 6. How the result is found, reviewed, and recorded
+### 6. How the result is found and recorded
 
 1. As soon as the Property Address looks complete (a number, a comma,
    reasonable length), the section calls `/api/transit/auto-lookup`,
-   which geocodes the address, finds nearby bus stops, gets an actual
-   walking route to each of the closest few, and returns whichever has
-   the shortest walking time.
+   which geocodes the address, searches for nearby stops under both the
+   `bus_station` and `transit_station` Places types (always both, merged
+   and de-duplicated -- see "Nearest-stop selection" below), gets an
+   actual walking route to each of the closest few, and returns whichever
+   has the shortest walking time.
 2. On a match, the embedded map switches from a plain search panel to a
    walking-directions panel centered on that route, and the Nearest Bus
-   Stop, Walking Time, and Walking Distance fields are pre-filled.
-3. Every field, including the automatically filled ones, stays editable.
-   The map is a visible check on what was found, not a source the app
-   reads data back out of.
-4. Clicking **Save Verified Transit Result** commits the current field
-   values, tagged with the Property Address at the moment of saving. The
-   section only reports the transit information found -- Nearest Bus
-   Stop, Walking Time, Walking Distance, and Transit Notes -- and does
-   not judge whether the property passes or fails any distance/time
-   threshold.
-5. If the Property Address changes after a result has been saved, that
-   result is not silently reused -- the section marks it outdated,
-   shows "The property address changed. Verify transit access again.",
-   and automatic lookup runs again for the new address.
+   Stop, Walking Time, and Walking Distance fields are filled in
+   immediately -- there is no separate save step. The section only
+   reports the transit information found -- Nearest Bus Stop, Walking
+   Time, Walking Distance, and Transit Notes -- and does not judge
+   whether the property passes or fails any distance/time threshold.
+3. Every field, including the automatically filled ones, stays editable
+   at any time. The map is a visible check on what was found, not a
+   source the app reads data back out of. Editing a field takes effect
+   immediately in the summary, print report, and Excel export.
+4. If the Property Address changes to a new, complete-looking address,
+   automatic lookup runs again and refills the fields for the new
+   property.
+
+### Nearest-stop selection
+
+An earlier version of this feature only ever searched Places Nearby
+Search for `type=bus_station`, and only tried the broader
+`type=transit_station` search as a fallback when that came back
+completely empty. In a city with light rail, a nearby rail station is
+often itself tagged `bus_station` (it usually has bus bays), so that
+fallback rarely ran -- an ordinary curbside bus stop, typically tagged
+only `transit_station`, never entered the candidate pool at all, even
+when it was a two-minute walk away. The result was the occasional wrong
+answer: a fifty-nine-minute walk to a train station returned instead of
+a two-minute walk to the correct nearby bus stop.
+
+The lookup now always queries both `bus_station` and `transit_station`
+(never one as a fallback for the other), uses `rankby=distance` instead
+of a fixed search radius so Places returns each type's nearest results
+first rather than its most prominent ones, and merges and de-duplicates
+the two result sets before routing the closest handful with the
+Directions API. The stop with the shortest *actual walking time* wins,
+which naturally favors a genuinely close bus stop over a distant train
+station once both are in the running -- no separate "prefer buses over
+trains" rule is needed.
 
 ## Content guardrails in place
 
