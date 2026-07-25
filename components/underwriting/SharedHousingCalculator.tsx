@@ -78,8 +78,11 @@ import {
   buildManualTransitMessage,
   formatMaxWalkLabel,
   looksLikeUsableAddress,
+  looksLikeCompleteAddress,
   buildMapsEmbedUrl,
   buildMapsSearchUrl,
+  buildMapsDirectionsEmbedUrl,
+  buildMapsDirectionsSearchUrl,
 } from "@/lib/transit/manual";
 import type {
   ManualTransitVerification,
@@ -87,6 +90,11 @@ import type {
   TransitMaxWalkMode,
   TransitMaxWalkSetting,
 } from "@/lib/transit/manual";
+// Type-only import -- the actual lookup logic in googleLookup.ts only
+// ever runs server-side (from app/api/transit/auto-lookup/route.ts),
+// but its response shapes are useful here to type the fetch() call
+// below without redeclaring them.
+import type { AutoTransitLookupResult } from "@/lib/transit/googleLookup";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -2807,6 +2815,15 @@ function transitStatusLabel(status: TransitManualStatus): string {
   }
 }
 
+// Status of the automatic Places + Directions lookup that pre-fills the
+// manual fields below -- distinct from TransitManualStatus (Pass/Fail/
+// Not Verified), which is about the *saved* result, not the lookup that
+// suggested it. "idle" covers both "no address yet" and "an address is
+// entered but it's already been auto-looked-up or a saved result exists
+// for it," so the UI only needs to show something while a lookup is
+// actually in flight or just finished.
+type TransitAutoStatus = "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error";
+
 function TransitAndBusStopAccessSection({
   address,
   maxWalkMode,
@@ -2838,6 +2855,8 @@ function TransitAndBusStopAccessSection({
   outdated,
   displayStatus,
   displayMessage,
+  autoStatus,
+  autoStopCoords,
 }: {
   address: string;
   maxWalkMode: TransitMaxWalkMode;
@@ -2869,19 +2888,27 @@ function TransitAndBusStopAccessSection({
   outdated: boolean;
   displayStatus: TransitManualStatus;
   displayMessage: string;
+  autoStatus: TransitAutoStatus;
+  autoStopCoords: { lat: number; lng: number } | null;
 }) {
   const colors = transitStatusColors(displayStatus);
   const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
   const hasAddress = looksLikeUsableAddress(address);
-  const embedUrl = hasAddress ? buildMapsEmbedUrl(address, embedApiKey) : null;
-  const searchUrl = buildMapsSearchUrl(address);
+  const directionsEmbedUrl = autoStopCoords
+    ? buildMapsDirectionsEmbedUrl(address, autoStopCoords.lat, autoStopCoords.lng, embedApiKey)
+    : null;
+  const embedUrl = hasAddress ? directionsEmbedUrl || buildMapsEmbedUrl(address, embedApiKey) : null;
+  const searchUrl = autoStopCoords
+    ? buildMapsDirectionsSearchUrl(address, autoStopCoords.lat, autoStopCoords.lng)
+    : buildMapsSearchUrl(address);
 
   return (
     <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
       <p className="eyebrow text-brass mb-1">Transit and Bus Stop Access</p>
       <p className="text-sm text-ink/70 leading-[1.45] mb-5 max-w-2xl">
-        Use Google Maps to find the nearest bus stop and verify the actual walking route from the
-        property.
+        Enter a Property Address above and the nearest bus stop, walking time, and walking distance
+        are looked up automatically using Google Maps. Review the map and edit any field below
+        before saving.
       </p>
 
       {/* Maximum Walking Distance setting */}
@@ -2965,10 +2992,12 @@ function TransitAndBusStopAccessSection({
         15-minute walk. Changing this setting re-checks the saved result instantly.
       </p>
 
-      {/* Embedded Google Maps search panel (spec: Maps Embed API, search
-          mode -- never a scraped/embedded google.com search-results
-          page, and the app never reads anything back out of it). */}
-      <div className="mb-3 flex justify-center">
+      {/* Embedded Google Maps panel -- shows a walking-directions route
+          once the automatic lookup finds a nearest stop, otherwise a
+          plain search panel (spec: Maps Embed API only -- never a
+          scraped/embedded google.com search-results page, and the app
+          never reads anything back out of the iframe itself). */}
+      <div className="mb-2 flex justify-center">
         <div className="w-full max-w-[850px]">
           {!hasAddress ? (
             <div className="w-full h-[350px] sm:h-[450px] flex items-center justify-center border border-line-dark bg-paper-2 text-sm text-ink/60 text-center px-6">
@@ -2976,7 +3005,11 @@ function TransitAndBusStopAccessSection({
             </div>
           ) : embedUrl ? (
             <iframe
-              title="Bus stops near this property (Google Maps)"
+              title={
+                directionsEmbedUrl
+                  ? "Walking route to the nearest bus stop (Google Maps)"
+                  : "Bus stops near this property (Google Maps)"
+              }
               src={embedUrl}
               className="w-full h-[350px] sm:h-[450px] border border-line-dark"
               style={{ border: 0 }}
@@ -2989,6 +3022,19 @@ function TransitAndBusStopAccessSection({
             </div>
           )}
         </div>
+      </div>
+
+      <div className="mb-3 flex justify-center">
+        <p className="text-xs text-ink/50 text-center max-w-[850px]">
+          {autoStatus === "loading" && "Looking up the nearest bus stop..."}
+          {autoStatus === "found" && "Automatically detected. Review and edit the fields below before saving."}
+          {autoStatus === "notFound" &&
+            "Automatic lookup did not find a nearby bus stop for this address. Enter the details manually below."}
+          {autoStatus === "notConfigured" &&
+            "Automatic bus stop lookup is not configured for this site. Enter the details manually below."}
+          {autoStatus === "error" &&
+            "Automatic bus stop lookup could not be completed right now. Enter the details manually below."}
+        </p>
       </div>
 
       <div className="mb-6 flex justify-center">
@@ -3136,17 +3182,17 @@ function TransitAndBusStopAccessSection({
       </div>
 
       <p className="text-xs text-ink/50 leading-relaxed max-w-2xl">
-        Walking time and distance are self-reported from manual verification in Google Maps, not
-        an automated calculation. Verify sidewalks, road crossings, lighting, terrain,
-        accessibility, stop activity, route schedules, and current bus service before acquiring
-        the property.
+        Nearest bus stop, walking time, and walking distance are looked up automatically using
+        Google Maps, then can be edited before saving. Verify sidewalks, road crossings, lighting,
+        terrain, accessibility, stop activity, route schedules, and current bus service before
+        acquiring the property.
       </p>
 
       {/* Temporary deployment marker (spec section 9) -- confirms which
           build/component is actually live. Safe to remove once the
           correct deployment has been confirmed. */}
       <p className="print:hidden mt-4 text-[10px] text-ink/30">
-        Transit Interface Version: Manual Google Maps Embed 1.0
+        Transit Interface Version: Google Maps Embed + Automatic Lookup 1.0
       </p>
     </div>
   );
@@ -3209,7 +3255,7 @@ function TransitPrintSection({
               })
             : "Not entered"
         )}
-        {row("Verification Source", "Google Maps Manual Verification")}
+        {row("Verification Source", "Google Maps (Automatic Lookup, Reviewed)")}
       </div>
       <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
         {displayMessage}
@@ -3225,9 +3271,9 @@ function TransitPrintSection({
         </p>
       )}
       <p className="mt-2 text-[8pt] text-ink leading-relaxed">
-        Walking time and distance are self-reported from manual verification in Google Maps.
-        Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route
-        schedules, and current bus service before acquiring the property.
+        Nearest bus stop, walking time, and walking distance were looked up using Google Maps and
+        reviewed before saving. Verify sidewalks, road crossings, lighting, terrain, accessibility,
+        stop activity, route schedules, and current bus service before acquiring the property.
       </p>
     </div>
   );
@@ -3666,6 +3712,85 @@ export default function SharedHousingCalculator() {
       savedAt: new Date().toISOString(),
     });
   }
+
+  // Automatic bus-stop lookup (Places + Directions "walking" route,
+  // server-side via app/api/transit/auto-lookup -- see lib/transit/
+  // googleLookup.ts). Runs once per distinct, complete-looking Property
+  // Address and pre-fills the draft fields above with whatever it
+  // finds; the person underwriting the deal can still edit any of
+  // those fields before saving, and nothing here writes to
+  // transitSaved directly -- only handleSaveTransitResult (triggered
+  // by clicking "Save Verified Transit Result") does that.
+  const [transitAutoStatus, setTransitAutoStatus] = useState<TransitAutoStatus>("idle");
+  const [transitAutoStopCoords, setTransitAutoStopCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const transitAutoLookupAddressRef = useRef("");
+
+  useEffect(() => {
+    const trimmed = propertyAddress.trim();
+
+    if (!looksLikeCompleteAddress(trimmed)) {
+      transitAutoLookupAddressRef.current = "";
+      setTransitAutoStopCoords(null);
+      setTransitAutoStatus("idle");
+      return;
+    }
+
+    // Already ran (or attempted) a lookup for this exact address --
+    // avoid re-firing on every render/keystroke once it has settled.
+    if (transitAutoLookupAddressRef.current === trimmed) {
+      return;
+    }
+    transitAutoLookupAddressRef.current = trimmed;
+    // Fall back to the plain search-mode map immediately so a route
+    // drawn for the previous address never lingers while a new lookup
+    // is in flight for this one.
+    setTransitAutoStopCoords(null);
+
+    // A person already manually verified and saved a result for this
+    // exact address -- leave their figures alone rather than silently
+    // overwriting the draft fields with a fresh automatic guess.
+    if (transitSaved && transitSaved.savedAtAddress === trimmed && !transitOutdated) {
+      setTransitAutoStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setTransitAutoStatus("loading");
+
+    const timer = setTimeout(() => {
+      fetch("/api/transit/auto-lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address: trimmed }),
+      })
+        .then((res) => res.json() as Promise<AutoTransitLookupResult>)
+        .then((data) => {
+          if (cancelled) return;
+          if (data.status === "found") {
+            setTransitNearestStopDraft(data.nearestStop.name);
+            setTransitWalkingTimeDraft(String(data.walkingTimeMinutes));
+            setTransitWalkingDistanceDraft(data.walkingDistanceMiles.toFixed(2));
+            if (data.transitAgency) setTransitAgencyDraft(data.transitAgency);
+            setTransitAutoStopCoords({ lat: data.nearestStop.latitude, lng: data.nearestStop.longitude });
+            setTransitAutoStatus("found");
+          } else if (data.status === "notFound") {
+            setTransitAutoStatus("notFound");
+          } else if (data.status === "error" && data.reason === "not_configured") {
+            setTransitAutoStatus("notConfigured");
+          } else {
+            setTransitAutoStatus("error");
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setTransitAutoStatus("error");
+        });
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [propertyAddress, transitSaved, transitOutdated]);
 
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
@@ -4401,6 +4526,9 @@ export default function SharedHousingCalculator() {
     setTransitDateVerifiedDraft("");
     setTransitNotes("");
     setTransitSaved(null);
+    setTransitAutoStatus("idle");
+    setTransitAutoStopCoords(null);
+    transitAutoLookupAddressRef.current = "";
     setPropertyImages((prev) => {
       prev.forEach(revokeMediaFile);
       return [];
@@ -6766,7 +6894,7 @@ export default function SharedHousingCalculator() {
               : "Not entered",
             transitNotes: transitSaved.notes.trim(),
             outdated: transitOutdated,
-            verificationSource: "Google Maps Manual Verification",
+            verificationSource: "Google Maps (Automatic Lookup, Reviewed)",
           };
         })(),
       };
@@ -7194,6 +7322,8 @@ export default function SharedHousingCalculator() {
           onNotesDraftChange={setTransitNotes}
           onSave={handleSaveTransitResult}
           outdated={transitOutdated}
+          autoStatus={transitAutoStatus}
+          autoStopCoords={transitAutoStopCoords}
           displayStatus={transitDisplayStatus}
           displayMessage={transitDisplayMessage}
         />

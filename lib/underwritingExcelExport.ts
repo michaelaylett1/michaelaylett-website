@@ -258,7 +258,7 @@ export interface ExportTransitResult {
   dateVerified: string; // already formatted, e.g. "July 24, 2026", or "Not entered"
   transitNotes: string;
   outdated: boolean;
-  verificationSource: string; // "Google Maps Manual Verification"
+  verificationSource: string; // "Google Maps (Automatic Lookup, Reviewed)"
 }
 
 // ---------------------------------------------------------------------

@@ -115,10 +115,12 @@ Open [http://localhost:3000](http://localhost:3000).
    Shared Housing Calculator's password from its default (`padsplit`).
    The Underwriting page's "Transit and Bus Stop Access" section needs
    `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` set before it can show the
-   embedded Google Maps search panel; see "Transit and Bus Stop Access
-   (Manual Verification + Google Maps Embed)" below. Every other part of
-   the Underwriting calculator, including the manual verification fields
-   and Pass/Fail result, works without it.
+   embedded map, and `GOOGLE_MAPS_API_KEY` set before it can
+   automatically find the nearest bus stop and walking route; see
+   "Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed)"
+   below. Every other part of the Underwriting calculator, including the
+   manual verification fields and Pass/Fail result, works without
+   either key.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -406,34 +408,45 @@ is not compatible with this code (`put()` calls request
 `access: "private"` explicitly, so uploads will fail against a
 public-only store rather than silently becoming public).
 
-## Transit and Bus Stop Access (Manual Verification + Google Maps Embed)
+## Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed)
 
 The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
-Access" section. Earlier versions tried to discover the nearest bus stop
-automatically on the server (first Google Places, later official GTFS
-transit-agency feeds); both approaches were replaced because an
-automatic result could still be a false negative for a real, walkable
-stop, or depend on a third-party feed URL that could not be verified.
+Access" section. As soon as a complete-looking Property Address is
+entered, it automatically finds the nearest bus stop and the actual
+walking route to it (not straight-line distance), and pre-fills the
+nearest stop, walking time, and walking distance fields below the map.
+Every field stays editable, and nothing affects the underwriting result
+until **Save Verified Transit Result** is clicked -- the automatic
+lookup is a starting point the person underwriting the deal reviews and
+can correct, never a silent, unreviewable result.
 
-This version does not call any transit or maps API from the server at
-all. Instead, the person underwriting the deal looks up nearby bus stops
-themselves, the same way they would in their own browser, using a
-Google Maps search embedded directly in the page, and then records what
-they found in a small form (nearest stop, walking time and/or distance,
-transit agency, bus route numbers, date verified, notes). Pass/Fail is
-computed purely from those manually entered numbers against the
-Maximum Walking Distance setting -- there is no discovery pipeline and
-no possibility of an incorrect automatic "no bus stops were found"
-result. The logic lives entirely in `lib/transit/manual.ts` (pure
-functions, no network calls, no environment variables); the UI is
-`TransitAndBusStopAccessSection` and `TransitPrintSection` in
-`components/underwriting/SharedHousingCalculator.tsx`.
+Two independent Google Maps Platform keys are involved, and the section
+degrades gracefully if either (or both) are missing:
+
+- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` -- shows the embedded map
+  (a walking-route panel once a stop is found, or a plain search panel
+  before that). Without it, the section shows "The embedded Google Maps
+  view is not configured." in place of the map.
+- `GOOGLE_MAPS_API_KEY` -- runs the automatic lookup itself (Geocoding,
+  Places, and Directions APIs), server-side only. Without it, automatic
+  lookup is skipped entirely and the fields simply start blank for hand
+  entry -- there is no error banner and no automatic "no bus stops were
+  found" failure result.
+
+The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
+(pure functions plus the actual Google API calls) and is only ever
+invoked from `app/api/transit/auto-lookup/route.ts`, the one place
+`GOOGLE_MAPS_API_KEY` is read -- it is never sent to the browser. The
+shared client-safe helpers (Pass/Fail calculation, URL builders) live in
+`lib/transit/manual.ts`. The UI is `TransitAndBusStopAccessSection` and
+`TransitPrintSection` in `components/underwriting/
+SharedHousingCalculator.tsx`.
 
 The rest of the Underwriting calculator (all five financing structures,
 the printable report, and the Excel export) works fully regardless of
-whether this section's embed key is configured.
+whether either key is configured.
 
-### 1. Create a Google Maps Embed API key
+### 1. Create the embed key (map display)
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and
    select or create a project.
@@ -449,77 +462,119 @@ whether this section's embed key is configured.
    - Under **API restrictions**, restrict the key to **Maps Embed API**
      only.
    This key is inlined into the client-side JavaScript bundle at build
-   time (see step 2), so anyone can see it by viewing page source --
-   the HTTP referrer + API restrictions above are what actually keep it
-   from being used elsewhere, not secrecy.
+   time, so anyone can see it by viewing page source -- the HTTP
+   referrer + API restrictions above are what actually keep it from
+   being used elsewhere, not secrecy.
 5. Confirm billing is enabled on the Google Cloud project; the Maps
    Embed API requires an active billing account, even within Google's
    free monthly usage credit.
 
-**Use a separate key from any other Google Maps Platform key you may
-have used with an earlier version of this project.** Never reuse an
-unrestricted, server-side key here.
+### 2. Create the lookup key (automatic bus-stop discovery)
 
-### 2. Create the NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY environment variable in Vercel
+1. In the same (or a different) Google Cloud project, go to **APIs &
+   Services > Library** and enable each of: **Geocoding API**, **Places
+   API**, **Directions API**.
+2. Go to **APIs & Services > Credentials**, click **Create Credentials >
+   API Key**, and copy the key. **Use a separate key from the embed key
+   above** -- this one is never exposed to the browser, so it should
+   never carry the embed key's HTTP referrer restriction.
+3. Click the new key to edit it, and under **API restrictions**,
+   restrict it to only the three APIs above. Since it is only ever
+   called from your Vercel server, not a browser, an HTTP referrer
+   restriction would not work here; if your Vercel project uses a
+   static outbound IP range you can optionally add an IP restriction
+   instead, or leave it unrestricted (still access-restricted to just
+   those three APIs).
+4. Confirm billing is enabled; all three APIs require an active billing
+   account, even within Google's free monthly usage credit.
 
-Same pattern as `RESEND_API_KEY` above:
+### 3. Create both environment variables in Vercel
+
+Same pattern as `RESEND_API_KEY` above, once for each key:
 
 1. Open your project on [vercel.com](https://vercel.com).
 2. Go to **Settings > Environment Variables**.
-3. Click **Add New**.
+3. Click **Add New** for the embed key:
    - **Key**: `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY`
-   - **Value**: the key you copied in step 1.
+   - **Value**: the key from step 1.
    - **Environments**: check **Production**, and **Preview**/
      **Development** if you want the embedded map to work on preview
      deployments or `vercel dev`.
-4. Click **Save**, then **redeploy**. Because this is a `NEXT_PUBLIC_`
-   variable, it is baked into the JavaScript bundle at build time --
-   redeploying is required after adding or changing it, exactly like
-   every other environment variable in this project, and this applies
-   even more strictly here since a plain restart cannot pick up a new
-   value.
+4. Click **Add New** again for the lookup key:
+   - **Key**: `GOOGLE_MAPS_API_KEY`
+   - **Value**: the key from step 2.
+   - **Environments**: same as above.
+5. Click **Save**, then **redeploy**. `NEXT_PUBLIC_` variables are baked
+   into the JavaScript bundle at build time, so a redeploy is required
+   after adding or changing either one -- exactly like every other
+   environment variable in this project.
 
 For local development, copy `.env.example` to `.env.local` and fill in
-the same value; `.env.local` is already gitignored and never committed.
+the same values; `.env.local` is already gitignored and never
+committed.
 
-### 3. If the key is not set
+### 4. Cost and usage notes
 
-The Underwriting page still works. The "Transit and Bus Stop Access"
-section shows "The embedded Google Maps view is not configured." in
-place of the map, and the "Open Bus Stop Search in Google Maps" button
-still works (it needs no API key at all, since it is a plain
-`google.com/maps/search` deep link). The manual verification fields,
-Save button, and Pass/Fail calculation all work regardless of whether
-the embed key is set.
+- Google Maps Platform billing and usage limits apply to the lookup
+  key. Review current pricing at
+  [mapsplatform.google.com/pricing](https://mapsplatform.google.com/pricing)
+  before relying on this in production, and consider setting a daily
+  quota or budget alert in the Google Cloud Console.
+- Each automatic lookup makes one Geocoding request, one (occasionally
+  two, with a fallback place type) Places Nearby Search request, and up
+  to 6 Directions requests -- one per shortlisted candidate stop, capped
+  regardless of how many Places returns, so a single lookup cannot run
+  away in cost.
+- Lookups only run once per distinct, complete-looking Property Address
+  (not on every keystroke), and are skipped entirely once a result has
+  already been saved for that exact address.
 
-**Never commit a real API key to this repository.**
-`NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` must only ever be set as a
-Vercel Environment Variable (or in your local, gitignored
-`.env.local`), never hard-coded in source, and this ZIP does not
-include one.
+### 5. If a key is not set
 
-### 4. How the result is verified and recorded
+The Underwriting page still works either way:
 
-1. As soon as a Property Address is entered, the section builds a
-   search query of `bus stops near [PROPERTY ADDRESS]` and both embeds
-   it (Google Maps Embed API, search mode) and links to it (plain
-   Google Maps search, opened in a new tab via the button below the
-   map).
-2. The map is a manual aid only -- nothing on the page reads bus-stop
-   names, walking times, or any other data out of the embedded map. The
-   person underwriting the deal looks at the map/search results
-   themselves and types what they find into the fields below it.
-3. Clicking **Save Verified Transit Result** commits those field values,
-   tagged with the Property Address at the moment of saving.
-4. Pass/Fail is computed immediately from the saved Walking Time (or
+- Missing `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY`: the map shows "The
+  embedded Google Maps view is not configured." The "Open Bus Stop
+  Search in Google Maps" button still works (it needs no API key at
+  all -- it is a plain `google.com/maps` deep link).
+- Missing `GOOGLE_MAPS_API_KEY`: automatic lookup is skipped and the
+  section shows "Automatic bus stop lookup is not configured for this
+  site. Enter the details manually below." All manual fields, the Save
+  button, and Pass/Fail calculation work exactly the same either way.
+
+**Never commit a real API key to this repository.** Both keys must only
+ever be set as Vercel Environment Variables (or in your local,
+gitignored `.env.local`), never hard-coded in source, and this ZIP does
+not include either one.
+
+### 6. How the result is found, reviewed, and recorded
+
+1. As soon as the Property Address looks complete (a number, a comma,
+   reasonable length), the section calls `/api/transit/auto-lookup`,
+   which geocodes the address, finds nearby bus stops, gets an actual
+   walking route to each of the closest few, and returns whichever has
+   the shortest walking time.
+2. On a match, the embedded map switches from a plain search panel to a
+   walking-directions panel centered on that route, and the Nearest Bus
+   Stop, Walking Time, and Walking Distance fields are pre-filled
+   (Transit Agency is filled in only on the rare occasion Google's data
+   includes it -- Places and Directions do not reliably expose a bus
+   stop's operating agency, so this field is very often left for manual
+   entry).
+3. Every field, including the automatically filled ones, stays editable.
+   The map is a visible check on what was found, not a source the app
+   reads data back out of.
+4. Clicking **Save Verified Transit Result** commits the current field
+   values, tagged with the Property Address at the moment of saving.
+5. Pass/Fail is computed immediately from the saved Walking Time (or
    Walking Distance, depending on which mode the Maximum Walking
    Distance setting uses) against that setting's maximum, using an
    inclusive `<=` comparison. Until a result has been saved, the section
    reads "NOT VERIFIED."
-5. If the Property Address changes after a result has been saved, that
-   result is not silently reused -- the section marks it outdated and
-   shows "The property address changed. Verify transit access again."
-   until a new result is saved for the new address.
+6. If the Property Address changes after a result has been saved, that
+   result is not silently reused -- the section marks it outdated,
+   shows "The property address changed. Verify transit access again.",
+   and automatic lookup runs again for the new address.
 
 ## Content guardrails in place
 
@@ -572,10 +627,11 @@ notifications and file uploads" above:
 - `RESEND_FROM_EMAIL` (optional until your sending domain is verified)
 - A private Vercel Blob store connected to the project (required for the
   Capital Partner and RV Park file uploads)
-- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` (optional; required only for
-  the Underwriting page's "Transit and Bus Stop Access" section to show
-  the embedded Google Maps search panel -- see "Transit and Bus Stop
-  Access (Manual Verification + Google Maps Embed)" above)
+- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` and `GOOGLE_MAPS_API_KEY`
+  (both optional; required only for the Underwriting page's "Transit
+  and Bus Stop Access" section to show the embedded map and
+  automatically find the nearest bus stop, respectively -- see "Transit
+  and Bus Stop Access (Automatic Lookup + Google Maps Embed)" above)
 
 To push to your existing GitHub repo: unzip this project over (or into)
 your repo, commit, and push. Vercel will pick up the changes
