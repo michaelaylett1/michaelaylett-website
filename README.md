@@ -119,8 +119,7 @@ Open [http://localhost:3000](http://localhost:3000).
    automatically find the nearest bus stop and walking route; see
    "Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed)"
    below. Every other part of the Underwriting calculator, including the
-   manual verification fields and Pass/Fail result, works without
-   either key.
+   manual verification fields, works without either key.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -437,7 +436,7 @@ The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
 (pure functions plus the actual Google API calls) and is only ever
 invoked from `app/api/transit/auto-lookup/route.ts`, the one place
 `GOOGLE_MAPS_API_KEY` is read -- it is never sent to the browser. The
-shared client-safe helpers (Pass/Fail calculation, URL builders) live in
+shared client-safe helpers (address checks, URL builders) live in
 `lib/transit/manual.ts`. The UI is `TransitAndBusStopAccessSection` and
 `TransitPrintSection` in `components/underwriting/
 SharedHousingCalculator.tsx`.
@@ -539,8 +538,8 @@ The Underwriting page still works either way:
   all -- it is a plain `google.com/maps` deep link).
 - Missing `GOOGLE_MAPS_API_KEY`: automatic lookup is skipped and the
   section shows "Automatic bus stop lookup is not configured for this
-  site. Enter the details manually below." All manual fields, the Save
-  button, and Pass/Fail calculation work exactly the same either way.
+  site. Enter the details manually below." All manual fields and the
+  Save button work exactly the same either way.
 
 **Never commit a real API key to this repository.** Both keys must only
 ever be set as Vercel Environment Variables (or in your local,
@@ -556,22 +555,17 @@ not include either one.
    the shortest walking time.
 2. On a match, the embedded map switches from a plain search panel to a
    walking-directions panel centered on that route, and the Nearest Bus
-   Stop, Walking Time, and Walking Distance fields are pre-filled
-   (Transit Agency is filled in only on the rare occasion Google's data
-   includes it -- Places and Directions do not reliably expose a bus
-   stop's operating agency, so this field is very often left for manual
-   entry).
+   Stop, Walking Time, and Walking Distance fields are pre-filled.
 3. Every field, including the automatically filled ones, stays editable.
    The map is a visible check on what was found, not a source the app
    reads data back out of.
 4. Clicking **Save Verified Transit Result** commits the current field
-   values, tagged with the Property Address at the moment of saving.
-5. Pass/Fail is computed immediately from the saved Walking Time (or
-   Walking Distance, depending on which mode the Maximum Walking
-   Distance setting uses) against that setting's maximum, using an
-   inclusive `<=` comparison. Until a result has been saved, the section
-   reads "NOT VERIFIED."
-6. If the Property Address changes after a result has been saved, that
+   values, tagged with the Property Address at the moment of saving. The
+   section only reports the transit information found -- Nearest Bus
+   Stop, Walking Time, Walking Distance, and Transit Notes -- and does
+   not judge whether the property passes or fails any distance/time
+   threshold.
+5. If the Property Address changes after a result has been saved, that
    result is not silently reused -- the section marks it outdated,
    shows "The property address changed. Verify transit access again.",
    and automatic lookup runs again for the new address.

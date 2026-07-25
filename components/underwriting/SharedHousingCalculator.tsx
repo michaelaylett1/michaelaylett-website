@@ -74,9 +74,6 @@ import {
   type RoiYearRow,
 } from "@/lib/roiProjection";
 import {
-  computeManualTransitStatus,
-  buildManualTransitMessage,
-  FIXED_MAX_WALKING_LABEL,
   looksLikeUsableAddress,
   looksLikeCompleteAddress,
   buildMapsEmbedUrl,
@@ -84,7 +81,7 @@ import {
   buildMapsDirectionsEmbedUrl,
   buildMapsDirectionsSearchUrl,
 } from "@/lib/transit/manual";
-import type { ManualTransitVerification, TransitManualStatus } from "@/lib/transit/manual";
+import type { ManualTransitVerification } from "@/lib/transit/manual";
 // Type-only import -- the actual lookup logic in googleLookup.ts only
 // ever runs server-side (from app/api/transit/auto-lookup/route.ts),
 // but its response shapes are useful here to type the fetch() call
@@ -2776,44 +2773,19 @@ function PropertyTaxPrintRows({
 // five financing structures": the section is always visible regardless
 // of which structure is selected.
 //
-// Manual-verification architecture (see lib/transit/manual.ts for the
-// full rationale): there is no automatic backend bus-stop lookup here.
-// An embedded Google Maps search panel lets the person underwriting the
-// deal look up nearby bus stops themselves, then record what they found
-// in the fields below it. Pass/Fail is computed client-side from those
-// numbers against the Maximum Walking Distance setting -- no server
-// call, no discovery pipeline to go wrong.
+// Automatic-lookup architecture (see lib/transit/manual.ts and
+// lib/transit/googleLookup.ts for the full rationale): the nearest bus
+// stop, walking time, and walking distance are found automatically via
+// Google's Places + Directions APIs and pre-fill the fields below, but
+// the person underwriting the deal always has the final say -- every
+// field stays editable and the embedded map is a visible check on what
+// was found. This section is purely informational: it reports the
+// transit data it finds and does not judge whether the property passes
+// or fails any distance/time threshold.
 // ---------------------------------------------------------------------
-function transitStatusColors(status: TransitManualStatus): {
-  border: string;
-  bg: string;
-  text: string;
-} {
-  switch (status) {
-    case "pass":
-      return { border: "border-emerald-600/40", bg: "bg-emerald-50", text: "text-emerald-800" };
-    case "fail":
-      return { border: "border-red-600/40", bg: "bg-red-50", text: "text-red-800" };
-    default:
-      return { border: "border-line-dark", bg: "bg-paper-2", text: "text-ink/70" };
-  }
-}
-
-function transitStatusLabel(status: TransitManualStatus): string {
-  switch (status) {
-    case "pass":
-      return "PASS";
-    case "fail":
-      return "FAIL";
-    default:
-      return "NOT VERIFIED";
-  }
-}
 
 // Status of the automatic Places + Directions lookup that pre-fills the
-// manual fields below -- distinct from TransitManualStatus (Pass/Fail/
-// Not Verified), which is about the *saved* result, not the lookup that
-// suggested it. "idle" covers both "no address yet" and "an address is
+// fields below. "idle" covers both "no address yet" and "an address is
 // entered but it's already been auto-looked-up or a saved result exists
 // for it," so the UI only needs to show something while a lookup is
 // actually in flight or just finished.
@@ -2831,8 +2803,6 @@ function TransitAndBusStopAccessSection({
   onNotesDraftChange,
   onSave,
   outdated,
-  displayStatus,
-  displayMessage,
   autoStatus,
   autoStopCoords,
 }: {
@@ -2847,12 +2817,9 @@ function TransitAndBusStopAccessSection({
   onNotesDraftChange: (value: string) => void;
   onSave: () => void;
   outdated: boolean;
-  displayStatus: TransitManualStatus;
-  displayMessage: string;
   autoStatus: TransitAutoStatus;
   autoStopCoords: { lat: number; lng: number } | null;
 }) {
-  const colors = transitStatusColors(displayStatus);
   const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
   const hasAddress = looksLikeUsableAddress(address);
   const directionsEmbedUrl = autoStopCoords
@@ -2946,8 +2913,9 @@ function TransitAndBusStopAccessSection({
       {/* Manual verification fields -- Nearest Bus Stop full width,
           Walking Time/Distance side by side, Transit Notes full width.
           No Transit Agency, Bus Route Numbers, or Date Verified fields,
-          and no maximum walking distance/time setting -- Pass/Fail uses
-          the fixed FIXED_MAX_WALKING_MINUTES benchmark instead. */}
+          no maximum walking distance/time setting, and no Pass/Fail
+          judgment of any kind -- this section only reports the actual
+          transit data found. */}
       <div className="grid sm:grid-cols-2 gap-5 mb-5">
         <div className="sm:col-span-2">
           <label htmlFor="transitNearestStop" className="block mb-2">
@@ -3021,12 +2989,6 @@ function TransitAndBusStopAccessSection({
         </button>
       </div>
 
-      {/* Pass/Fail/Not Verified result */}
-      <div className={`border ${colors.border} ${colors.bg} p-5 sm:p-6 mb-5`}>
-        <p className={`font-semibold ${colors.text}`}>{transitStatusLabel(displayStatus)}</p>
-        <p className={`text-sm mt-1 ${colors.text}`}>{displayMessage}</p>
-      </div>
-
       <p className="text-xs text-ink/50 leading-relaxed max-w-2xl">
         Nearest bus stop, walking time, and walking distance are looked up automatically using
         Google Maps, then can be edited before saving. Verify sidewalks, road crossings, lighting,
@@ -3050,14 +3012,10 @@ function TransitAndBusStopAccessSection({
 function TransitPrintSection({
   propertyAddress,
   saved,
-  displayStatus,
-  displayMessage,
   outdated,
 }: {
   propertyAddress: string;
   saved: ManualTransitVerification | null;
-  displayStatus: TransitManualStatus;
-  displayMessage: string;
   outdated: boolean;
 }) {
   if (!saved) return null;
@@ -3088,12 +3046,8 @@ function TransitPrintSection({
           "Walking Distance",
           saved.walkingDistanceMiles !== null ? `${saved.walkingDistanceMiles} miles` : "Not entered"
         )}
-        {row("Pass, Fail, or Not Verified", transitStatusLabel(displayStatus))}
         {row("Verification Source", "Google Maps (Automatic Lookup, Reviewed)")}
       </div>
-      <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
-        {displayMessage}
-      </p>
       {outdated && (
         <p className="mt-1 text-[9pt] text-amber-700 leading-relaxed">
           The property address changed since this result was verified.
@@ -3478,20 +3432,10 @@ export default function SharedHousingCalculator() {
 
   // True once a result has been saved for an address that no longer
   // matches the current Property Address -- the saved figures are kept
-  // (not erased), but the displayed status falls back to Not Verified so
-  // a stale PASS/FAIL is never silently reused for a different property
-  // (spec section 9: "Do not silently reuse the prior stop result").
+  // (not erased), but the UI shows a notice that they should be
+  // re-verified for the new address (spec section 9: "Do not silently
+  // reuse the prior stop result").
   const transitOutdated = Boolean(transitSaved && transitSaved.savedAtAddress !== propertyAddress.trim());
-
-  const transitDisplayStatus: TransitManualStatus = useMemo(() => {
-    if (!transitSaved || transitOutdated) return "notVerified";
-    return computeManualTransitStatus(transitSaved.walkingTimeMinutes);
-  }, [transitSaved, transitOutdated]);
-
-  const transitDisplayMessage: string = useMemo(() => {
-    if (!transitSaved || transitOutdated) return "NOT VERIFIED";
-    return buildManualTransitMessage(transitDisplayStatus, transitSaved.nearestStop, transitSaved.walkingTimeMinutes);
-  }, [transitSaved, transitOutdated, transitDisplayStatus]);
 
   function handleSaveTransitResult() {
     const trimmedAddress = propertyAddress.trim();
@@ -6666,8 +6610,6 @@ export default function SharedHousingCalculator() {
             nearestBusStop: transitSaved.nearestStop || null,
             walkingTimeMinutes: transitSaved.walkingTimeMinutes,
             walkingDistanceMiles: transitSaved.walkingDistanceMiles,
-            maxRequirement: FIXED_MAX_WALKING_LABEL,
-            status: transitStatusLabel(transitDisplayStatus) as "PASS" | "FAIL" | "NOT VERIFIED",
             transitNotes: transitSaved.notes.trim(),
             outdated: transitOutdated,
             verificationSource: "Google Maps (Automatic Lookup, Reviewed)",
@@ -6953,20 +6895,17 @@ export default function SharedHousingCalculator() {
           </div>
         </div>
 
-        {/* Transit summary (spec section 20): acquisition-criteria/
-            property-screening result only -- never feeds cash flow or
-            ROI math, so it is a separate strip rather than a sixth
-            headline tile. Shown once a lookup has run or a manual status
-            has been chosen; hidden before that so the summary band isn't
-            cluttered for a property that hasn't been checked yet. */}
+        {/* Transit summary (spec section 20): purely informational
+            reference data -- never feeds cash flow or ROI math, so it is
+            a separate strip rather than a sixth headline tile. Shown
+            once a result has been saved; hidden before that so the
+            summary band isn't cluttered for a property that hasn't been
+            checked yet. Reports the actual transit figures found -- no
+            Pass/Fail judgment or threshold comparison. */}
         {transitSaved && (
           <div className="print:hidden mt-4 border border-line bg-ink-2 p-5 sm:p-6">
             <p className="eyebrow text-brass-light mb-3">Transit and Bus Stop Access</p>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-sm text-bone/80">
-              <div className="flex justify-between gap-3 lg:block">
-                <span className="text-bone/50">Transit Status</span>
-                <span className="lg:block font-medium text-bone">{transitStatusLabel(transitDisplayStatus)}</span>
-              </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Nearest Bus Stop</span>
                 <span className="lg:block font-medium text-bone break-words">
@@ -6984,10 +6923,6 @@ export default function SharedHousingCalculator() {
                 <span className="lg:block font-medium text-bone">
                   {transitSaved.walkingDistanceMiles !== null ? `${transitSaved.walkingDistanceMiles} miles` : "Not entered"}
                 </span>
-              </div>
-              <div className="flex justify-between gap-3 lg:block">
-                <span className="text-bone/50">Maximum Allowed</span>
-                <span className="lg:block font-medium text-bone">{FIXED_MAX_WALKING_LABEL}</span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Status Source</span>
@@ -7081,8 +7016,6 @@ export default function SharedHousingCalculator() {
           outdated={transitOutdated}
           autoStatus={transitAutoStatus}
           autoStopCoords={transitAutoStopCoords}
-          displayStatus={transitDisplayStatus}
-          displayMessage={transitDisplayMessage}
         />
 
         {/* ---------------------------------------------------------- */}
@@ -10488,8 +10421,6 @@ export default function SharedHousingCalculator() {
           <TransitPrintSection
             propertyAddress={propertyAddress}
             saved={transitSaved}
-            displayStatus={transitDisplayStatus}
-            displayMessage={transitDisplayMessage}
             outdated={transitOutdated}
           />
 
