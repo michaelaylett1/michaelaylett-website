@@ -131,6 +131,15 @@ export async function geocodeAddressGoogle(address: string): Promise<GeocodeResu
       components.find((c) => c.types.includes("administrative_area_level_2"))?.long_name ?? null;
     const state =
       components.find((c) => c.types.includes("administrative_area_level_1"))?.short_name ?? null;
+    // "locality" is the standard city-level component; some addresses
+    // (unincorporated areas) only have "sublocality" or "postal_town" --
+    // fall back through those so GTFS provider city-matching still has a
+    // reasonable value to compare against.
+    const city =
+      components.find((c) => c.types.includes("locality"))?.long_name ??
+      components.find((c) => c.types.includes("postal_town"))?.long_name ??
+      components.find((c) => c.types.includes("sublocality"))?.long_name ??
+      null;
 
     return {
       normalizedAddress: top.formatted_address,
@@ -138,6 +147,7 @@ export async function geocodeAddressGoogle(address: string): Promise<GeocodeResu
       longitude: top.geometry.location.lng,
       county,
       state,
+      city,
       countyFips: null,
       provider: "google",
       retrievedAt: new Date().toISOString(),

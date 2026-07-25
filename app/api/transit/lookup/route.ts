@@ -70,7 +70,7 @@ export async function POST(request: Request) {
         // provider response, matching the logging convention in
         // lib/forms/response.ts.
         console.error(`[transit:lookup] ${err.code}: ${err.message}`);
-        return { success: false, errorCode: err.code, error: err.message };
+        return { success: false, errorCode: err.code, error: err.message, diagnostics: err.diagnostics };
       }
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[transit:lookup] Unhandled error: ${message}`);

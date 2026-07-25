@@ -66,6 +66,7 @@ export async function geocodeAddressOsm(address: string): Promise<GeocodeResult 
   const addr = top.address || {};
   const county: string | null = addr.county || null;
   const state: string | null = addr.state || null;
+  const city: string | null = addr.city || addr.town || addr.village || null;
 
   return {
     normalizedAddress: top.display_name,
@@ -73,6 +74,7 @@ export async function geocodeAddressOsm(address: string): Promise<GeocodeResult 
     longitude: parseFloat(top.lon),
     county,
     state,
+    city,
     countyFips: null,
     provider: "openstreetmap",
     retrievedAt: new Date().toISOString(),

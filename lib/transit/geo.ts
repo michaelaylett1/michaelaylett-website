@@ -78,13 +78,44 @@ export function coordKey(lat: number, lng: number): string {
   return `${lat.toFixed(4)},${lng.toFixed(4)}`;
 }
 
-/** Loose name normalization for dedupe matching: lowercase, collapse
- * whitespace, strip punctuation that commonly differs between the same
- * stop reported by two different data sources ("@" vs "and", etc). */
+// Common street-suffix abbreviations that differ between GTFS stop names
+// and Google/OSM place names for the same physical intersection (spec
+// section 3: "Normalize names such as: Benfield Rd @ Shads Landing /
+// Benfield Road at Shads Landing / BENFIELD RD & SHADS LANDING").
+// Matched as whole words after punctuation stripping, so "rd" only
+// expands when it's a standalone token, not inside another word.
+const STREET_ABBREVIATIONS: Record<string, string> = {
+  rd: "road",
+  st: "street",
+  ave: "avenue",
+  av: "avenue",
+  blvd: "boulevard",
+  dr: "drive",
+  ln: "lane",
+  ct: "court",
+  pkwy: "parkway",
+  hwy: "highway",
+  ste: "suite",
+  mt: "mount",
+  ft: "fort",
+};
+
+/** Loose name normalization for dedupe matching across GTFS, Google
+ * Places, and OSM stop names: lowercase, normalize intersection
+ * connectors ("@", "&") to the word "at", expand common street-suffix
+ * abbreviations, strip remaining punctuation, and collapse whitespace --
+ * so "Benfield Rd @ Shads Landing", "Benfield Road at Shads Landing",
+ * and "BENFIELD RD & SHADS LANDING" all normalize identically. */
 export function normalizeStopName(name: string): string {
-  return name
+  const withConnectors = name
     .toLowerCase()
-    .replace(/[@&]/g, "and")
+    .replace(/[@&]/g, " at ")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+  const expanded = withConnectors
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => STREET_ABBREVIATIONS[word] ?? word)
+    .join(" ");
+  return expanded;
 }

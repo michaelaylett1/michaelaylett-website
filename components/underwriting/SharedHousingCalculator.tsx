@@ -76,6 +76,7 @@ import {
 import { evaluateWalkResult, looksLikeCompleteAddress, formatMaxWalkLabel } from "@/lib/transit/evaluate";
 import type {
   TransitDataSource,
+  TransitLookupDiagnostics,
   TransitLookupResult,
   TransitLookupResponseBody,
   TransitMaxWalkMode,
@@ -2810,17 +2811,23 @@ function buildWalkingRouteMapsUrl(originAddress: string, stop: TransitStopCandid
   )}&destination=${encodeURIComponent(destination)}&travelmode=walking`;
 }
 
+// A synthesized coordinate-key id looks like "35.3130,-80.7820" (see
+// coordKey in lib/transit/geo.ts) -- used below to tell a real Google
+// place_id apart from a fallback id without depending on discoveryMethod
+// (a GTFS-or-OSM-only stop has no place_id regardless of which merge tag
+// it ended up with).
+const COORD_KEY_ID_PATTERN = /^-?\d+\.\d{4},-?\d+\.\d{4}$/;
+
 /** Google Maps "view this place" URL -- uses the Google place_id when one
- * is actually known for this stop (it was found or confirmed via Places
- * Nearby Search, so stop.id is a real Google place_id) for a precise
- * match; falls back to a coordinate search otherwise (a stop discovered
- * only through transit routing, or the OpenStreetMap fallback, has no
- * place_id -- stop.id is a synthesized coordinate key in that case, not a
- * value Google's query_place_id parameter understands). No API key
- * required or exposed either way. */
+ * is actually known for this stop (Places Nearby Search contributed it)
+ * for a precise match; falls back to a coordinate search otherwise (a
+ * stop discovered only through GTFS or OpenStreetMap has no place_id --
+ * stop.id is a synthesized coordinate key in that case, not a value
+ * Google's query_place_id parameter understands). No API key required or
+ * exposed either way. */
 function buildBusStopMapsUrl(stop: TransitStopCandidate): string {
   const query = encodeURIComponent(`${stop.name} ${stop.latitude},${stop.longitude}`);
-  const hasRealPlaceId = stop.discoveryMethod === "places" || stop.discoveryMethod === "both";
+  const hasRealPlaceId = !COORD_KEY_ID_PATTERN.test(stop.id);
   if (hasRealPlaceId) {
     return `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(
       stop.id
@@ -2839,8 +2846,8 @@ function transitVerificationLabel(stop: TransitStopCandidate): string {
   if (stop.busServiceConfidence !== "confirmed") {
     return "Bus service should be independently verified";
   }
-  if (stop.discoveryMethod === "transitRouting" || stop.discoveryMethod === "both") {
-    return "Bus service confirmed through transit routing";
+  if (stop.discoveryMethod === "gtfs" || stop.discoveryMethod === "both") {
+    return "Bus service confirmed through official GTFS transit data";
   }
   return "Bus service confirmed by provider data";
 }
@@ -2917,6 +2924,8 @@ function TransitAndBusStopAccessSection({
   onNotesChange,
   displayStatus,
   displayMessage,
+  diagnostics,
+  debugEnabled,
 }: {
   address: string;
   maxWalkMode: TransitMaxWalkMode;
@@ -2944,6 +2953,8 @@ function TransitAndBusStopAccessSection({
   onNotesChange: (value: string) => void;
   displayStatus: TransitResultStatus | null;
   displayMessage: string;
+  diagnostics: TransitLookupDiagnostics | null;
+  debugEnabled: boolean;
 }) {
   const colors = transitStatusColors(displayStatus);
   const nearest = result?.nearestStop ?? null;
@@ -3209,7 +3220,103 @@ function TransitAndBusStopAccessSection({
         terrain, accessibility, stop activity, route schedules, and current bus service before
         acquiring the property.
       </p>
+
+      {debugEnabled && diagnostics && <TransitDiagnosticsPanel diagnostics={diagnostics} />}
     </div>
+  );
+}
+
+// Administrator-only diagnostic detail (spec section 11/12), opt-in via
+// ?transitDebug=1 -- never shown to ordinary public users. Surfaces
+// enough detail to tell apart a data-discovery problem (no GTFS provider
+// matched, or a feed failed), a routing problem (walking routes failed),
+// a filtering problem, a configuration problem (feed not configured,
+// API key missing), or a stale deployment (buildVersion mismatch).
+function TransitDiagnosticsPanel({ diagnostics }: { diagnostics: TransitLookupDiagnostics }) {
+  const feedStatusLabel = (status: TransitLookupDiagnostics["gtfsProviders"][number]["feedStatus"]) => {
+    switch (status) {
+      case "ok":
+        return "Loaded";
+      case "failed":
+        return "Failed to download/parse";
+      case "not_configured":
+        return "No feed URL configured";
+      default:
+        return "Not attempted";
+    }
+  };
+
+  return (
+    <details className="mt-5 border border-dashed border-line-dark/60 bg-ink/[0.02] p-4 text-xs" open>
+      <summary className="cursor-pointer font-semibold text-ink/80 select-none">
+        Transit Lookup Diagnostics (administrator only)
+      </summary>
+      <div className="mt-3 space-y-3 text-ink/70">
+        <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1">
+          <div>
+            <span className="text-ink/50">Matched Address: </span>
+            {diagnostics.matchedAddress}
+          </div>
+          <div>
+            <span className="text-ink/50">Coordinates: </span>
+            {diagnostics.latitude.toFixed(5)}, {diagnostics.longitude.toFixed(5)}
+          </div>
+          <div>
+            <span className="text-ink/50">Google Places: </span>
+            {diagnostics.googlePlacesStatus} ({diagnostics.googlePlacesCandidates} candidate
+            {diagnostics.googlePlacesCandidates === 1 ? "" : "s"})
+          </div>
+          <div>
+            <span className="text-ink/50">Walking Routes: </span>
+            {diagnostics.walkingRoutesSucceeded} succeeded / {diagnostics.walkingRoutesAttempted} attempted
+          </div>
+          <div>
+            <span className="text-ink/50">Final Provider Used: </span>
+            {diagnostics.finalProviderUsed ?? "None (no result)"}
+          </div>
+          <div>
+            <span className="text-ink/50">Transit Lookup Version: </span>
+            {diagnostics.buildVersion}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-ink/50 mb-1">GTFS Providers Matched to This Location</p>
+          {diagnostics.gtfsProviders.length === 0 ? (
+            <p className="text-ink/60">
+              None -- no configured transit-agency GTFS provider covers this state/county/city.
+            </p>
+          ) : (
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="text-ink/50">
+                  <th className="pr-4 pb-1 font-normal">Agency</th>
+                  <th className="pr-4 pb-1 font-normal">Feed Status</th>
+                  <th className="pr-4 pb-1 font-normal">Verified Source</th>
+                  <th className="pr-4 pb-1 font-normal">Last Updated</th>
+                  <th className="pb-1 font-normal">Stops in Radius</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diagnostics.gtfsProviders.map((p) => (
+                  <tr key={p.agencyName} className="border-t border-line-dark/20">
+                    <td className="pr-4 py-1">{p.agencyName}</td>
+                    <td className="pr-4 py-1">{feedStatusLabel(p.feedStatus)}</td>
+                    <td className="pr-4 py-1">{p.feedVerified ? "Yes" : "Best-effort, verify"}</td>
+                    <td className="pr-4 py-1">
+                      {p.feedLastUpdated
+                        ? new Date(p.feedLastUpdated).toLocaleString("en-US")
+                        : "Not loaded"}
+                    </td>
+                    <td className="py-1">{p.rawStopsWithinRadius}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -3660,10 +3767,26 @@ export default function SharedHousingCalculator() {
   const [transitResultAddress, setTransitResultAddress] = useState("");
   const [transitLoading, setTransitLoading] = useState(false);
   const [transitError, setTransitError] = useState<string | null>(null);
+  // Diagnostics from the most recent FAILED lookup (a successful lookup's
+  // diagnostics live on transitResult.diagnostics instead). Administrator-
+  // only detail (spec section 11) -- see transitDebugEnabled below.
+  const [transitErrorDiagnostics, setTransitErrorDiagnostics] = useState<TransitLookupDiagnostics | null>(null);
   const [transitShowAlternates, setTransitShowAlternates] = useState(false);
   const [transitOverrideStatus, setTransitOverrideStatus] = useState<TransitResultUsed>("automatic");
   const [transitNotes, setTransitNotes] = useState("");
   const transitInFlightAddressRef = useRef<string | null>(null);
+
+  // Administrator/debug diagnostics panel is opt-in via a URL query
+  // param (?transitDebug=1) so ordinary public visitors never see it
+  // (spec section 11: "Hide detailed diagnostics from ordinary public
+  // users"). Read once on mount -- this page requires a shared password
+  // already, so a query-param gate is a reasonable extra layer for a
+  // debugging aid, not a security boundary.
+  const [transitDebugEnabled, setTransitDebugEnabled] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setTransitDebugEnabled(new URLSearchParams(window.location.search).get("transitDebug") === "1");
+  }, []);
 
   const transitEffectiveMaxWalkSetting: TransitMaxWalkSetting = useMemo(() => {
     const timeMinutes =
@@ -3758,11 +3881,14 @@ export default function SharedHousingCalculator() {
       if (data.success) {
         setTransitResult(data.result);
         setTransitResultAddress(trimmed);
+        setTransitErrorDiagnostics(null);
       } else {
         setTransitError(data.error);
+        setTransitErrorDiagnostics(data.diagnostics ?? null);
       }
     } catch {
       setTransitError("Network error while checking transit access. Please try again.");
+      setTransitErrorDiagnostics(null);
     } finally {
       setTransitLoading(false);
       if (transitInFlightAddressRef.current === trimmed) transitInFlightAddressRef.current = null;
@@ -7311,6 +7437,8 @@ export default function SharedHousingCalculator() {
           onNotesChange={setTransitNotes}
           displayStatus={transitDisplayStatus}
           displayMessage={transitDisplayMessage}
+          diagnostics={transitResult?.diagnostics ?? transitErrorDiagnostics}
+          debugEnabled={transitDebugEnabled}
         />
 
         {/* ---------------------------------------------------------- */}
