@@ -114,9 +114,10 @@ Open [http://localhost:3000](http://localhost:3000).
    `SHARED_HOUSING_CALCULATOR_PASSWORD` if you want to change the
    Shared Housing Calculator's password from its default (`padsplit`).
    The Underwriting page's "Transit and Bus Stop Access" feature needs
-   `GOOGLE_MAPS_API_KEY` set before it can look up real bus stops; see
-   "Transit and Bus Stop Access (Google Maps Platform)" below. Every
-   other part of the Underwriting calculator works without it.
+   `GOOGLE_MAPS_API_KEY` set before it can compute an actual walking
+   route (GTFS-based stop discovery itself works without it); see
+   "Transit and Bus Stop Access (GTFS + Google Maps Platform)" below.
+   Every other part of the Underwriting calculator works without it.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -404,17 +405,47 @@ is not compatible with this code (`put()` calls request
 `access: "private"` explicitly, so uploads will fail against a
 public-only store rather than silently becoming public).
 
-## Transit and Bus Stop Access (Google Maps Platform)
+## Transit and Bus Stop Access (GTFS + Google Maps Platform)
 
 The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
 Access" section that looks up the nearest bus stop within walking
 distance of the property address, using an actual pedestrian walking
-route rather than straight-line distance. This calls Google Maps
-Platform from a server-side API route
-(`app/api/transit/lookup/route.ts`); the key is never sent to the
-browser. The rest of the Underwriting calculator (all five financing
-structures, the printable report, and the Excel export) works fully
-without this key -- only the transit lookup itself is affected.
+route rather than straight-line distance. This calls a server-side API
+route (`app/api/transit/lookup/route.ts`); no key or credential is ever
+sent to the browser. The rest of the Underwriting calculator (all five
+financing structures, the printable report, and the Excel export) works
+fully without any of this configured -- only the transit lookup itself
+is affected.
+
+**Discovery architecture (v2.0-GTFS).** Bus-stop discovery is now
+GTFS-primary, not Google-only. An earlier version relied on Google
+Places (and later, a Google Directions transit-routing probe) as the
+only discovery method, which does not reliably index every small
+roadside stop -- confirmed by a real regression where a genuine, walkable
+CATS stop in Charlotte, NC ("Benfield Rd @ Shads Landing") was invisible
+to Google-only discovery. The fix, in `lib/transit/gtfs/` and
+`lib/transit/lookup.ts`:
+
+1. **Official transit-agency GTFS static data** (`lib/transit/gtfs/`) is
+   the primary source. `lib/transit/gtfs/providers.ts` maps a property's
+   state/county/city to the transit agency (or agencies) that serve it;
+   `lib/transit/gtfs/ingest.ts` downloads and parses that agency's
+   published GTFS ZIP (agency.txt/stops.txt/routes.txt/trips.txt/
+   stop_times.txt) into an indexed, cached structure.
+2. **Google Places Nearby Search** runs in parallel as a supplemental
+   source, not the only one -- a stop found by either GTFS or Places is
+   retained, and the same physical stop found by both is merged into one
+   result.
+3. **OpenStreetMap** (Nominatim + Overpass) is the fallback used only
+   when `GOOGLE_MAPS_API_KEY` is not configured at all; GTFS discovery
+   still runs on that path since it does not depend on Google.
+4. Every candidate, regardless of which source found it, still gets a
+   dedicated Google Routes API WALK-mode route before being reported as
+   the nearest stop -- straight-line distance is only ever used to
+   shortlist candidates for that call, never as the displayed distance.
+
+See "GTFS Feed Configuration" below for the provider list and how to
+correct a feed URL without a code change.
 
 ### 1. Create a Google Maps Platform API key
 
@@ -481,20 +512,79 @@ the same value; `.env.local` is already gitignored and never committed.
 
 ### 4. If the key is not set
 
-The Underwriting page still works. The "Transit and Bus Stop Access"
-section shows "Transit lookup is not configured. Add the Google Maps API
-key in the Vercel environment variables." when a lookup is attempted, and
-falls back to OpenStreetMap's public Nominatim/Overpass data only if you
-explicitly want a no-key fallback for local testing -- see the comments
-in `lib/transit/osm.ts` for that fallback's limitations (it does not
-compute an actual walking route, since Nominatim/Overpass have no
-production-grade routing API of their own; it will report the walking
-route as unavailable rather than substituting straight-line distance).
+The Underwriting page still works. GTFS-based bus-stop discovery still
+runs (it does not depend on Google), but there is no Google Routes API
+available to compute an actual walking route, so every result is
+reported with walking distance/time "Unavailable" rather than
+substituting straight-line distance -- consistent with the rule that
+this feature never fabricates a walking route. Geocoding falls back to
+OpenStreetMap's public Nominatim service; see the comments in
+`lib/transit/osm.ts` for that fallback's limitations.
 
 **Never commit a real API key to this repository.** `GOOGLE_MAPS_API_KEY`
 must only ever be set as a Vercel Environment Variable (or in your local,
 gitignored `.env.local`), never hard-coded in source, and this ZIP does
 not include one.
+
+### 5. GTFS Feed Configuration
+
+`lib/transit/gtfs/providers.ts` registers one entry per transit agency
+(Charlotte/CATS, Dallas-Plano/DART, Fort Worth/Trinity Metro, Atlanta-
+Decatur/MARTA, Raleigh/GoRaleigh, the Triangle/GoTriangle, Jacksonville/
+JTA, Orlando/LYNX, Tampa/HART, Pinellas/PSTA, Pasco County, Phoenix/
+Valley Metro, Las Vegas/RTC Southern Nevada), each with a state, the
+counties/cities it serves, and a default GTFS static feed URL.
+
+**Feed URL confidence.** Every entry has a `verified` flag. `verified:
+true` means the URL was found directly on the agency's own domain (DART,
+Trinity Metro, MARTA, LYNX, PSTA, Valley Metro/City of Phoenix Open Data,
+and RTC Southern Nevada, as shipped). `verified: false` means either a
+best-effort mirror was used (CATS ships pointing at a third-party archive
+of a Charlotte public-records request, since a stable current URL on
+CATS's own domain could not be confirmed) or no confident URL was found
+at all (GoRaleigh, GoTriangle, JTA, HART, Pasco County ship with
+`feedUrl: null` -- these providers still participate in location
+matching and diagnostics, they just won't return GTFS candidates for
+that market until a feed URL is supplied). **Before relying on any
+market, especially Charlotte/CATS, do a first-deploy smoke test against a
+known address in that market and check the administrator diagnostics
+panel (see below) to confirm the feed loaded and returned a sensible
+stop count.**
+
+**Correcting or adding a feed URL without a code change.** Every
+provider can be overridden via a `GTFS_FEED_URL_<ID>` environment
+variable (uppercase, hyphens become underscores), added the same way as
+`GOOGLE_MAPS_API_KEY` in Vercel's Environment Variables settings:
+
+- `GTFS_FEED_URL_CATS` -- Charlotte
+- `GTFS_FEED_URL_GORALEIGH`, `GTFS_FEED_URL_GOTRIANGLE` -- Raleigh/Triangle
+- `GTFS_FEED_URL_JTA` -- Jacksonville
+- `GTFS_FEED_URL_HART` -- Tampa
+- `GTFS_FEED_URL_PASCO` -- Pasco County
+- (any other provider's `id` field in `providers.ts`, uppercased)
+
+**Caching.** A parsed feed is cached in memory for 24 hours per warm
+server instance (`lib/transit/gtfs/cache.ts`) so a multi-megabyte agency
+ZIP is downloaded and parsed at most once a day, not on every
+underwriting request. This was chosen over a paid external store (Vercel
+KV, a database) because it requires no additional infrastructure and
+meaningfully cuts latency for the common case; the trade-off, documented
+in the module itself, is that Vercel Functions are ephemeral and can run
+across multiple isolated instances, so a cold start re-downloads the
+feed. If cross-instance durability becomes important later, swap the
+in-memory `Map` in `cache.ts` for a shared store -- every caller only
+ever goes through `loadFeedCached`, so no other file needs to change.
+
+**Administrator diagnostics.** Adding `?transitDebug=1` to the
+Underwriting page URL reveals a "Transit Lookup Diagnostics" panel below
+the transit result (never shown to ordinary visitors otherwise):
+matched address and coordinates, every GTFS provider that matched the
+property's location with its feed status (loaded / failed / not
+configured) and stop count in radius, Google Places status and candidate
+count, walking-route attempts/successes, which provider ultimately
+supplied the result, and the running `Transit Lookup Version` string
+(`2.0-GTFS`) -- useful for confirming a deployment actually picked up
+this code rather than serving a stale build.
 
 ## Content guardrails in place
 
