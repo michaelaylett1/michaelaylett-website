@@ -76,6 +76,9 @@ export async function geocodeAddressOsm(address: string): Promise<GeocodeResult 
     countyFips: null,
     provider: "openstreetmap",
     retrievedAt: new Date().toISOString(),
+    // Nominatim does not return a partial/approximate-match flag
+    // comparable to Google's `partial_match` -- always false on this path.
+    partialMatch: false,
   };
 }
 

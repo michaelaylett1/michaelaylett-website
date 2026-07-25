@@ -4,19 +4,34 @@
  * GOOGLE_MAPS_API_KEY from process.env and every function here makes a
  * server-to-Google request, so the key never reaches the browser.
  *
- * Three Google Maps Platform services are used, per spec section 4:
+ * Four Google Maps Platform services are used:
  *   - Geocoding API (legacy REST endpoint -- stable and unchanged for
  *     many years): turns a free-text address into coordinates + address
- *     components (used to read the county/state).
+ *     components (used to read the county/state), and flags a partial/
+ *     approximate match so the caller can warn rather than silently
+ *     search from a possibly-wrong location.
  *   - Places API Nearby Search (legacy REST endpoint, `type=bus_station`
- *     filter) to find candidate bus stations near the coordinates.
+ *     filter) -- "Method A" bus-stop discovery. Only finds stops that
+ *     Google has indexed as a standalone Places record, which many
+ *     ordinary roadside bus stops are not.
+ *   - Directions API (legacy, `mode=transit&transit_mode=bus`) used two
+ *     ways:
+ *       1. "Method B" bus-stop discovery (firstBusBoardingStop): probes
+ *          a transit route from the property toward several nearby
+ *          points in different compass directions and reads the FIRST
+ *          bus-mode transit step's departure stop off each response.
+ *          This surfaces roadside stops that only exist in Google's
+ *          transit-routing/GTFS data, not as a Places record -- the gap
+ *          Method A alone misses.
+ *       2. Enrichment (transitBusDetailsGoogle) for the small number of
+ *          Method-A-only finalist stops, to fill in agency/route-number
+ *          labels and confirm the vehicle type is BUS. Method B results
+ *          already carry this data directly from the same call that
+ *          discovered them, so they skip this second call.
  *   - Routes API `computeRoutes` (the current, non-deprecated routing
- *     API) with travelMode "WALK" to get an actual pedestrian walking
- *     route's distance and duration for each candidate.
- *   - Directions API (legacy, `mode=transit&transit_mode=bus`) is used
- *     only for the small number of finalist stops (nearest + up to 4
- *     alternates) to extract the transit agency name and bus route
- *     numbers/short names, and to confirm the vehicle type is BUS.
+ *     API) with travelMode "WALK" to get an actual, separately-verified
+ *     pedestrian walking route's distance and duration for every
+ *     candidate stop, regardless of which method discovered it.
  *
  * These are implemented against Google's documented request/response
  * shapes. Google occasionally adjusts field names on newer APIs (Places
@@ -24,9 +39,9 @@
  * the current reference at https://developers.google.com/maps/documentation
  * before assuming the orchestration logic in lookup.ts is wrong.
  *
- * The three services used here must each be enabled in the Google Cloud
- * project tied to GOOGLE_MAPS_API_KEY: "Geocoding API", "Places API",
- * "Routes API", and "Directions API" (see README.md).
+ * All four services must be enabled in the Google Cloud project tied to
+ * GOOGLE_MAPS_API_KEY: "Geocoding API", "Places API", "Routes API", and
+ * "Directions API" (see README.md).
  */
 import type { GeocodeResult } from "./types";
 
@@ -126,6 +141,7 @@ export async function geocodeAddressGoogle(address: string): Promise<GeocodeResu
       countyFips: null,
       provider: "google",
       retrievedAt: new Date().toISOString(),
+      partialMatch: top.partial_match === true,
     };
   }
 
@@ -324,4 +340,100 @@ export async function transitBusDetailsGoogle(
 
   if (!confirmedBus) return null;
   return { agency, routes, confirmedBus };
+}
+
+// ---------------------------------------------------------------------
+// Directions API (legacy, transit/bus mode) -- "Method B" bus-stop
+// discovery. Reads the FIRST bus-mode transit step off a probed route
+// and returns its departure stop, which is the boarding stop nearest the
+// origin for that particular itinerary. Called from several probe
+// destinations in lookup.ts to surface roadside stops that never appear
+// as a standalone Places record (the gap that caused "Benfield Rd @
+// Shads Landing" to be missed by Nearby Search alone).
+// ---------------------------------------------------------------------
+export interface BusBoardingStop {
+  stopName: string;
+  latitude: number;
+  longitude: number;
+  agency: string | null;
+  routes: string[];
+}
+
+export async function firstBusBoardingStop(
+  originLat: number,
+  originLng: number,
+  destLat: number,
+  destLng: number
+): Promise<BusBoardingStop | null> {
+  const apiKey = getGoogleMapsApiKey();
+  if (!apiKey) throw new GoogleMapsApiError("not_configured", "GOOGLE_MAPS_API_KEY is not set.");
+
+  const url =
+    `https://maps.googleapis.com/maps/api/directions/json` +
+    `?origin=${originLat},${originLng}&destination=${destLat},${destLng}` +
+    `&mode=transit&transit_mode=bus&key=${apiKey}`;
+
+  // Genuine transport/API failures (timeout, rate limit, auth) are
+  // thrown so the caller (lookup.ts) can tell "this probe direction
+  // legitimately found no bus route" apart from "this probe direction
+  // could not be checked at all" -- the latter must never be reported as
+  // proof no bus stop exists (spec: "Do not present an API limitation as
+  // proof that no bus stops exist").
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, { method: "GET" }, 6000);
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new GoogleMapsApiError("timeout", "Transit-routing probe timed out.");
+    }
+    throw new GoogleMapsApiError("unknown", "Transit-routing probe failed.");
+  }
+  if (response.status === 403) {
+    throw new GoogleMapsApiError("billing_not_enabled", "Directions API request denied (billing/permissions).");
+  }
+  if (response.status === 429) {
+    throw new GoogleMapsApiError("rate_limited", "Directions API rate limit reached.");
+  }
+
+  let data: any;
+  try {
+    data = await response.json();
+  } catch {
+    throw new GoogleMapsApiError("unknown", "Transit-routing probe returned an unreadable response.");
+  }
+  // NOT_FOUND/ZERO_RESULTS/REQUEST_DENIED-for-this-destination and similar
+  // are a legitimate "no bus route to this probe point," not a hard
+  // failure -- only OVER_QUERY_LIMIT (rate limit) is escalated.
+  if (data.status === "OVER_QUERY_LIMIT") {
+    throw new GoogleMapsApiError("rate_limited", "Directions API rate limit reached.");
+  }
+  if (data.status !== "OK" || !Array.isArray(data.routes) || data.routes.length === 0) return null;
+
+  // Walk steps in chronological order (origin -> destination) and stop
+  // at the FIRST bus-mode transit step -- its departure_stop is the
+  // boarding stop nearest the property for this itinerary.
+  for (const route of data.routes) {
+    const legs = route.legs || [];
+    for (const leg of legs) {
+      const steps = leg.steps || [];
+      for (const step of steps) {
+        const transit = step.transit_details;
+        if (!transit) continue;
+        const vehicleType = transit.line?.vehicle?.type;
+        if (vehicleType !== "BUS") continue;
+        const stop = transit.departure_stop;
+        if (!stop || !stop.location) continue;
+        const shortName = transit.line?.short_name || transit.line?.name;
+        const agencyName = Array.isArray(transit.line?.agencies) ? transit.line.agencies[0]?.name : null;
+        return {
+          stopName: stop.name || "Bus Stop",
+          latitude: stop.location.lat,
+          longitude: stop.location.lng,
+          agency: agencyName ?? null,
+          routes: shortName ? [shortName] : [],
+        };
+      }
+    }
+  }
+  return null;
 }

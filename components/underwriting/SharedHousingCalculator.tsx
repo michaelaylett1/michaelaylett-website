@@ -2810,18 +2810,39 @@ function buildWalkingRouteMapsUrl(originAddress: string, stop: TransitStopCandid
   )}&destination=${encodeURIComponent(destination)}&travelmode=walking`;
 }
 
-/** Google Maps "view this place" URL -- uses the Google place_id when
- * available (Google Maps data source) for a precise match; falls back to
- * a coordinate search otherwise (OpenStreetMap data source). No API key
+/** Google Maps "view this place" URL -- uses the Google place_id when one
+ * is actually known for this stop (it was found or confirmed via Places
+ * Nearby Search, so stop.id is a real Google place_id) for a precise
+ * match; falls back to a coordinate search otherwise (a stop discovered
+ * only through transit routing, or the OpenStreetMap fallback, has no
+ * place_id -- stop.id is a synthesized coordinate key in that case, not a
+ * value Google's query_place_id parameter understands). No API key
  * required or exposed either way. */
-function buildBusStopMapsUrl(stop: TransitStopCandidate, dataSource: TransitDataSource): string {
+function buildBusStopMapsUrl(stop: TransitStopCandidate): string {
   const query = encodeURIComponent(`${stop.name} ${stop.latitude},${stop.longitude}`);
-  if (dataSource === "Google Maps") {
+  const hasRealPlaceId = stop.discoveryMethod === "places" || stop.discoveryMethod === "both";
+  if (hasRealPlaceId) {
     return `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(
       stop.id
     )}`;
   }
   return `https://www.google.com/maps/search/?api=1&query=${query}`;
+}
+
+/**
+ * A stop confirmed via transit routing (Method B, or Method A+B merged)
+ * gets a more specific verification label than one only found via a
+ * Places-record enrichment call, since transit routing directly observed
+ * a bus using that stop rather than inferring it from separate metadata.
+ */
+function transitVerificationLabel(stop: TransitStopCandidate): string {
+  if (stop.busServiceConfidence !== "confirmed") {
+    return "Bus service should be independently verified";
+  }
+  if (stop.discoveryMethod === "transitRouting" || stop.discoveryMethod === "both") {
+    return "Bus service confirmed through transit routing";
+  }
+  return "Bus service confirmed by provider data";
 }
 
 function TransitStopSummaryLines({ stop }: { stop: TransitStopCandidate }) {
@@ -2863,11 +2884,7 @@ function TransitStopSummaryLines({ stop }: { stop: TransitStopCandidate }) {
       )}
       <div className="flex justify-between gap-3">
         <span className="text-ink/60">Verification</span>
-        <span className="text-ink/70 text-right">
-          {stop.busServiceConfidence === "confirmed"
-            ? "Bus service confirmed by provider data"
-            : "Bus service should be independently verified"}
-        </span>
+        <span className="text-ink/70 text-right">{transitVerificationLabel(stop)}</span>
       </div>
     </>
   );
@@ -3060,6 +3077,14 @@ function TransitAndBusStopAccessSection({
         </p>
       )}
 
+      {result && result.geocodePartialMatch && !outdated && !loading && (
+        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
+          This address only matched approximately. Confirm the property address is correct before
+          relying on this transit result -- the search may have started from a nearby location
+          rather than the exact property.
+        </p>
+      )}
+
       {/* Result card */}
       {result && (
         <div className={`border ${colors.border} ${colors.bg} p-5 sm:p-6 mb-5`}>
@@ -3088,7 +3113,7 @@ function TransitAndBusStopAccessSection({
                   <ExternalLink size={13} aria-hidden="true" />
                 </a>
                 <a
-                  href={buildBusStopMapsUrl(nearest, result.dataSource)}
+                  href={buildBusStopMapsUrl(nearest)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1.5 text-sm text-brass hover:underline"
@@ -6861,10 +6886,9 @@ export default function SharedHousingCalculator() {
               year: "numeric",
             }),
             transitNotes: transitNotes.trim(),
-            verificationStatus:
-              nearest?.busServiceConfidence === "confirmed"
-                ? "Bus service confirmed by provider data"
-                : "Bus service should be independently verified",
+            verificationStatus: nearest
+              ? transitVerificationLabel(nearest)
+              : "Bus service should be independently verified",
           };
         })(),
       };
