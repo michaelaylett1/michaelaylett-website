@@ -2880,9 +2880,8 @@ function TransitAndBusStopAccessSection({
     <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
       <p className="eyebrow text-brass mb-1">Transit and Bus Stop Access</p>
       <p className="text-sm text-ink/70 leading-[1.45] mb-5 max-w-2xl">
-        Look up nearby bus stops for this property in the embedded map below, once a Property
-        Address is entered above, then record what you find so it can be checked against the
-        Maximum Walking Distance requirement.
+        Use Google Maps to find the nearest bus stop and verify the actual walking route from the
+        property.
       </p>
 
       {/* Maximum Walking Distance setting */}
@@ -3141,6 +3140,13 @@ function TransitAndBusStopAccessSection({
         an automated calculation. Verify sidewalks, road crossings, lighting, terrain,
         accessibility, stop activity, route schedules, and current bus service before acquiring
         the property.
+      </p>
+
+      {/* Temporary deployment marker (spec section 9) -- confirms which
+          build/component is actually live. Safe to remove once the
+          correct deployment has been confirmed. */}
+      <p className="print:hidden mt-4 text-[10px] text-ink/30">
+        Transit Interface Version: Manual Google Maps Embed 1.0
       </p>
     </div>
   );
