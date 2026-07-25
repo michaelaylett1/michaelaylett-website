@@ -251,11 +251,8 @@ export interface ExportTransitResult {
   nearestBusStop: string | null;
   walkingTimeMinutes: number | null;
   walkingDistanceMiles: number | null;
-  transitAgency: string | null;
-  busRoutes: string; // "" when none entered
-  maxRequirement: string; // e.g. "15 minutes" or "0.50 miles"
+  maxRequirement: string; // fixed benchmark, e.g. "15 minutes"
   status: "PASS" | "FAIL" | "NOT VERIFIED";
-  dateVerified: string; // already formatted, e.g. "July 24, 2026", or "Not entered"
   transitNotes: string;
   outdated: boolean;
   verificationSource: string; // "Google Maps (Automatic Lookup, Reviewed)"
@@ -613,11 +610,8 @@ function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
     "Walking Distance (Miles)",
     transit.walkingDistanceMiles === null ? "Not entered" : String(transit.walkingDistanceMiles)
   );
-  writeRow("Transit Agency", transit.transitAgency || "Not entered");
-  writeRow("Bus Routes", transit.busRoutes || "Not entered");
   writeRow("Maximum Requirement", transit.maxRequirement);
   writeRow("Pass, Fail, or Not Verified", transit.status);
-  writeRow("Date Verified", transit.dateVerified);
   writeRow("Transit Notes", transit.transitNotes || "None entered");
   if (transit.outdated) {
     writeRow(

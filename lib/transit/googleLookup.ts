@@ -33,11 +33,6 @@ export interface AutoTransitFound {
   nearestStop: AutoNearestStop;
   walkingTimeMinutes: number;
   walkingDistanceMiles: number;
-  /** Google's Places/Directions APIs do not reliably expose a transit
-   * agency name for a bus stop -- this is null far more often than
-   * not. Left in the response shape (rather than omitted) so the
-   * client and callers have one consistent "found" shape to handle. */
-  transitAgency: string | null;
   matchedAddress: string;
   propertyLatitude: number;
   propertyLongitude: number;
@@ -261,9 +256,6 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
     },
     walkingTimeMinutes: Math.round(best.durationSeconds / 60),
     walkingDistanceMiles: Math.round(metersToMiles(best.distanceMeters) * 100) / 100,
-    // See the AutoTransitFound doc comment above -- Places/Directions
-    // do not expose this reliably, so it is left for manual entry.
-    transitAgency: null,
     matchedAddress: formattedAddress || address,
     propertyLatitude: propertyLocation.lat,
     propertyLongitude: propertyLocation.lng,

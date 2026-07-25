@@ -19,17 +19,23 @@
  * environment variables, so it is safe to import from the client
  * component directly. The functions that actually call Google's APIs
  * live server-side in lib/transit/googleLookup.ts instead.
+ *
+ * Fields kept on the saved result: nearest stop, walking time, walking
+ * distance, notes. There is no Transit Agency field, no Bus Route
+ * Numbers field, no Date Verified field, and no user-editable maximum
+ * walking time/distance setting -- Pass/Fail is computed against a
+ * fixed benchmark (see FIXED_MAX_WALKING_MINUTES below).
  */
 
-export type TransitMaxWalkMode = "time" | "distance";
-
-export interface TransitMaxWalkSetting {
-  mode: TransitMaxWalkMode;
-  minutes: number; // used when mode === "time"
-  miles: number; // used when mode === "distance"
-}
-
 export type TransitManualStatus = "pass" | "fail" | "notVerified";
+
+/** Fixed co-living/PadSplit underwriting benchmark -- a bus stop must be
+ * within this many minutes' actual walk to pass. There is no longer a
+ * user-editable maximum walking time or distance setting; walking
+ * distance is still recorded (auto-filled and editable) for reference,
+ * but only walking time drives Pass/Fail. */
+export const FIXED_MAX_WALKING_MINUTES = 15;
+export const FIXED_MAX_WALKING_LABEL = `${FIXED_MAX_WALKING_MINUTES} minutes`;
 
 /** The record created by clicking "Save Verified Transit Result." Kept
  * distinct from the live draft inputs so an address change can mark this
@@ -39,72 +45,42 @@ export interface ManualTransitVerification {
   nearestStop: string;
   walkingTimeMinutes: number | null;
   walkingDistanceMiles: number | null;
-  transitAgency: string;
-  busRoutes: string;
-  dateVerified: string; // yyyy-mm-dd, from an <input type="date">
   notes: string;
   /** The Property Address value at the moment this result was saved --
    * compared against the current Property Address to detect staleness. */
   savedAtAddress: string;
-  /** ISO timestamp of the save action, for print/Excel "Date Verified"
-   * fallback and general record-keeping. */
+  /** ISO timestamp of the save action, kept for record-keeping. */
   savedAt: string;
 }
 
 /**
- * Pass/Fail/Not-Verified purely from the manually entered walking time
- * or distance against the selected maximum (spec section 7). Simpler
- * than the old automatic-discovery evaluator: no "caution" margin tier,
- * and no walking-route-availability branch, since a person only saves a
- * number they actually looked up. Boundary is inclusive ("<=" is a
- * pass, per spec section 7's literal wording).
+ * Pass/Fail/Not-Verified from the saved walking time against the fixed
+ * 15-minute benchmark. Boundary is inclusive ("<=" is a pass).
  */
-export function computeManualTransitStatus(
-  walkingTimeMinutes: number | null,
-  walkingDistanceMiles: number | null,
-  setting: TransitMaxWalkSetting
-): TransitManualStatus {
-  if (setting.mode === "time") {
-    if (walkingTimeMinutes === null || !Number.isFinite(walkingTimeMinutes)) return "notVerified";
-    return walkingTimeMinutes <= setting.minutes ? "pass" : "fail";
-  }
-  if (walkingDistanceMiles === null || !Number.isFinite(walkingDistanceMiles)) return "notVerified";
-  return walkingDistanceMiles <= setting.miles ? "pass" : "fail";
-}
-
-export function formatMaxWalkLabel(setting: TransitMaxWalkSetting): string {
-  return setting.mode === "time"
-    ? `${setting.minutes} minute${setting.minutes === 1 ? "" : "s"}`
-    : `${setting.miles.toFixed(2)} mile${setting.miles === 1 ? "" : "s"}`;
+export function computeManualTransitStatus(walkingTimeMinutes: number | null): TransitManualStatus {
+  if (walkingTimeMinutes === null || !Number.isFinite(walkingTimeMinutes)) return "notVerified";
+  return walkingTimeMinutes <= FIXED_MAX_WALKING_MINUTES ? "pass" : "fail";
 }
 
 /**
- * Builds the exact-format result message (spec section 8's worked
- * example: "PASS – Benfield Rd @ Shads Landing is approximately 13
- * minutes away on foot."). Uses whichever of walking time/distance
- * matches the active maximum-walk mode, since that is the figure the
- * Pass/Fail decision was actually made against.
+ * Builds the exact-format result message (worked example: "PASS –
+ * Benfield Rd @ Shads Landing is approximately 13 minutes away on
+ * foot.").
  */
 export function buildManualTransitMessage(
   status: TransitManualStatus,
   nearestStop: string,
-  walkingTimeMinutes: number | null,
-  walkingDistanceMiles: number | null,
-  setting: TransitMaxWalkSetting
+  walkingTimeMinutes: number | null
 ): string {
   if (status === "notVerified") return "NOT VERIFIED";
 
   const stopLabel = nearestStop.trim() || "The nearest bus stop";
-  const figure =
-    setting.mode === "time"
-      ? `approximately ${walkingTimeMinutes} minute${walkingTimeMinutes === 1 ? "" : "s"} away on foot`
-      : `approximately ${walkingDistanceMiles} mile${walkingDistanceMiles === 1 ? "" : "s"} away on foot`;
+  const figure = `approximately ${walkingTimeMinutes} minute${walkingTimeMinutes === 1 ? "" : "s"} away on foot`;
 
   if (status === "pass") {
     return `PASS – ${stopLabel} is ${figure}.`;
   }
-  const limitLabel = formatMaxWalkLabel(setting);
-  return `FAIL – ${stopLabel} is ${figure}, exceeding the ${limitLabel} maximum.`;
+  return `FAIL – ${stopLabel} is ${figure}, exceeding the ${FIXED_MAX_WALKING_LABEL} maximum.`;
 }
 
 /** Loose "is there anything worth searching for" check -- unlike the old

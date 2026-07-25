@@ -76,7 +76,7 @@ import {
 import {
   computeManualTransitStatus,
   buildManualTransitMessage,
-  formatMaxWalkLabel,
+  FIXED_MAX_WALKING_LABEL,
   looksLikeUsableAddress,
   looksLikeCompleteAddress,
   buildMapsEmbedUrl,
@@ -84,12 +84,7 @@ import {
   buildMapsDirectionsEmbedUrl,
   buildMapsDirectionsSearchUrl,
 } from "@/lib/transit/manual";
-import type {
-  ManualTransitVerification,
-  TransitManualStatus,
-  TransitMaxWalkMode,
-  TransitMaxWalkSetting,
-} from "@/lib/transit/manual";
+import type { ManualTransitVerification, TransitManualStatus } from "@/lib/transit/manual";
 // Type-only import -- the actual lookup logic in googleLookup.ts only
 // ever runs server-side (from app/api/transit/auto-lookup/route.ts),
 // but its response shapes are useful here to type the fetch() call
@@ -2826,29 +2821,12 @@ type TransitAutoStatus = "idle" | "loading" | "found" | "notFound" | "notConfigu
 
 function TransitAndBusStopAccessSection({
   address,
-  maxWalkMode,
-  onMaxWalkModeChange,
-  maxWalkTimeSelection,
-  onMaxWalkTimeSelectionChange,
-  maxWalkTimeCustomDraft,
-  onMaxWalkTimeCustomChange,
-  maxWalkDistanceSelection,
-  onMaxWalkDistanceSelectionChange,
-  maxWalkDistanceCustomDraft,
-  onMaxWalkDistanceCustomChange,
-  effectiveMaxWalkSetting,
   nearestStopDraft,
   onNearestStopDraftChange,
   walkingTimeDraft,
   onWalkingTimeDraftChange,
   walkingDistanceDraft,
   onWalkingDistanceDraftChange,
-  transitAgencyDraft,
-  onTransitAgencyDraftChange,
-  busRoutesDraft,
-  onBusRoutesDraftChange,
-  dateVerifiedDraft,
-  onDateVerifiedDraftChange,
   notesDraft,
   onNotesDraftChange,
   onSave,
@@ -2859,29 +2837,12 @@ function TransitAndBusStopAccessSection({
   autoStopCoords,
 }: {
   address: string;
-  maxWalkMode: TransitMaxWalkMode;
-  onMaxWalkModeChange: (mode: TransitMaxWalkMode) => void;
-  maxWalkTimeSelection: string;
-  onMaxWalkTimeSelectionChange: (value: string) => void;
-  maxWalkTimeCustomDraft: string;
-  onMaxWalkTimeCustomChange: (raw: string) => void;
-  maxWalkDistanceSelection: string;
-  onMaxWalkDistanceSelectionChange: (value: string) => void;
-  maxWalkDistanceCustomDraft: string;
-  onMaxWalkDistanceCustomChange: (raw: string) => void;
-  effectiveMaxWalkSetting: TransitMaxWalkSetting;
   nearestStopDraft: string;
   onNearestStopDraftChange: (value: string) => void;
   walkingTimeDraft: string;
   onWalkingTimeDraftChange: (value: string) => void;
   walkingDistanceDraft: string;
   onWalkingDistanceDraftChange: (value: string) => void;
-  transitAgencyDraft: string;
-  onTransitAgencyDraftChange: (value: string) => void;
-  busRoutesDraft: string;
-  onBusRoutesDraftChange: (value: string) => void;
-  dateVerifiedDraft: string;
-  onDateVerifiedDraftChange: (value: string) => void;
   notesDraft: string;
   onNotesDraftChange: (value: string) => void;
   onSave: () => void;
@@ -2909,87 +2870,6 @@ function TransitAndBusStopAccessSection({
         Enter a Property Address above and the nearest bus stop, walking time, and walking distance
         are looked up automatically using Google Maps. Review the map and edit any field below
         before saving.
-      </p>
-
-      {/* Maximum Walking Distance setting */}
-      <div className="grid sm:grid-cols-2 gap-5 mb-5">
-        <div>
-          <label htmlFor="transitMaxWalkMode" className="block mb-2">
-            <FieldLabel info="Choose whether the pass/fail threshold is based on walking time or walking distance.">
-              Maximum Walking Distance to Bus Stop
-            </FieldLabel>
-          </label>
-          <select
-            id="transitMaxWalkMode"
-            value={maxWalkMode}
-            onChange={(e) => onMaxWalkModeChange(e.target.value as TransitMaxWalkMode)}
-            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-          >
-            <option value="time">Walking Time</option>
-            <option value="distance">Walking Distance</option>
-          </select>
-        </div>
-        {maxWalkMode === "time" ? (
-          <div>
-            <label htmlFor="transitMaxWalkTimeSelect" className="block mb-2">
-              <FieldLabel>Maximum Walking Time</FieldLabel>
-            </label>
-            <select
-              id="transitMaxWalkTimeSelect"
-              value={maxWalkTimeSelection}
-              onChange={(e) => onMaxWalkTimeSelectionChange(e.target.value)}
-              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-            >
-              <option value="5">5 minutes</option>
-              <option value="10">10 minutes</option>
-              <option value="15">15 minutes</option>
-              <option value="20">20 minutes</option>
-              <option value="custom">Custom</option>
-            </select>
-            {maxWalkTimeSelection === "custom" && (
-              <input
-                type="text"
-                inputMode="numeric"
-                value={maxWalkTimeCustomDraft}
-                onChange={(e) => onMaxWalkTimeCustomChange(e.target.value)}
-                placeholder="Custom minutes"
-                className="mt-2 w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-              />
-            )}
-          </div>
-        ) : (
-          <div>
-            <label htmlFor="transitMaxWalkDistanceSelect" className="block mb-2">
-              <FieldLabel>Maximum Walking Distance</FieldLabel>
-            </label>
-            <select
-              id="transitMaxWalkDistanceSelect"
-              value={maxWalkDistanceSelection}
-              onChange={(e) => onMaxWalkDistanceSelectionChange(e.target.value)}
-              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-            >
-              <option value="0.25">0.25 miles</option>
-              <option value="0.50">0.50 miles</option>
-              <option value="0.75">0.75 miles</option>
-              <option value="1.00">1.00 mile</option>
-              <option value="custom">Custom</option>
-            </select>
-            {maxWalkDistanceSelection === "custom" && (
-              <input
-                type="text"
-                inputMode="decimal"
-                value={maxWalkDistanceCustomDraft}
-                onChange={(e) => onMaxWalkDistanceCustomChange(e.target.value)}
-                placeholder="Custom miles"
-                className="mt-2 w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-              />
-            )}
-          </div>
-        )}
-      </div>
-      <p className="text-xs text-ink/50 leading-relaxed mb-6">
-        The standard co-living/PadSplit underwriting benchmark is generally a bus stop within a
-        15-minute walk. Changing this setting re-checks the saved result instantly.
       </p>
 
       {/* Embedded Google Maps panel -- shows a walking-directions route
@@ -3063,9 +2943,13 @@ function TransitAndBusStopAccessSection({
         </p>
       )}
 
-      {/* Manual verification fields (spec section 6) */}
+      {/* Manual verification fields -- Nearest Bus Stop full width,
+          Walking Time/Distance side by side, Transit Notes full width.
+          No Transit Agency, Bus Route Numbers, or Date Verified fields,
+          and no maximum walking distance/time setting -- Pass/Fail uses
+          the fixed FIXED_MAX_WALKING_MINUTES benchmark instead. */}
       <div className="grid sm:grid-cols-2 gap-5 mb-5">
-        <div>
+        <div className="sm:col-span-2">
           <label htmlFor="transitNearestStop" className="block mb-2">
             <FieldLabel>Nearest Bus Stop</FieldLabel>
           </label>
@@ -3075,18 +2959,6 @@ function TransitAndBusStopAccessSection({
             value={nearestStopDraft}
             onChange={(e) => onNearestStopDraftChange(e.target.value)}
             placeholder="e.g. Benfield Rd @ Shads Landing"
-            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-          />
-        </div>
-        <div>
-          <label htmlFor="transitDateVerified" className="block mb-2">
-            <FieldLabel>Date Verified</FieldLabel>
-          </label>
-          <input
-            id="transitDateVerified"
-            type="date"
-            value={dateVerifiedDraft}
-            onChange={(e) => onDateVerifiedDraftChange(e.target.value)}
             className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
           />
         </div>
@@ -3123,32 +2995,6 @@ function TransitAndBusStopAccessSection({
             className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
           />
           <p className="mt-1 text-xs text-ink/50">Miles</p>
-        </div>
-        <div>
-          <label htmlFor="transitAgencyField" className="block mb-2">
-            <FieldLabel>Transit Agency</FieldLabel>
-          </label>
-          <input
-            id="transitAgencyField"
-            type="text"
-            value={transitAgencyDraft}
-            onChange={(e) => onTransitAgencyDraftChange(e.target.value)}
-            placeholder="e.g. CATS (optional)"
-            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-          />
-        </div>
-        <div>
-          <label htmlFor="transitBusRoutesField" className="block mb-2">
-            <FieldLabel>Bus Route Numbers</FieldLabel>
-          </label>
-          <input
-            id="transitBusRoutesField"
-            type="text"
-            value={busRoutesDraft}
-            onChange={(e) => onBusRoutesDraftChange(e.target.value)}
-            placeholder="e.g. 38, 223 (optional)"
-            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-          />
         </div>
         <div className="sm:col-span-2">
           <label htmlFor="transitNotesField" className="block mb-2">
@@ -3242,19 +3088,7 @@ function TransitPrintSection({
           "Walking Distance",
           saved.walkingDistanceMiles !== null ? `${saved.walkingDistanceMiles} miles` : "Not entered"
         )}
-        {row("Transit Agency", saved.transitAgency.trim() || "Not available")}
-        {row("Bus Routes", saved.busRoutes.trim() || "Not available")}
         {row("Pass, Fail, or Not Verified", transitStatusLabel(displayStatus))}
-        {row(
-          "Date Verified",
-          saved.dateVerified
-            ? new Date(`${saved.dateVerified}T00:00:00`).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })
-            : "Not entered"
-        )}
         {row("Verification Source", "Google Maps (Automatic Lookup, Reviewed)")}
       </div>
       <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
@@ -3635,39 +3469,12 @@ export default function SharedHousingCalculator() {
   // "Save Verified Transit Result," tagged with the Property Address it
   // was saved against so a later address change can be detected without
   // erasing the saved record (spec section 9).
-  const [transitMaxWalkMode, setTransitMaxWalkMode] = useState<TransitMaxWalkMode>("time");
-  const [transitMaxWalkTimeSelection, setTransitMaxWalkTimeSelection] = useState("15");
-  const [transitMaxWalkTimeCustomDraft, setTransitMaxWalkTimeCustomDraft] = useState("15");
-  const [transitMaxWalkDistanceSelection, setTransitMaxWalkDistanceSelection] = useState("0.50");
-  const [transitMaxWalkDistanceCustomDraft, setTransitMaxWalkDistanceCustomDraft] = useState("0.50");
-
   const [transitNearestStopDraft, setTransitNearestStopDraft] = useState("");
   const [transitWalkingTimeDraft, setTransitWalkingTimeDraft] = useState("");
   const [transitWalkingDistanceDraft, setTransitWalkingDistanceDraft] = useState("");
-  const [transitAgencyDraft, setTransitAgencyDraft] = useState("");
-  const [transitBusRoutesDraft, setTransitBusRoutesDraft] = useState("");
-  const [transitDateVerifiedDraft, setTransitDateVerifiedDraft] = useState("");
   const [transitNotes, setTransitNotes] = useState("");
 
   const [transitSaved, setTransitSaved] = useState<ManualTransitVerification | null>(null);
-
-  const transitEffectiveMaxWalkSetting: TransitMaxWalkSetting = useMemo(() => {
-    const timeMinutes =
-      transitMaxWalkTimeSelection === "custom"
-        ? Math.max(1, Number(transitMaxWalkTimeCustomDraft) || 15)
-        : Number(transitMaxWalkTimeSelection);
-    const distanceMiles =
-      transitMaxWalkDistanceSelection === "custom"
-        ? Math.max(0.05, Number(transitMaxWalkDistanceCustomDraft) || 0.5)
-        : Number(transitMaxWalkDistanceSelection);
-    return { mode: transitMaxWalkMode, minutes: timeMinutes, miles: distanceMiles };
-  }, [
-    transitMaxWalkMode,
-    transitMaxWalkTimeSelection,
-    transitMaxWalkTimeCustomDraft,
-    transitMaxWalkDistanceSelection,
-    transitMaxWalkDistanceCustomDraft,
-  ]);
 
   // True once a result has been saved for an address that no longer
   // matches the current Property Address -- the saved figures are kept
@@ -3678,23 +3485,13 @@ export default function SharedHousingCalculator() {
 
   const transitDisplayStatus: TransitManualStatus = useMemo(() => {
     if (!transitSaved || transitOutdated) return "notVerified";
-    return computeManualTransitStatus(
-      transitSaved.walkingTimeMinutes,
-      transitSaved.walkingDistanceMiles,
-      transitEffectiveMaxWalkSetting
-    );
-  }, [transitSaved, transitOutdated, transitEffectiveMaxWalkSetting]);
+    return computeManualTransitStatus(transitSaved.walkingTimeMinutes);
+  }, [transitSaved, transitOutdated]);
 
   const transitDisplayMessage: string = useMemo(() => {
     if (!transitSaved || transitOutdated) return "NOT VERIFIED";
-    return buildManualTransitMessage(
-      transitDisplayStatus,
-      transitSaved.nearestStop,
-      transitSaved.walkingTimeMinutes,
-      transitSaved.walkingDistanceMiles,
-      transitEffectiveMaxWalkSetting
-    );
-  }, [transitSaved, transitOutdated, transitDisplayStatus, transitEffectiveMaxWalkSetting]);
+    return buildManualTransitMessage(transitDisplayStatus, transitSaved.nearestStop, transitSaved.walkingTimeMinutes);
+  }, [transitSaved, transitOutdated, transitDisplayStatus]);
 
   function handleSaveTransitResult() {
     const trimmedAddress = propertyAddress.trim();
@@ -3704,9 +3501,6 @@ export default function SharedHousingCalculator() {
       nearestStop: transitNearestStopDraft.trim(),
       walkingTimeMinutes: parsedTime !== null && Number.isFinite(parsedTime) ? parsedTime : null,
       walkingDistanceMiles: parsedDistance !== null && Number.isFinite(parsedDistance) ? parsedDistance : null,
-      transitAgency: transitAgencyDraft.trim(),
-      busRoutes: transitBusRoutesDraft.trim(),
-      dateVerified: transitDateVerifiedDraft,
       notes: transitNotes,
       savedAtAddress: trimmedAddress,
       savedAt: new Date().toISOString(),
@@ -3770,7 +3564,6 @@ export default function SharedHousingCalculator() {
             setTransitNearestStopDraft(data.nearestStop.name);
             setTransitWalkingTimeDraft(String(data.walkingTimeMinutes));
             setTransitWalkingDistanceDraft(data.walkingDistanceMiles.toFixed(2));
-            if (data.transitAgency) setTransitAgencyDraft(data.transitAgency);
             setTransitAutoStopCoords({ lat: data.nearestStop.latitude, lng: data.nearestStop.longitude });
             setTransitAutoStatus("found");
           } else if (data.status === "notFound") {
@@ -4513,17 +4306,9 @@ export default function SharedHousingCalculator() {
     // the rest of the browser session -- image data URLs need no such
     // cleanup.
     setPropertyAddress("");
-    setTransitMaxWalkMode("time");
-    setTransitMaxWalkTimeSelection("15");
-    setTransitMaxWalkTimeCustomDraft("15");
-    setTransitMaxWalkDistanceSelection("0.50");
-    setTransitMaxWalkDistanceCustomDraft("0.50");
     setTransitNearestStopDraft("");
     setTransitWalkingTimeDraft("");
     setTransitWalkingDistanceDraft("");
-    setTransitAgencyDraft("");
-    setTransitBusRoutesDraft("");
-    setTransitDateVerifiedDraft("");
     setTransitNotes("");
     setTransitSaved(null);
     setTransitAutoStatus("idle");
@@ -6881,17 +6666,8 @@ export default function SharedHousingCalculator() {
             nearestBusStop: transitSaved.nearestStop || null,
             walkingTimeMinutes: transitSaved.walkingTimeMinutes,
             walkingDistanceMiles: transitSaved.walkingDistanceMiles,
-            transitAgency: transitSaved.transitAgency || null,
-            busRoutes: transitSaved.busRoutes,
-            maxRequirement: formatMaxWalkLabel(transitEffectiveMaxWalkSetting),
+            maxRequirement: FIXED_MAX_WALKING_LABEL,
             status: transitStatusLabel(transitDisplayStatus) as "PASS" | "FAIL" | "NOT VERIFIED",
-            dateVerified: transitSaved.dateVerified
-              ? new Date(`${transitSaved.dateVerified}T00:00:00`).toLocaleDateString("en-US", {
-                  month: "long",
-                  day: "numeric",
-                  year: "numeric",
-                })
-              : "Not entered",
             transitNotes: transitSaved.notes.trim(),
             outdated: transitOutdated,
             verificationSource: "Google Maps (Automatic Lookup, Reviewed)",
@@ -7211,13 +6987,11 @@ export default function SharedHousingCalculator() {
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Maximum Allowed</span>
-                <span className="lg:block font-medium text-bone">
-                  {formatMaxWalkLabel(transitEffectiveMaxWalkSetting)}
-                </span>
+                <span className="lg:block font-medium text-bone">{FIXED_MAX_WALKING_LABEL}</span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Status Source</span>
-                <span className="lg:block font-medium text-bone">Google Maps Manual Verification</span>
+                <span className="lg:block font-medium text-bone">Google Maps (Automatic Lookup, Reviewed)</span>
               </div>
               {transitOutdated && (
                 <div className="sm:col-span-2 lg:col-span-4 flex justify-between gap-3 lg:block">
@@ -7295,29 +7069,12 @@ export default function SharedHousingCalculator() {
         {/* ---------------------------------------------------------- */}
         <TransitAndBusStopAccessSection
           address={propertyAddress}
-          maxWalkMode={transitMaxWalkMode}
-          onMaxWalkModeChange={setTransitMaxWalkMode}
-          maxWalkTimeSelection={transitMaxWalkTimeSelection}
-          onMaxWalkTimeSelectionChange={setTransitMaxWalkTimeSelection}
-          maxWalkTimeCustomDraft={transitMaxWalkTimeCustomDraft}
-          onMaxWalkTimeCustomChange={setTransitMaxWalkTimeCustomDraft}
-          maxWalkDistanceSelection={transitMaxWalkDistanceSelection}
-          onMaxWalkDistanceSelectionChange={setTransitMaxWalkDistanceSelection}
-          maxWalkDistanceCustomDraft={transitMaxWalkDistanceCustomDraft}
-          onMaxWalkDistanceCustomChange={setTransitMaxWalkDistanceCustomDraft}
-          effectiveMaxWalkSetting={transitEffectiveMaxWalkSetting}
           nearestStopDraft={transitNearestStopDraft}
           onNearestStopDraftChange={setTransitNearestStopDraft}
           walkingTimeDraft={transitWalkingTimeDraft}
           onWalkingTimeDraftChange={setTransitWalkingTimeDraft}
           walkingDistanceDraft={transitWalkingDistanceDraft}
           onWalkingDistanceDraftChange={setTransitWalkingDistanceDraft}
-          transitAgencyDraft={transitAgencyDraft}
-          onTransitAgencyDraftChange={setTransitAgencyDraft}
-          busRoutesDraft={transitBusRoutesDraft}
-          onBusRoutesDraftChange={setTransitBusRoutesDraft}
-          dateVerifiedDraft={transitDateVerifiedDraft}
-          onDateVerifiedDraftChange={setTransitDateVerifiedDraft}
           notesDraft={transitNotes}
           onNotesDraftChange={setTransitNotes}
           onSave={handleSaveTransitResult}
