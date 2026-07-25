@@ -407,50 +407,61 @@ is not compatible with this code (`put()` calls request
 `access: "private"` explicitly, so uploads will fail against a
 public-only store rather than silently becoming public).
 
-## Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed)
+## Transit and Bus Stop Access (Automatic Lookup + Google Maps Embed + Address Autocomplete)
 
 The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
-Access" section. As soon as a complete-looking Property Address is
-entered, it automatically finds the nearest bus stop and the actual
-walking route to it (not straight-line distance), and fills in the
-nearest stop, walking time, and walking distance fields below the map --
-those figures update the underwriting result immediately. Every field
-stays editable at any time, with no separate save or verification step:
-whatever is currently in the fields, whether auto-filled or hand-edited,
-is what feeds the summary, print report, and Excel export.
+Access" section, and the Property Address field above it offers address
+autocomplete as you type. As soon as a complete-looking Property Address
+is entered or selected, it automatically finds the nearest bus stop and
+the actual walking route to it (not straight-line distance), and fills
+in the nearest stop, walking time, and walking distance fields below the
+map -- those figures update the underwriting result immediately. Every
+field stays editable at any time, with no separate save or verification
+step: whatever is currently in the fields, whether auto-filled or
+hand-edited, is what feeds the summary, print report, and Excel export.
 
-Two independent Google Maps Platform keys are involved, and the section
+Two independent Google Maps Platform keys are involved, and everything
 degrades gracefully if either (or both) are missing:
 
-- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` -- shows the embedded map
-  (a walking-route panel once a stop is found, or a plain search panel
-  before that). Without it, the section shows "The embedded Google Maps
-  view is not configured." in place of the map.
-- `GOOGLE_MAPS_API_KEY` -- runs the automatic lookup itself (Geocoding,
-  Places, and Directions APIs), server-side only. Without it, automatic
-  lookup is skipped entirely and the fields simply start blank for hand
-  entry -- there is no error banner and no automatic "no bus stops were
-  found" failure result.
+- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` -- a public, client-side key
+  used for two things: the embedded map (a walking-route panel once a
+  stop is found, or a plain search panel before that), and the Property
+  Address field's autocomplete suggestions. Without it, the map shows
+  "The embedded Google Maps view is not configured." and the address
+  field simply has no suggestions (typing the full address by hand
+  still works normally).
+- `GOOGLE_MAPS_API_KEY` -- runs the automatic transit lookup itself
+  (Geocoding, Places, and Directions APIs), server-side only. Without
+  it, automatic lookup is skipped entirely and the transit fields simply
+  start blank for hand entry -- there is no error banner and no
+  automatic "no bus stops were found" failure result.
 
 The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
 (pure functions plus the actual Google API calls) and is only ever
 invoked from `app/api/transit/auto-lookup/route.ts`, the one place
 `GOOGLE_MAPS_API_KEY` is read -- it is never sent to the browser. The
 shared client-safe helpers (address checks, URL builders) live in
-`lib/transit/manual.ts`. The UI is `TransitAndBusStopAccessSection` and
-`TransitPrintSection` in `components/underwriting/
-SharedHousingCalculator.tsx`.
+`lib/transit/manual.ts`. The address autocomplete field is
+`PropertyAddressAutocomplete`, and it loads the Google Maps JavaScript
+API client-side via `lib/transit/googleMapsLoader.ts` (a small script
+loader) using the same public embed key -- see `lib/transit/
+googlePlacesTypes.ts` for the minimal type definitions this uses instead
+of pulling in the full `@types/google.maps` package. The transit UI is
+`TransitAndBusStopAccessSection` and `TransitPrintSection`. All of this
+lives in `components/underwriting/SharedHousingCalculator.tsx`.
 
 The rest of the Underwriting calculator (all five financing structures,
 the printable report, and the Excel export) works fully regardless of
 whether either key is configured.
 
-### 1. Create the embed key (map display)
+### 1. Create the public key (map display + address autocomplete)
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and
    select or create a project.
-2. Go to **APIs & Services > Library**, search for **Maps Embed API**,
-   and enable it for that project.
+2. Go to **APIs & Services > Library** and enable each of: **Maps Embed
+   API**, **Maps JavaScript API**, and **Places API (New)**. The first
+   two power the embedded map; Places API (New) powers the Property
+   Address autocomplete suggestions.
 3. Go to **APIs & Services > Credentials**, click **Create Credentials >
    API Key**, and copy the key.
 4. Click the new key to edit it:
@@ -458,15 +469,26 @@ whether either key is configured.
      referrers)** and add: `michaelaylett.com/*`,
      `www.michaelaylett.com/*`, `*.vercel.app/*` (covers Vercel preview
      deployments), and `localhost/*` (for local development).
-   - Under **API restrictions**, restrict the key to **Maps Embed API**
-     only.
+   - Under **API restrictions**, restrict the key to those three APIs:
+     **Maps Embed API**, **Maps JavaScript API**, and **Places API
+     (New)**.
    This key is inlined into the client-side JavaScript bundle at build
    time, so anyone can see it by viewing page source -- the HTTP
    referrer + API restrictions above are what actually keep it from
    being used elsewhere, not secrecy.
-5. Confirm billing is enabled on the Google Cloud project; the Maps
-   Embed API requires an active billing account, even within Google's
-   free monthly usage credit.
+5. Confirm billing is enabled on the Google Cloud project; all three
+   APIs require an active billing account, even within Google's free
+   monthly usage credit.
+
+**Already had this key from before address autocomplete was added?**
+Its API restrictions are almost certainly still locked to Maps Embed API
+only, in which case autocomplete requests will fail (typically visible
+as `REQUEST_DENIED` in the browser console) until you go back to that
+key in **APIs & Services > Credentials**, enable **Maps JavaScript API**
+and **Places API (New)** for the project (step 2 above), and add both to
+its **API restrictions** list (step 4 above). No new key or new
+environment variable is needed -- the existing
+`NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` value is reused as-is.
 
 ### 2. Create the lookup key (automatic bus-stop discovery)
 
@@ -514,32 +536,39 @@ committed.
 
 ### 4. Cost and usage notes
 
-- Google Maps Platform billing and usage limits apply to the lookup
-  key. Review current pricing at
+- Google Maps Platform billing and usage limits apply to both keys.
+  Review current pricing at
   [mapsplatform.google.com/pricing](https://mapsplatform.google.com/pricing)
   before relying on this in production, and consider setting a daily
   quota or budget alert in the Google Cloud Console.
-- Each automatic lookup makes one Geocoding request, one (occasionally
-  two, with a fallback place type) Places Nearby Search request, and up
-  to 6 Directions requests -- one per shortlisted candidate stop, capped
-  regardless of how many Places returns, so a single lookup cannot run
-  away in cost.
-- Lookups only run once per distinct, complete-looking Property Address
-  (not on every keystroke), and are skipped entirely once a result has
-  already been saved for that exact address.
+- Each automatic transit lookup (lookup key) makes one Geocoding
+  request, two Places Nearby Search requests (always both `bus_station`
+  and `transit_station`, in parallel), and up to 8 Directions requests --
+  one per shortlisted candidate stop, capped regardless of how many
+  Places returns, so a single lookup cannot run away in cost. Lookups
+  only run once per distinct, complete-looking Property Address, not on
+  every keystroke.
+- Each address autocomplete keystroke (public key, after the 3rd
+  character and debounced) makes one Autocomplete Data request; a
+  session token groups the whole run of requests for one address search
+  together for billing, closed out by a single Place Details request
+  when a suggestion is selected. Suggestions also only refetch after a
+  short pause in typing, not on every keystroke.
 
 ### 5. If a key is not set
 
 The Underwriting page still works either way:
 
 - Missing `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY`: the map shows "The
-  embedded Google Maps view is not configured." The "Open Bus Stop
-  Search in Google Maps" button still works (it needs no API key at
-  all -- it is a plain `google.com/maps` deep link).
-- Missing `GOOGLE_MAPS_API_KEY`: automatic lookup is skipped and the
-  section shows "Automatic bus stop lookup is not configured for this
-  site. Enter the details manually below." All manual fields and the
-  Save button work exactly the same either way.
+  embedded Google Maps view is not configured," the Property Address
+  field simply shows no autocomplete suggestions (typing the full
+  address by hand still works), and the "Open Bus Stop Search in Google
+  Maps" button still works (it needs no API key at all -- it is a plain
+  `google.com/maps` deep link).
+- Missing `GOOGLE_MAPS_API_KEY`: automatic transit lookup is skipped and
+  the section shows "Automatic bus stop lookup is not configured for
+  this site. Enter the details manually below." The transit fields stay
+  fully editable by hand either way.
 
 **Never commit a real API key to this repository.** Both keys must only
 ever be set as Vercel Environment Variables (or in your local,
@@ -592,6 +621,38 @@ Directions API. The stop with the shortest *actual walking time* wins,
 which naturally favors a genuinely close bus stop over a distant train
 station once both are in the running -- no separate "prefer buses over
 trains" rule is needed.
+
+### Address autocomplete
+
+The Property Address field suggests matching addresses as you type,
+using the current Google Places Autocomplete Data API
+(`google.maps.places.AutocompleteSuggestion`, the API Google recommends
+for new client-side integrations as of March 2025 -- see
+`lib/transit/googlePlacesTypes.ts` and `lib/transit/
+googleMapsLoader.ts`). It is a custom-styled dropdown built to match the
+rest of the site, not Google's own autocomplete widget.
+
+- Suggestions start after about 3 characters and refresh after a short
+  pause in typing (roughly a quarter second), not on every keystroke.
+- Restricted to US street addresses (`includedRegionCodes: ["us"]`,
+  `includedPrimaryTypes: ["street_address"]`) so results stay relevant
+  to this site's use case.
+- Mouse click, Up/Down arrow keys plus Enter, and clicking outside or
+  pressing Escape are all supported; the first suggestion is never
+  auto-selected.
+- Selecting a suggestion fills in the full formatted address and lets
+  the existing automatic transit lookup pick it up exactly as if it had
+  been typed by hand -- no separate "trigger the lookup" step. The
+  previous property's Nearest Bus Stop, Walking Time, and Walking
+  Distance are cleared immediately (before the new lookup finishes) so
+  stale figures never linger on screen.
+- Uses one `AutocompleteSessionToken` per address search (created on the
+  first request, reused across keystrokes, closed out by a Place Details
+  call when a suggestion is selected) and a request-sequence guard so a
+  slow response for an earlier keystroke can never overwrite a newer
+  one -- both per Google's documented best practices for this API.
+- Typing the address out by hand, ignoring suggestions entirely, always
+  keeps working.
 
 ## Content guardrails in place
 

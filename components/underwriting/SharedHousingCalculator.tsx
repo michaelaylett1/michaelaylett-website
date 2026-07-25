@@ -87,6 +87,14 @@ import type { TransitResult } from "@/lib/transit/manual";
 // but its response shapes are useful here to type the fetch() call
 // below without redeclaring them.
 import type { AutoTransitLookupResult } from "@/lib/transit/googleLookup";
+import { loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
+import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
+import {
+  AUTOCOMPLETE_DEBOUNCE_MS,
+  buildAutocompleteRequest,
+  isStaleAutocompleteResponse,
+  shouldFetchSuggestions,
+} from "@/lib/transit/addressAutocomplete";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -2765,6 +2773,234 @@ function PropertyTaxPrintRows({
 }
 
 // ---------------------------------------------------------------------
+// Property Address autocomplete -- Google Places Autocomplete (Data)
+// API, the current (non-deprecated) client-side autocomplete surface
+// (google.maps.places.AutocompleteSuggestion, which replaced the
+// legacy AutocompleteService/Autocomplete widget for new integrations
+// as of March 2025). Built as a custom-styled suggestion list rather
+// than Google's own PlaceAutocompleteElement web component so it can
+// match this site's existing paper/ink/brass visual language exactly
+// (hover, selected, and keyboard-focus states included).
+//
+// Loaded via NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY -- the same public
+// key already used for the Transit section's embedded map -- rather
+// than the server-only GOOGLE_MAPS_API_KEY, since this runs entirely in
+// the browser. That key needs the Places API (New) enabled and its API
+// restrictions widened to include it; see the README's "Transit and
+// Bus Stop Access" section for the exact Google Cloud Console steps.
+// This component never touches GOOGLE_MAPS_API_KEY at all.
+//
+// Selecting a suggestion just calls onChange() with the resolved
+// address text -- the same setter the input's onChange already uses --
+// so the existing debounced automatic transit lookup (keyed on
+// propertyAddress in the parent component) picks it up exactly as if
+// the full address had been typed by hand. No separate "trigger the
+// lookup" plumbing is needed here.
+function PropertyAddressAutocomplete({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [suggestions, setSuggestions] = useState<GoogleAutocompleteSuggestion[]>([]);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [notConfigured, setNotConfigured] = useState(false);
+
+  const sessionTokenRef = useRef<GoogleAutocompleteSessionToken | null>(null);
+  // Bumped on every new fetch and every time the input drops below the
+  // 3-character threshold -- a response is only applied if this still
+  // matches the value captured when that particular request started,
+  // so a slow response for an earlier keystroke can never clobber
+  // suggestions for what the person has since typed.
+  const requestSeqRef = useRef(0);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  function closeSuggestions() {
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  // Close on a click/tap outside the field or its dropdown, and on Escape.
+  useEffect(() => {
+    function handlePointerDown(e: PointerEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        closeSuggestions();
+      }
+    }
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") closeSuggestions();
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, []);
+
+  function fetchSuggestions(query: string) {
+    const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
+    if (!embedApiKey) {
+      setNotConfigured(true);
+      return;
+    }
+    const seq = ++requestSeqRef.current;
+    loadGooglePlacesLibrary(embedApiKey)
+      .then(({ AutocompleteSuggestion, AutocompleteSessionToken }) => {
+        // One session token covers the whole run of keystrokes from
+        // the first request until a selection resolves a Place (or the
+        // field is cleared) -- reused across requests, not recreated
+        // per keystroke, per Google's session-based billing guidance.
+        if (!sessionTokenRef.current) {
+          sessionTokenRef.current = new AutocompleteSessionToken();
+        }
+        return AutocompleteSuggestion.fetchAutocompleteSuggestions(
+          buildAutocompleteRequest(query, sessionTokenRef.current)
+        );
+      })
+      .then(({ suggestions: results }) => {
+        if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return; // superseded by a newer keystroke
+        setNotConfigured(false);
+        setSuggestions(results);
+        setOpen(results.length > 0);
+        setActiveIndex(-1);
+      })
+      .catch(() => {
+        if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return;
+        setSuggestions([]);
+        closeSuggestions();
+      });
+  }
+
+  function handleInputChange(next: string) {
+    onChange(next);
+
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    if (!shouldFetchSuggestions(next)) {
+      requestSeqRef.current++; // invalidate any request already in flight
+      setSuggestions([]);
+      closeSuggestions();
+      return;
+    }
+
+    const trimmed = next.trim();
+    debounceTimerRef.current = setTimeout(() => fetchSuggestions(trimmed), AUTOCOMPLETE_DEBOUNCE_MS);
+  }
+
+  function selectSuggestion(suggestion: GoogleAutocompleteSuggestion) {
+    const prediction = suggestion.placePrediction;
+    if (!prediction) return;
+
+    onChange(prediction.text.toString());
+    closeSuggestions();
+    setSuggestions([]);
+
+    // Resolving to a Place and calling fetchFields() gets Google's own
+    // canonical formatted address (rather than relying solely on the
+    // prediction's display text) and is also what properly closes out
+    // the autocomplete session for billing, per Google's documented
+    // best practice -- the next keystroke starts a fresh session.
+    prediction
+      .toPlace()
+      .fetchFields({ fields: ["formattedAddress"] })
+      .then(({ place }) => {
+        if (place.formattedAddress) onChange(place.formattedAddress);
+      })
+      .catch(() => {
+        // Keep the prediction's display text already applied above --
+        // still a complete, human-readable address even if this
+        // follow-up call fails.
+      })
+      .finally(() => {
+        sessionTokenRef.current = null;
+      });
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <input
+        id="propertyAddress"
+        type="text"
+        autoComplete="off"
+        role="combobox"
+        aria-expanded={open}
+        aria-controls="propertyAddressSuggestions"
+        aria-autocomplete="list"
+        aria-activedescendant={activeIndex >= 0 ? `propertyAddressSuggestion-${activeIndex}` : undefined}
+        value={value}
+        onChange={(e) => handleInputChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (!open || suggestions.length === 0) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActiveIndex((i) => (i + 1) % suggestions.length);
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveIndex((i) => (i <= 0 ? suggestions.length - 1 : i - 1));
+          } else if (e.key === "Enter") {
+            // Spec: never auto-select the first suggestion -- Enter
+            // only picks one if the person has actually highlighted it
+            // with the arrow keys first.
+            if (activeIndex >= 0 && activeIndex < suggestions.length) {
+              e.preventDefault();
+              selectSuggestion(suggestions[activeIndex]);
+            }
+          } else if (e.key === "Escape") {
+            closeSuggestions();
+          }
+        }}
+        placeholder="Enter the property address"
+        className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+      />
+      {open && suggestions.length > 0 && (
+        <ul
+          id="propertyAddressSuggestions"
+          role="listbox"
+          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-y-auto border border-line-dark bg-white shadow-lg"
+        >
+          {suggestions.map((suggestion, index) => {
+            const prediction = suggestion.placePrediction;
+            if (!prediction) return null;
+            const text = prediction.text.toString();
+            const active = index === activeIndex;
+            return (
+              <li
+                key={`${text}-${index}`}
+                id={`propertyAddressSuggestion-${index}`}
+                role="option"
+                aria-selected={active}
+                onMouseDown={(e) => {
+                  // mousedown, not click -- fires before the document
+                  // pointerdown listener above would otherwise close
+                  // the list first.
+                  e.preventDefault();
+                  selectSuggestion(suggestion);
+                }}
+                onMouseEnter={() => setActiveIndex(index)}
+                className={`px-3 py-2.5 text-sm cursor-pointer border-b border-line-dark/30 last:border-b-0 ${
+                  active ? "bg-brass/10 text-ink" : "text-ink/80 hover:bg-paper-2"
+                }`}
+              >
+                {text}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {notConfigured && (
+        <p className="mt-1.5 text-xs text-ink/40">
+          Address autocomplete is not configured for this site -- you can still type the address by hand.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
 // Transit and Bus Stop Access: on-page section. Purely presentational
 // like PropertyTaxSection above -- all state and handlers live on the
 // parent component. Rendered exactly once (Property Address itself is a
@@ -3449,8 +3685,16 @@ export default function SharedHousingCalculator() {
     transitAutoLookupAddressRef.current = trimmed;
     // Fall back to the plain search-mode map immediately so a route
     // drawn for the previous address never lingers while a new lookup
-    // is in flight for this one.
+    // is in flight for this one, and clear the previous property's
+    // Nearest Bus Stop / Walking Time / Walking Distance right away too
+    // (rather than leaving them on screen until the new lookup
+    // resolves) -- most noticeable right after picking a new address
+    // from the autocomplete dropdown. Transit Notes is left alone since
+    // it is hand-written commentary, not an automatic lookup result.
     setTransitAutoStopCoords(null);
+    setTransitNearestStopDraft("");
+    setTransitWalkingTimeDraft("");
+    setTransitWalkingDistanceDraft("");
 
     let cancelled = false;
     setTransitAutoStatus("loading");
@@ -6934,18 +7178,11 @@ export default function SharedHousingCalculator() {
             <label htmlFor="propertyAddress" className="block mb-2">
               <FieldLabel>Property Address</FieldLabel>
             </label>
-            <input
-              id="propertyAddress"
-              type="text"
-              value={propertyAddress}
-              onChange={(e) => setPropertyAddress(e.target.value)}
-              placeholder="Enter the property address"
-              className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-            />
+            <PropertyAddressAutocomplete value={propertyAddress} onChange={setPropertyAddress} />
             <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
-              Optional. Appears near the top of the printable underwriting
-              summary. Left blank, the address line is omitted from the
-              report rather than shown empty.
+              Start typing to see suggested addresses, or type the full address by hand. Optional --
+              appears near the top of the printable underwriting summary. Left blank, the address
+              line is omitted from the report rather than shown empty.
             </p>
           </div>
         </div>
