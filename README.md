@@ -113,11 +113,12 @@ Open [http://localhost:3000](http://localhost:3000).
    notifications and file uploads" below. Set
    `SHARED_HOUSING_CALCULATOR_PASSWORD` if you want to change the
    Shared Housing Calculator's password from its default (`padsplit`).
-   The Underwriting page's "Transit and Bus Stop Access" feature needs
-   `GOOGLE_MAPS_API_KEY` set before it can compute an actual walking
-   route (GTFS-based stop discovery itself works without it); see
-   "Transit and Bus Stop Access (GTFS + Google Maps Platform)" below.
-   Every other part of the Underwriting calculator works without it.
+   The Underwriting page's "Transit and Bus Stop Access" section needs
+   `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` set before it can show the
+   embedded Google Maps search panel; see "Transit and Bus Stop Access
+   (Manual Verification + Google Maps Embed)" below. Every other part of
+   the Underwriting calculator, including the manual verification fields
+   and Pass/Fail result, works without it.
 2. **EcomRanx link**: confirm `https://www.ecomranx.com` is correct
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
@@ -405,186 +406,120 @@ is not compatible with this code (`put()` calls request
 `access: "private"` explicitly, so uploads will fail against a
 public-only store rather than silently becoming public).
 
-## Transit and Bus Stop Access (GTFS + Google Maps Platform)
+## Transit and Bus Stop Access (Manual Verification + Google Maps Embed)
 
 The Underwriting page (`/underwriting`) includes a "Transit and Bus Stop
-Access" section that looks up the nearest bus stop within walking
-distance of the property address, using an actual pedestrian walking
-route rather than straight-line distance. This calls a server-side API
-route (`app/api/transit/lookup/route.ts`); no key or credential is ever
-sent to the browser. The rest of the Underwriting calculator (all five
-financing structures, the printable report, and the Excel export) works
-fully without any of this configured -- only the transit lookup itself
-is affected.
+Access" section. Earlier versions tried to discover the nearest bus stop
+automatically on the server (first Google Places, later official GTFS
+transit-agency feeds); both approaches were replaced because an
+automatic result could still be a false negative for a real, walkable
+stop, or depend on a third-party feed URL that could not be verified.
 
-**Discovery architecture (v2.0-GTFS).** Bus-stop discovery is now
-GTFS-primary, not Google-only. An earlier version relied on Google
-Places (and later, a Google Directions transit-routing probe) as the
-only discovery method, which does not reliably index every small
-roadside stop -- confirmed by a real regression where a genuine, walkable
-CATS stop in Charlotte, NC ("Benfield Rd @ Shads Landing") was invisible
-to Google-only discovery. The fix, in `lib/transit/gtfs/` and
-`lib/transit/lookup.ts`:
+This version does not call any transit or maps API from the server at
+all. Instead, the person underwriting the deal looks up nearby bus stops
+themselves, the same way they would in their own browser, using a
+Google Maps search embedded directly in the page, and then records what
+they found in a small form (nearest stop, walking time and/or distance,
+transit agency, bus route numbers, date verified, notes). Pass/Fail is
+computed purely from those manually entered numbers against the
+Maximum Walking Distance setting -- there is no discovery pipeline and
+no possibility of an incorrect automatic "no bus stops were found"
+result. The logic lives entirely in `lib/transit/manual.ts` (pure
+functions, no network calls, no environment variables); the UI is
+`TransitAndBusStopAccessSection` and `TransitPrintSection` in
+`components/underwriting/SharedHousingCalculator.tsx`.
 
-1. **Official transit-agency GTFS static data** (`lib/transit/gtfs/`) is
-   the primary source. `lib/transit/gtfs/providers.ts` maps a property's
-   state/county/city to the transit agency (or agencies) that serve it;
-   `lib/transit/gtfs/ingest.ts` downloads and parses that agency's
-   published GTFS ZIP (agency.txt/stops.txt/routes.txt/trips.txt/
-   stop_times.txt) into an indexed, cached structure.
-2. **Google Places Nearby Search** runs in parallel as a supplemental
-   source, not the only one -- a stop found by either GTFS or Places is
-   retained, and the same physical stop found by both is merged into one
-   result.
-3. **OpenStreetMap** (Nominatim + Overpass) is the fallback used only
-   when `GOOGLE_MAPS_API_KEY` is not configured at all; GTFS discovery
-   still runs on that path since it does not depend on Google.
-4. Every candidate, regardless of which source found it, still gets a
-   dedicated Google Routes API WALK-mode route before being reported as
-   the nearest stop -- straight-line distance is only ever used to
-   shortlist candidates for that call, never as the displayed distance.
+The rest of the Underwriting calculator (all five financing structures,
+the printable report, and the Excel export) works fully regardless of
+whether this section's embed key is configured.
 
-See "GTFS Feed Configuration" below for the provider list and how to
-correct a feed URL without a code change.
-
-### 1. Create a Google Maps Platform API key
+### 1. Create a Google Maps Embed API key
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and
    select or create a project.
-2. Go to **APIs & Services > Library** and enable each of these APIs for
-   that project:
-   - **Geocoding API** (turns the property address into coordinates)
-   - **Places API** (finds nearby bus stations)
-   - **Routes API** (computes the actual pedestrian walking route)
-   - **Directions API** (used only to confirm bus-route numbers/agency
-     for the small number of finalist stops)
+2. Go to **APIs & Services > Library**, search for **Maps Embed API**,
+   and enable it for that project.
 3. Go to **APIs & Services > Credentials**, click **Create Credentials >
    API Key**, and copy the key.
-4. Click the new key to edit it, and under **API restrictions**, restrict
-   it to only the four APIs above (rather than leaving it unrestricted).
-   Since this key is only ever called from your Vercel server, not a
-   browser, you do not need an HTTP referrer restriction; if your Vercel
-   project uses a static outbound IP range, you can optionally add an IP
-   restriction instead. Leaving it completely unrestricted works but is
-   not recommended.
-5. Confirm billing is enabled on the Google Cloud project. All four APIs
-   above require an active billing account, even within Google's free
-   monthly usage credit.
+4. Click the new key to edit it:
+   - Under **Application restrictions**, choose **Websites (HTTP
+     referrers)** and add: `michaelaylett.com/*`,
+     `www.michaelaylett.com/*`, `*.vercel.app/*` (covers Vercel preview
+     deployments), and `localhost/*` (for local development).
+   - Under **API restrictions**, restrict the key to **Maps Embed API**
+     only.
+   This key is inlined into the client-side JavaScript bundle at build
+   time (see step 2), so anyone can see it by viewing page source --
+   the HTTP referrer + API restrictions above are what actually keep it
+   from being used elsewhere, not secrecy.
+5. Confirm billing is enabled on the Google Cloud project; the Maps
+   Embed API requires an active billing account, even within Google's
+   free monthly usage credit.
 
-### 2. Create the GOOGLE_MAPS_API_KEY environment variable in Vercel
+**Use a separate key from any other Google Maps Platform key you may
+have used with an earlier version of this project.** Never reuse an
+unrestricted, server-side key here.
+
+### 2. Create the NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY environment variable in Vercel
 
 Same pattern as `RESEND_API_KEY` above:
 
 1. Open your project on [vercel.com](https://vercel.com).
 2. Go to **Settings > Environment Variables**.
 3. Click **Add New**.
-   - **Key**: `GOOGLE_MAPS_API_KEY`
+   - **Key**: `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY`
    - **Value**: the key you copied in step 1.
    - **Environments**: check **Production**, and **Preview**/
-     **Development** if you want transit lookups to work on preview
+     **Development** if you want the embedded map to work on preview
      deployments or `vercel dev`.
-4. Click **Save**, then **redeploy**. As with every other environment
-   variable in this project, adding or changing it does not affect
-   deployments that already exist -- you must trigger a new one
-   (Deployments tab > ... menu on the latest deployment > Redeploy, or
-   push a new commit).
+4. Click **Save**, then **redeploy**. Because this is a `NEXT_PUBLIC_`
+   variable, it is baked into the JavaScript bundle at build time --
+   redeploying is required after adding or changing it, exactly like
+   every other environment variable in this project, and this applies
+   even more strictly here since a plain restart cannot pick up a new
+   value.
 
 For local development, copy `.env.example` to `.env.local` and fill in
 the same value; `.env.local` is already gitignored and never committed.
 
-### 3. Cost and usage notes
+### 3. If the key is not set
 
-- Google Maps Platform billing and usage limits apply. Review current
-  pricing at [mapsplatform.google.com/pricing](https://mapsplatform.google.com/pricing)
-  before relying on this in production, and consider setting a daily
-  quota or budget alert in the Google Cloud Console.
-- This project caps API cost per lookup: only the geographically closest
-  candidates within about two miles get an actual routed walking-distance
-  request (capped at 8), and only the top few ranked finalists get a
-  secondary request for bus-route/agency details (capped at 5). Results
-  are cached server-side by normalized address (see
-  `lib/transit/cache.ts`) so editing unrelated fields, or changing the
-  Maximum Walking Distance setting, never triggers a repeat request for
-  the same address.
-- The cache is in-memory per server instance, not a database -- it
-  avoids repeat calls for the same address within a single warm Vercel
-  Function instance, but is not durable across instances or deployments.
+The Underwriting page still works. The "Transit and Bus Stop Access"
+section shows "The embedded Google Maps view is not configured." in
+place of the map, and the "Open Bus Stop Search in Google Maps" button
+still works (it needs no API key at all, since it is a plain
+`google.com/maps/search` deep link). The manual verification fields,
+Save button, and Pass/Fail calculation all work regardless of whether
+the embed key is set.
 
-### 4. If the key is not set
+**Never commit a real API key to this repository.**
+`NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` must only ever be set as a
+Vercel Environment Variable (or in your local, gitignored
+`.env.local`), never hard-coded in source, and this ZIP does not
+include one.
 
-The Underwriting page still works. GTFS-based bus-stop discovery still
-runs (it does not depend on Google), but there is no Google Routes API
-available to compute an actual walking route, so every result is
-reported with walking distance/time "Unavailable" rather than
-substituting straight-line distance -- consistent with the rule that
-this feature never fabricates a walking route. Geocoding falls back to
-OpenStreetMap's public Nominatim service; see the comments in
-`lib/transit/osm.ts` for that fallback's limitations.
+### 4. How the result is verified and recorded
 
-**Never commit a real API key to this repository.** `GOOGLE_MAPS_API_KEY`
-must only ever be set as a Vercel Environment Variable (or in your local,
-gitignored `.env.local`), never hard-coded in source, and this ZIP does
-not include one.
-
-### 5. GTFS Feed Configuration
-
-`lib/transit/gtfs/providers.ts` registers one entry per transit agency
-(Charlotte/CATS, Dallas-Plano/DART, Fort Worth/Trinity Metro, Atlanta-
-Decatur/MARTA, Raleigh/GoRaleigh, the Triangle/GoTriangle, Jacksonville/
-JTA, Orlando/LYNX, Tampa/HART, Pinellas/PSTA, Pasco County, Phoenix/
-Valley Metro, Las Vegas/RTC Southern Nevada), each with a state, the
-counties/cities it serves, and a default GTFS static feed URL.
-
-**Feed URL confidence.** Every entry has a `verified` flag. `verified:
-true` means the URL was found directly on the agency's own domain (DART,
-Trinity Metro, MARTA, LYNX, PSTA, Valley Metro/City of Phoenix Open Data,
-and RTC Southern Nevada, as shipped). `verified: false` means either a
-best-effort mirror was used (CATS ships pointing at a third-party archive
-of a Charlotte public-records request, since a stable current URL on
-CATS's own domain could not be confirmed) or no confident URL was found
-at all (GoRaleigh, GoTriangle, JTA, HART, Pasco County ship with
-`feedUrl: null` -- these providers still participate in location
-matching and diagnostics, they just won't return GTFS candidates for
-that market until a feed URL is supplied). **Before relying on any
-market, especially Charlotte/CATS, do a first-deploy smoke test against a
-known address in that market and check the administrator diagnostics
-panel (see below) to confirm the feed loaded and returned a sensible
-stop count.**
-
-**Correcting or adding a feed URL without a code change.** Every
-provider can be overridden via a `GTFS_FEED_URL_<ID>` environment
-variable (uppercase, hyphens become underscores), added the same way as
-`GOOGLE_MAPS_API_KEY` in Vercel's Environment Variables settings:
-
-- `GTFS_FEED_URL_CATS` -- Charlotte
-- `GTFS_FEED_URL_GORALEIGH`, `GTFS_FEED_URL_GOTRIANGLE` -- Raleigh/Triangle
-- `GTFS_FEED_URL_JTA` -- Jacksonville
-- `GTFS_FEED_URL_HART` -- Tampa
-- `GTFS_FEED_URL_PASCO` -- Pasco County
-- (any other provider's `id` field in `providers.ts`, uppercased)
-
-**Caching.** A parsed feed is cached in memory for 24 hours per warm
-server instance (`lib/transit/gtfs/cache.ts`) so a multi-megabyte agency
-ZIP is downloaded and parsed at most once a day, not on every
-underwriting request. This was chosen over a paid external store (Vercel
-KV, a database) because it requires no additional infrastructure and
-meaningfully cuts latency for the common case; the trade-off, documented
-in the module itself, is that Vercel Functions are ephemeral and can run
-across multiple isolated instances, so a cold start re-downloads the
-feed. If cross-instance durability becomes important later, swap the
-in-memory `Map` in `cache.ts` for a shared store -- every caller only
-ever goes through `loadFeedCached`, so no other file needs to change.
-
-**Administrator diagnostics.** Adding `?transitDebug=1` to the
-Underwriting page URL reveals a "Transit Lookup Diagnostics" panel below
-the transit result (never shown to ordinary visitors otherwise):
-matched address and coordinates, every GTFS provider that matched the
-property's location with its feed status (loaded / failed / not
-configured) and stop count in radius, Google Places status and candidate
-count, walking-route attempts/successes, which provider ultimately
-supplied the result, and the running `Transit Lookup Version` string
-(`2.0-GTFS`) -- useful for confirming a deployment actually picked up
-this code rather than serving a stale build.
+1. As soon as a Property Address is entered, the section builds a
+   search query of `bus stops near [PROPERTY ADDRESS]` and both embeds
+   it (Google Maps Embed API, search mode) and links to it (plain
+   Google Maps search, opened in a new tab via the button below the
+   map).
+2. The map is a manual aid only -- nothing on the page reads bus-stop
+   names, walking times, or any other data out of the embedded map. The
+   person underwriting the deal looks at the map/search results
+   themselves and types what they find into the fields below it.
+3. Clicking **Save Verified Transit Result** commits those field values,
+   tagged with the Property Address at the moment of saving.
+4. Pass/Fail is computed immediately from the saved Walking Time (or
+   Walking Distance, depending on which mode the Maximum Walking
+   Distance setting uses) against that setting's maximum, using an
+   inclusive `<=` comparison. Until a result has been saved, the section
+   reads "NOT VERIFIED."
+5. If the Property Address changes after a result has been saved, that
+   result is not silently reused -- the section marks it outdated and
+   shows "The property address changed. Verify transit access again."
+   until a new result is saved for the new address.
 
 ## Content guardrails in place
 
@@ -637,9 +572,10 @@ notifications and file uploads" above:
 - `RESEND_FROM_EMAIL` (optional until your sending domain is verified)
 - A private Vercel Blob store connected to the project (required for the
   Capital Partner and RV Park file uploads)
-- `GOOGLE_MAPS_API_KEY` (optional; required only for the Underwriting
-  page's "Transit and Bus Stop Access" lookup -- see "Transit and Bus
-  Stop Access (Google Maps Platform)" above)
+- `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` (optional; required only for
+  the Underwriting page's "Transit and Bus Stop Access" section to show
+  the embedded Google Maps search panel -- see "Transit and Bus Stop
+  Access (Manual Verification + Google Maps Embed)" above)
 
 To push to your existing GitHub repo: unzip this project over (or into)
 your repo, commit, and push. Vercel will pick up the changes
