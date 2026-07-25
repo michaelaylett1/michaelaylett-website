@@ -73,18 +73,20 @@ import {
   type RoiProjectionResult,
   type RoiYearRow,
 } from "@/lib/roiProjection";
-import { evaluateWalkResult, looksLikeCompleteAddress, formatMaxWalkLabel } from "@/lib/transit/evaluate";
+import {
+  computeManualTransitStatus,
+  buildManualTransitMessage,
+  formatMaxWalkLabel,
+  looksLikeUsableAddress,
+  buildMapsEmbedUrl,
+  buildMapsSearchUrl,
+} from "@/lib/transit/manual";
 import type {
-  TransitDataSource,
-  TransitLookupDiagnostics,
-  TransitLookupResult,
-  TransitLookupResponseBody,
+  ManualTransitVerification,
+  TransitManualStatus,
   TransitMaxWalkMode,
   TransitMaxWalkSetting,
-  TransitResultStatus,
-  TransitResultUsed,
-  TransitStopCandidate,
-} from "@/lib/transit/types";
+} from "@/lib/transit/manual";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -2764,15 +2766,22 @@ function PropertyTaxPrintRows({
 
 // ---------------------------------------------------------------------
 // Transit and Bus Stop Access: on-page section. Purely presentational
-// like PropertyTaxSection above -- all state, the actual fetch to
-// /api/transit/lookup, and every handler live on the parent component.
-// Rendered exactly once (Property Address itself is a single,
-// financing-mode-independent field, not duplicated per structure), which
-// is what satisfies "apply consistently across all five financing
-// structures": the section is always visible regardless of which
-// structure is selected.
+// like PropertyTaxSection above -- all state and handlers live on the
+// parent component. Rendered exactly once (Property Address itself is a
+// single, financing-mode-independent field, not duplicated per
+// structure), which is what satisfies "apply consistently across all
+// five financing structures": the section is always visible regardless
+// of which structure is selected.
+//
+// Manual-verification architecture (see lib/transit/manual.ts for the
+// full rationale): there is no automatic backend bus-stop lookup here.
+// An embedded Google Maps search panel lets the person underwriting the
+// deal look up nearby bus stops themselves, then record what they found
+// in the fields below it. Pass/Fail is computed client-side from those
+// numbers against the Maximum Walking Distance setting -- no server
+// call, no discovery pipeline to go wrong.
 // ---------------------------------------------------------------------
-function transitStatusColors(status: TransitResultStatus | null): {
+function transitStatusColors(status: TransitManualStatus): {
   border: string;
   bg: string;
   text: string;
@@ -2780,8 +2789,6 @@ function transitStatusColors(status: TransitResultStatus | null): {
   switch (status) {
     case "pass":
       return { border: "border-emerald-600/40", bg: "bg-emerald-50", text: "text-emerald-800" };
-    case "caution":
-      return { border: "border-amber-500/40", bg: "bg-amber-50", text: "text-amber-800" };
     case "fail":
       return { border: "border-red-600/40", bg: "bg-red-50", text: "text-red-800" };
     default:
@@ -2789,112 +2796,15 @@ function transitStatusColors(status: TransitResultStatus | null): {
   }
 }
 
-function transitStatusLabel(status: TransitResultStatus | null): string {
+function transitStatusLabel(status: TransitManualStatus): string {
   switch (status) {
     case "pass":
       return "PASS";
-    case "caution":
-      return "CAUTION";
     case "fail":
       return "FAIL";
     default:
       return "NOT VERIFIED";
   }
-}
-
-/** Google Maps "get directions" URL -- no API key required or exposed. */
-function buildWalkingRouteMapsUrl(originAddress: string, stop: TransitStopCandidate): string {
-  const destination =
-    stop.latitude && stop.longitude ? `${stop.latitude},${stop.longitude}` : stop.name;
-  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-    originAddress
-  )}&destination=${encodeURIComponent(destination)}&travelmode=walking`;
-}
-
-// A synthesized coordinate-key id looks like "35.3130,-80.7820" (see
-// coordKey in lib/transit/geo.ts) -- used below to tell a real Google
-// place_id apart from a fallback id without depending on discoveryMethod
-// (a GTFS-or-OSM-only stop has no place_id regardless of which merge tag
-// it ended up with).
-const COORD_KEY_ID_PATTERN = /^-?\d+\.\d{4},-?\d+\.\d{4}$/;
-
-/** Google Maps "view this place" URL -- uses the Google place_id when one
- * is actually known for this stop (Places Nearby Search contributed it)
- * for a precise match; falls back to a coordinate search otherwise (a
- * stop discovered only through GTFS or OpenStreetMap has no place_id --
- * stop.id is a synthesized coordinate key in that case, not a value
- * Google's query_place_id parameter understands). No API key required or
- * exposed either way. */
-function buildBusStopMapsUrl(stop: TransitStopCandidate): string {
-  const query = encodeURIComponent(`${stop.name} ${stop.latitude},${stop.longitude}`);
-  const hasRealPlaceId = !COORD_KEY_ID_PATTERN.test(stop.id);
-  if (hasRealPlaceId) {
-    return `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(
-      stop.id
-    )}`;
-  }
-  return `https://www.google.com/maps/search/?api=1&query=${query}`;
-}
-
-/**
- * A stop confirmed via transit routing (Method B, or Method A+B merged)
- * gets a more specific verification label than one only found via a
- * Places-record enrichment call, since transit routing directly observed
- * a bus using that stop rather than inferring it from separate metadata.
- */
-function transitVerificationLabel(stop: TransitStopCandidate): string {
-  if (stop.busServiceConfidence !== "confirmed") {
-    return "Bus service should be independently verified";
-  }
-  if (stop.discoveryMethod === "gtfs" || stop.discoveryMethod === "both") {
-    return "Bus service confirmed through official GTFS transit data";
-  }
-  return "Bus service confirmed by provider data";
-}
-
-function TransitStopSummaryLines({ stop }: { stop: TransitStopCandidate }) {
-  return (
-    <>
-      <div className="flex justify-between gap-3">
-        <span className="text-ink/60">Walking Distance</span>
-        <span className="text-ink font-medium text-right">
-          {stop.hasValidWalkingRoute ? `${stop.walkingMiles} miles` : "Unavailable"}
-        </span>
-      </div>
-      <div className="flex justify-between gap-3">
-        <span className="text-ink/60">Estimated Walking Time</span>
-        <span className="text-ink font-medium text-right">
-          {stop.hasValidWalkingRoute ? `${stop.walkingMinutes} minutes` : "Unavailable"}
-        </span>
-      </div>
-      <div className="flex justify-between gap-3">
-        <span className="text-ink/60">Straight-Line Distance</span>
-        <span className="text-ink/70 text-right">{stop.straightLineMiles} miles (secondary)</span>
-      </div>
-      {stop.busRoutes.length > 0 && (
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60">Bus Routes</span>
-          <span className="text-ink font-medium text-right">{stop.busRoutes.join(", ")}</span>
-        </div>
-      )}
-      {stop.transitAgency && (
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60">Transit Agency</span>
-          <span className="text-ink font-medium text-right">{stop.transitAgency}</span>
-        </div>
-      )}
-      {stop.address && (
-        <div className="flex justify-between gap-3">
-          <span className="text-ink/60">Stop Address</span>
-          <span className="text-ink text-right break-words">{stop.address}</span>
-        </div>
-      )}
-      <div className="flex justify-between gap-3">
-        <span className="text-ink/60">Verification</span>
-        <span className="text-ink/70 text-right">{transitVerificationLabel(stop)}</span>
-      </div>
-    </>
-  );
 }
 
 function TransitAndBusStopAccessSection({
@@ -2910,22 +2820,24 @@ function TransitAndBusStopAccessSection({
   maxWalkDistanceCustomDraft,
   onMaxWalkDistanceCustomChange,
   effectiveMaxWalkSetting,
-  onCheckClick,
-  onRefreshClick,
-  loading,
-  error,
-  result,
+  nearestStopDraft,
+  onNearestStopDraftChange,
+  walkingTimeDraft,
+  onWalkingTimeDraftChange,
+  walkingDistanceDraft,
+  onWalkingDistanceDraftChange,
+  transitAgencyDraft,
+  onTransitAgencyDraftChange,
+  busRoutesDraft,
+  onBusRoutesDraftChange,
+  dateVerifiedDraft,
+  onDateVerifiedDraftChange,
+  notesDraft,
+  onNotesDraftChange,
+  onSave,
   outdated,
-  showAlternates,
-  onToggleAlternates,
-  overrideStatus,
-  onOverrideChange,
-  notes,
-  onNotesChange,
   displayStatus,
   displayMessage,
-  diagnostics,
-  debugEnabled,
 }: {
   address: string;
   maxWalkMode: TransitMaxWalkMode;
@@ -2939,32 +2851,38 @@ function TransitAndBusStopAccessSection({
   maxWalkDistanceCustomDraft: string;
   onMaxWalkDistanceCustomChange: (raw: string) => void;
   effectiveMaxWalkSetting: TransitMaxWalkSetting;
-  onCheckClick: () => void;
-  onRefreshClick: () => void;
-  loading: boolean;
-  error: string | null;
-  result: TransitLookupResult | null;
+  nearestStopDraft: string;
+  onNearestStopDraftChange: (value: string) => void;
+  walkingTimeDraft: string;
+  onWalkingTimeDraftChange: (value: string) => void;
+  walkingDistanceDraft: string;
+  onWalkingDistanceDraftChange: (value: string) => void;
+  transitAgencyDraft: string;
+  onTransitAgencyDraftChange: (value: string) => void;
+  busRoutesDraft: string;
+  onBusRoutesDraftChange: (value: string) => void;
+  dateVerifiedDraft: string;
+  onDateVerifiedDraftChange: (value: string) => void;
+  notesDraft: string;
+  onNotesDraftChange: (value: string) => void;
+  onSave: () => void;
   outdated: boolean;
-  showAlternates: boolean;
-  onToggleAlternates: () => void;
-  overrideStatus: TransitResultUsed;
-  onOverrideChange: (value: TransitResultUsed) => void;
-  notes: string;
-  onNotesChange: (value: string) => void;
-  displayStatus: TransitResultStatus | null;
+  displayStatus: TransitManualStatus;
   displayMessage: string;
-  diagnostics: TransitLookupDiagnostics | null;
-  debugEnabled: boolean;
 }) {
   const colors = transitStatusColors(displayStatus);
-  const nearest = result?.nearestStop ?? null;
+  const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
+  const hasAddress = looksLikeUsableAddress(address);
+  const embedUrl = hasAddress ? buildMapsEmbedUrl(address, embedApiKey) : null;
+  const searchUrl = buildMapsSearchUrl(address);
 
   return (
     <div className="print:hidden mt-6 bg-paper text-ink p-6 sm:p-8 md:p-10">
       <p className="eyebrow text-brass mb-1">Transit and Bus Stop Access</p>
       <p className="text-sm text-ink/70 leading-[1.45] mb-5 max-w-2xl">
-        Determines the nearest usable bus stop within walking distance of the property, once a
-        complete Property Address is entered above.
+        Look up nearby bus stops for this property in the embedded map below, once a Property
+        Address is entered above, then record what you find so it can be checked against the
+        Maximum Walking Distance requirement.
       </p>
 
       {/* Maximum Walking Distance setting */}
@@ -3043,171 +2961,158 @@ function TransitAndBusStopAccessSection({
           </div>
         )}
       </div>
-      <p className="text-xs text-ink/50 leading-relaxed mb-5">
+      <p className="text-xs text-ink/50 leading-relaxed mb-6">
         The standard co-living/PadSplit underwriting benchmark is generally a bus stop within a
-        15-minute walk. Changing this setting re-checks the existing result instantly and does not
-        run a new search.
+        15-minute walk. Changing this setting re-checks the saved result instantly.
       </p>
 
-      {/* Lookup button + loading state */}
-      <div className="flex flex-wrap items-center gap-3 mb-5">
-        <button
-          type="button"
-          onClick={onCheckClick}
-          disabled={loading}
-          className="inline-flex items-center gap-2 border border-line-dark px-4 py-2.5 text-sm text-ink hover:border-brass transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {loading && <Loader2 size={15} className="animate-spin" aria-hidden="true" />}
-          Check Nearest Bus Stop
-        </button>
-        {result && (
-          <button
-            type="button"
-            onClick={onRefreshClick}
-            disabled={loading}
-            className="inline-flex items-center gap-2 border border-line-dark px-4 py-2.5 text-sm text-ink/70 hover:border-brass hover:text-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <RefreshCw size={14} aria-hidden="true" />
-            Refresh Transit Data
-          </button>
-        )}
-        <span role="status" aria-live="polite" className="text-sm text-ink/60">
-          {loading ? "Checking nearby bus stops..." : ""}
-        </span>
-      </div>
-
-      {outdated && !loading && (
-        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
-          Transit lookup needs to be refreshed. The address changed since this result was checked.
-        </p>
-      )}
-
-      {error && !loading && (
-        <p className="mb-5 border border-red-600/40 bg-red-50 text-red-800 text-sm px-4 py-3">
-          {error}
-        </p>
-      )}
-
-      {result && result.geocodePartialMatch && !outdated && !loading && (
-        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
-          This address only matched approximately. Confirm the property address is correct before
-          relying on this transit result -- the search may have started from a nearby location
-          rather than the exact property.
-        </p>
-      )}
-
-      {/* Result card */}
-      {result && (
-        <div className={`border ${colors.border} ${colors.bg} p-5 sm:p-6 mb-5`}>
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <p className={`font-semibold ${colors.text}`}>{transitStatusLabel(displayStatus)}</p>
-            <span className="text-xs text-ink/50">
-              Maximum Allowed: {formatMaxWalkLabel(effectiveMaxWalkSetting)}
-            </span>
-          </div>
-          <p className={`text-sm leading-relaxed mb-4 ${colors.text}`}>{displayMessage}</p>
-
-          {nearest ? (
-            <>
-              <p className="font-medium text-ink mb-2 break-words">{nearest.name}</p>
-              <div className="space-y-1.5 text-sm mb-4">
-                <TransitStopSummaryLines stop={nearest} />
-              </div>
-              <div className="flex flex-wrap gap-3 mb-1">
-                <a
-                  href={buildWalkingRouteMapsUrl(result.matchedAddress, nearest)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-sm text-brass hover:underline"
-                >
-                  View Walking Route
-                  <ExternalLink size={13} aria-hidden="true" />
-                </a>
-                <a
-                  href={buildBusStopMapsUrl(nearest)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-sm text-brass hover:underline"
-                >
-                  View Bus Stop
-                  <ExternalLink size={13} aria-hidden="true" />
-                </a>
-              </div>
-            </>
+      {/* Embedded Google Maps search panel (spec: Maps Embed API, search
+          mode -- never a scraped/embedded google.com search-results
+          page, and the app never reads anything back out of it). */}
+      <div className="mb-3 flex justify-center">
+        <div className="w-full max-w-[850px]">
+          {!hasAddress ? (
+            <div className="w-full h-[350px] sm:h-[450px] flex items-center justify-center border border-line-dark bg-paper-2 text-sm text-ink/60 text-center px-6">
+              Enter a Property Address above to search for nearby bus stops.
+            </div>
+          ) : embedUrl ? (
+            <iframe
+              title="Bus stops near this property (Google Maps)"
+              src={embedUrl}
+              className="w-full h-[350px] sm:h-[450px] border border-line-dark"
+              style={{ border: 0 }}
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
           ) : (
-            <p className="text-sm text-ink/60">No candidate stop is available to display.</p>
-          )}
-
-          <div className="grid sm:grid-cols-2 gap-2 mt-4 pt-4 border-t border-ink/10 text-xs text-ink/50">
-            <span>Data Source: {result.dataSource}</span>
-            <span>
-              Date Checked:{" "}
-              {new Date(result.dateChecked).toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              })}
-            </span>
-          </div>
-
-          {result.alternates.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-ink/10">
-              <button
-                type="button"
-                onClick={onToggleAlternates}
-                className="text-sm text-brass hover:underline"
-              >
-                {showAlternates ? "Hide Other Nearby Bus Stops" : "View Other Nearby Bus Stops"}
-              </button>
-              {showAlternates && (
-                <div className="mt-3 space-y-4">
-                  {result.alternates.map((alt) => (
-                    <div key={alt.id} className="border border-line-dark bg-white p-3">
-                      <p className="font-medium text-ink mb-1.5 break-words">{alt.name}</p>
-                      <div className="space-y-1 text-xs">
-                        <TransitStopSummaryLines stop={alt} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="w-full h-[350px] sm:h-[450px] flex items-center justify-center border border-line-dark bg-paper-2 text-sm text-ink/60 text-center px-6">
+              The embedded Google Maps view is not configured.
             </div>
           )}
         </div>
+      </div>
+
+      <div className="mb-6 flex justify-center">
+        <a
+          href={searchUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => {
+            if (!hasAddress) e.preventDefault();
+          }}
+          aria-disabled={!hasAddress}
+          className={`inline-flex items-center gap-2 border px-4 py-2.5 text-sm transition-colors w-full sm:w-auto justify-center ${
+            hasAddress
+              ? "border-line-dark text-ink hover:border-brass"
+              : "border-line-dark/50 text-ink/40 cursor-not-allowed"
+          }`}
+        >
+          Open Bus Stop Search in Google Maps
+          <ExternalLink size={14} aria-hidden="true" />
+        </a>
+      </div>
+
+      {outdated && (
+        <p className="mb-5 border border-amber-500/40 bg-amber-50 text-amber-800 text-sm px-4 py-3">
+          The property address changed. Verify transit access again.
+        </p>
       )}
 
-      {/* Manual override */}
-      <div className="grid sm:grid-cols-2 gap-5 mb-2">
+      {/* Manual verification fields (spec section 6) */}
+      <div className="grid sm:grid-cols-2 gap-5 mb-5">
         <div>
-          <label htmlFor="transitOverrideStatus" className="block mb-2">
-            <FieldLabel info="The automated result above is always preserved. Selecting anything other than Use Automatic Result only changes which status is used elsewhere in the underwriting (summary, print, Excel).">
-              Transit Result Used in Underwriting
-            </FieldLabel>
+          <label htmlFor="transitNearestStop" className="block mb-2">
+            <FieldLabel>Nearest Bus Stop</FieldLabel>
           </label>
-          <select
-            id="transitOverrideStatus"
-            value={overrideStatus}
-            onChange={(e) => onOverrideChange(e.target.value as TransitResultUsed)}
+          <input
+            id="transitNearestStop"
+            type="text"
+            value={nearestStopDraft}
+            onChange={(e) => onNearestStopDraftChange(e.target.value)}
+            placeholder="e.g. Benfield Rd @ Shads Landing"
             className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
-          >
-            <option value="automatic">Use Automatic Result</option>
-            <option value="pass">Pass</option>
-            <option value="fail">Fail</option>
-            <option value="notVerified">Not Verified</option>
-            <option value="notApplicable">Not Applicable</option>
-          </select>
-          <p className="mt-1.5 text-xs text-ink/50 leading-relaxed">
-            Transit Status Source: {overrideStatus === "automatic" ? "Automated Result" : "Manual Override"}
-          </p>
+          />
         </div>
         <div>
-          <label htmlFor="transitNotes" className="block mb-2">
+          <label htmlFor="transitDateVerified" className="block mb-2">
+            <FieldLabel>Date Verified</FieldLabel>
+          </label>
+          <input
+            id="transitDateVerified"
+            type="date"
+            value={dateVerifiedDraft}
+            onChange={(e) => onDateVerifiedDraftChange(e.target.value)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+        </div>
+        <div>
+          <label htmlFor="transitWalkingTime" className="block mb-2">
+            <FieldLabel>Walking Time</FieldLabel>
+          </label>
+          <input
+            id="transitWalkingTime"
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            value={walkingTimeDraft}
+            onChange={(e) => onWalkingTimeDraftChange(e.target.value)}
+            placeholder="13"
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+          <p className="mt-1 text-xs text-ink/50">Minutes</p>
+        </div>
+        <div>
+          <label htmlFor="transitWalkingDistance" className="block mb-2">
+            <FieldLabel>Walking Distance</FieldLabel>
+          </label>
+          <input
+            id="transitWalkingDistance"
+            type="number"
+            min="0"
+            step="0.01"
+            inputMode="decimal"
+            value={walkingDistanceDraft}
+            onChange={(e) => onWalkingDistanceDraftChange(e.target.value)}
+            placeholder="0.60"
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+          <p className="mt-1 text-xs text-ink/50">Miles</p>
+        </div>
+        <div>
+          <label htmlFor="transitAgencyField" className="block mb-2">
+            <FieldLabel>Transit Agency</FieldLabel>
+          </label>
+          <input
+            id="transitAgencyField"
+            type="text"
+            value={transitAgencyDraft}
+            onChange={(e) => onTransitAgencyDraftChange(e.target.value)}
+            placeholder="e.g. CATS (optional)"
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+        </div>
+        <div>
+          <label htmlFor="transitBusRoutesField" className="block mb-2">
+            <FieldLabel>Bus Route Numbers</FieldLabel>
+          </label>
+          <input
+            id="transitBusRoutesField"
+            type="text"
+            value={busRoutesDraft}
+            onChange={(e) => onBusRoutesDraftChange(e.target.value)}
+            placeholder="e.g. 38, 223 (optional)"
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label htmlFor="transitNotesField" className="block mb-2">
             <FieldLabel>Transit Notes</FieldLabel>
           </label>
           <textarea
-            id="transitNotes"
-            value={notes}
-            onChange={(e) => onNotesChange(e.target.value)}
+            id="transitNotesField"
+            value={notesDraft}
+            onChange={(e) => onNotesDraftChange(e.target.value)}
             rows={3}
             placeholder="e.g. Bus stop has no sidewalk access, route requires crossing a major highway..."
             className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass resize-y"
@@ -3215,138 +3120,49 @@ function TransitAndBusStopAccessSection({
         </div>
       </div>
 
-      <p className="mt-4 text-xs text-ink/50 leading-relaxed max-w-2xl">
-        Walking time and distance are estimates. Verify sidewalks, road crossings, lighting,
-        terrain, accessibility, stop activity, route schedules, and current bus service before
-        acquiring the property.
-      </p>
+      <div className="mb-6">
+        <button
+          type="button"
+          onClick={onSave}
+          className="inline-flex items-center gap-2 border border-brass bg-brass/10 px-4 py-2.5 text-sm text-ink hover:bg-brass/20 transition-colors w-full sm:w-auto justify-center"
+        >
+          Save Verified Transit Result
+        </button>
+      </div>
 
-      {debugEnabled && diagnostics && <TransitDiagnosticsPanel diagnostics={diagnostics} />}
+      {/* Pass/Fail/Not Verified result */}
+      <div className={`border ${colors.border} ${colors.bg} p-5 sm:p-6 mb-5`}>
+        <p className={`font-semibold ${colors.text}`}>{transitStatusLabel(displayStatus)}</p>
+        <p className={`text-sm mt-1 ${colors.text}`}>{displayMessage}</p>
+      </div>
+
+      <p className="text-xs text-ink/50 leading-relaxed max-w-2xl">
+        Walking time and distance are self-reported from manual verification in Google Maps, not
+        an automated calculation. Verify sidewalks, road crossings, lighting, terrain,
+        accessibility, stop activity, route schedules, and current bus service before acquiring
+        the property.
+      </p>
     </div>
   );
 }
 
-// Administrator-only diagnostic detail (spec section 11/12), opt-in via
-// ?transitDebug=1 -- never shown to ordinary public users. Surfaces
-// enough detail to tell apart a data-discovery problem (no GTFS provider
-// matched, or a feed failed), a routing problem (walking routes failed),
-// a filtering problem, a configuration problem (feed not configured,
-// API key missing), or a stale deployment (buildVersion mismatch).
-function TransitDiagnosticsPanel({ diagnostics }: { diagnostics: TransitLookupDiagnostics }) {
-  const feedStatusLabel = (status: TransitLookupDiagnostics["gtfsProviders"][number]["feedStatus"]) => {
-    switch (status) {
-      case "ok":
-        return "Loaded";
-      case "failed":
-        return "Failed to download/parse";
-      case "not_configured":
-        return "No feed URL configured";
-      default:
-        return "Not attempted";
-    }
-  };
-
-  return (
-    <details className="mt-5 border border-dashed border-line-dark/60 bg-ink/[0.02] p-4 text-xs" open>
-      <summary className="cursor-pointer font-semibold text-ink/80 select-none">
-        Transit Lookup Diagnostics (administrator only)
-      </summary>
-      <div className="mt-3 space-y-3 text-ink/70">
-        <div className="grid sm:grid-cols-2 gap-x-6 gap-y-1">
-          <div>
-            <span className="text-ink/50">Matched Address: </span>
-            {diagnostics.matchedAddress}
-          </div>
-          <div>
-            <span className="text-ink/50">Coordinates: </span>
-            {diagnostics.latitude.toFixed(5)}, {diagnostics.longitude.toFixed(5)}
-          </div>
-          <div>
-            <span className="text-ink/50">Google Places: </span>
-            {diagnostics.googlePlacesStatus} ({diagnostics.googlePlacesCandidates} candidate
-            {diagnostics.googlePlacesCandidates === 1 ? "" : "s"})
-          </div>
-          <div>
-            <span className="text-ink/50">Walking Routes: </span>
-            {diagnostics.walkingRoutesSucceeded} succeeded / {diagnostics.walkingRoutesAttempted} attempted
-          </div>
-          <div>
-            <span className="text-ink/50">Final Provider Used: </span>
-            {diagnostics.finalProviderUsed ?? "None (no result)"}
-          </div>
-          <div>
-            <span className="text-ink/50">Transit Lookup Version: </span>
-            {diagnostics.buildVersion}
-          </div>
-        </div>
-
-        <div>
-          <p className="text-ink/50 mb-1">GTFS Providers Matched to This Location</p>
-          {diagnostics.gtfsProviders.length === 0 ? (
-            <p className="text-ink/60">
-              None -- no configured transit-agency GTFS provider covers this state/county/city.
-            </p>
-          ) : (
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="text-ink/50">
-                  <th className="pr-4 pb-1 font-normal">Agency</th>
-                  <th className="pr-4 pb-1 font-normal">Feed Status</th>
-                  <th className="pr-4 pb-1 font-normal">Verified Source</th>
-                  <th className="pr-4 pb-1 font-normal">Last Updated</th>
-                  <th className="pb-1 font-normal">Stops in Radius</th>
-                </tr>
-              </thead>
-              <tbody>
-                {diagnostics.gtfsProviders.map((p) => (
-                  <tr key={p.agencyName} className="border-t border-line-dark/20">
-                    <td className="pr-4 py-1">{p.agencyName}</td>
-                    <td className="pr-4 py-1">{feedStatusLabel(p.feedStatus)}</td>
-                    <td className="pr-4 py-1">{p.feedVerified ? "Yes" : "Best-effort, verify"}</td>
-                    <td className="pr-4 py-1">
-                      {p.feedLastUpdated
-                        ? new Date(p.feedLastUpdated).toLocaleString("en-US")
-                        : "Not loaded"}
-                    </td>
-                    <td className="py-1">{p.rawStopsWithinRadius}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-    </details>
-  );
-}
-
 // The printable-report counterpart to TransitAndBusStopAccessSection.
-// Never includes lookup buttons, dropdown controls, loading indicators,
-// resolved API errors, API keys, or raw provider responses (spec section
-// 21) -- only the resolved figures.
+// Never includes the embedded map, lookup buttons, or loading indicators
+// (spec section 10) -- only the saved, manually verified figures.
 function TransitPrintSection({
   propertyAddress,
-  result,
-  overrideStatus,
-  notes,
+  saved,
+  displayStatus,
+  displayMessage,
+  outdated,
 }: {
   propertyAddress: string;
-  result: TransitLookupResult | null;
-  overrideStatus: TransitResultUsed;
-  notes: string;
+  saved: ManualTransitVerification | null;
+  displayStatus: TransitManualStatus;
+  displayMessage: string;
+  outdated: boolean;
 }) {
-  if (!result) return null;
-  const nearest = result.nearestStop;
-  const usedLabel =
-    overrideStatus === "automatic"
-      ? transitStatusLabel(result.status)
-      : overrideStatus === "pass"
-        ? "PASS"
-        : overrideStatus === "fail"
-          ? "FAIL"
-          : overrideStatus === "notVerified"
-            ? "NOT VERIFIED"
-            : "NOT APPLICABLE";
+  if (!saved) return null;
 
   const row = (label: string, value: string) => (
     <div className="flex justify-between gap-3" key={label}>
@@ -3365,44 +3181,52 @@ function TransitPrintSection({
       </div>
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[9.5pt]">
         {row("Property Address", propertyAddress.trim() || "Not entered")}
-        {row("Nearest Bus Stop", nearest ? nearest.name : "None found")}
-        {row(
-          "Walking Distance",
-          nearest && nearest.hasValidWalkingRoute ? `${nearest.walkingMiles} miles` : "Unavailable"
-        )}
+        {row("Nearest Bus Stop", saved.nearestStop.trim() || "Not entered")}
         {row(
           "Walking Time",
-          nearest && nearest.hasValidWalkingRoute ? `${nearest.walkingMinutes} minutes` : "Unavailable"
+          saved.walkingTimeMinutes !== null ? `${saved.walkingTimeMinutes} minutes` : "Not entered"
         )}
-        {row("Transit Agency", nearest?.transitAgency || "Not available")}
-        {row("Bus Routes", nearest && nearest.busRoutes.length > 0 ? nearest.busRoutes.join(", ") : "Not available")}
-        {row("Maximum Allowed Walking Distance", formatMaxWalkLabel(result.maxWalkSetting))}
-        {row("Automated Result", transitStatusLabel(result.status))}
-        {row("Transit Result Used in Underwriting", usedLabel)}
-        {row("Result Source", overrideStatus === "automatic" ? "Automated Result" : "Manual Override")}
-        {row("Data Provider", result.dataSource)}
         {row(
-          "Date Checked",
-          new Date(result.dateChecked).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
+          "Walking Distance",
+          saved.walkingDistanceMiles !== null ? `${saved.walkingDistanceMiles} miles` : "Not entered"
         )}
+        {row("Transit Agency", saved.transitAgency.trim() || "Not available")}
+        {row("Bus Routes", saved.busRoutes.trim() || "Not available")}
+        {row("Pass, Fail, or Not Verified", transitStatusLabel(displayStatus))}
+        {row(
+          "Date Verified",
+          saved.dateVerified
+            ? new Date(`${saved.dateVerified}T00:00:00`).toLocaleDateString("en-US", {
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })
+            : "Not entered"
+        )}
+        {row("Verification Source", "Google Maps Manual Verification")}
       </div>
-      {notes.trim() && (
+      <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
+        {displayMessage}
+      </p>
+      {outdated && (
+        <p className="mt-1 text-[9pt] text-amber-700 leading-relaxed">
+          The property address changed since this result was verified.
+        </p>
+      )}
+      {saved.notes.trim() && (
         <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
-          Transit Notes: {notes.trim()}
+          Transit Notes: {saved.notes.trim()}
         </p>
       )}
       <p className="mt-2 text-[8pt] text-ink leading-relaxed">
-        Walking time and distance are estimates. Verify sidewalks, road crossings, lighting,
-        terrain, accessibility, stop activity, route schedules, and current bus service before
-        acquiring the property.
+        Walking time and distance are self-reported from manual verification in Google Maps.
+        Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route
+        schedules, and current bus service before acquiring the property.
       </p>
     </div>
   );
 }
+
 
 // ---------------------------------------------------------------------
 // Breakdown row types, shared by the on-page table, CSV export, and the
@@ -3752,41 +3576,28 @@ export default function SharedHousingCalculator() {
 
   // Transit and Bus Stop Access: single, financing-mode-independent state
   // block (Property Address itself is not duplicated per structure, so
-  // neither is this). transitResult/transitResultAddress hold the last
-  // successful automated lookup; propertyAddress changing away from
-  // transitResultAddress is what flips transitOutdated (spec section 16)
-  // without erasing the previous result. transitInFlightAddressRef
-  // guards against duplicate simultaneous requests for the same address
-  // (spec section 6/18) independent of React's render/state timing.
+  // neither is this). Manual-verification architecture (see
+  // lib/transit/manual.ts): the draft fields below are what the person
+  // underwriting the deal types in after looking up nearby stops in the
+  // embedded map; transitSaved is the committed snapshot created by
+  // "Save Verified Transit Result," tagged with the Property Address it
+  // was saved against so a later address change can be detected without
+  // erasing the saved record (spec section 9).
   const [transitMaxWalkMode, setTransitMaxWalkMode] = useState<TransitMaxWalkMode>("time");
   const [transitMaxWalkTimeSelection, setTransitMaxWalkTimeSelection] = useState("15");
   const [transitMaxWalkTimeCustomDraft, setTransitMaxWalkTimeCustomDraft] = useState("15");
   const [transitMaxWalkDistanceSelection, setTransitMaxWalkDistanceSelection] = useState("0.50");
   const [transitMaxWalkDistanceCustomDraft, setTransitMaxWalkDistanceCustomDraft] = useState("0.50");
-  const [transitResult, setTransitResult] = useState<TransitLookupResult | null>(null);
-  const [transitResultAddress, setTransitResultAddress] = useState("");
-  const [transitLoading, setTransitLoading] = useState(false);
-  const [transitError, setTransitError] = useState<string | null>(null);
-  // Diagnostics from the most recent FAILED lookup (a successful lookup's
-  // diagnostics live on transitResult.diagnostics instead). Administrator-
-  // only detail (spec section 11) -- see transitDebugEnabled below.
-  const [transitErrorDiagnostics, setTransitErrorDiagnostics] = useState<TransitLookupDiagnostics | null>(null);
-  const [transitShowAlternates, setTransitShowAlternates] = useState(false);
-  const [transitOverrideStatus, setTransitOverrideStatus] = useState<TransitResultUsed>("automatic");
-  const [transitNotes, setTransitNotes] = useState("");
-  const transitInFlightAddressRef = useRef<string | null>(null);
 
-  // Administrator/debug diagnostics panel is opt-in via a URL query
-  // param (?transitDebug=1) so ordinary public visitors never see it
-  // (spec section 11: "Hide detailed diagnostics from ordinary public
-  // users"). Read once on mount -- this page requires a shared password
-  // already, so a query-param gate is a reasonable extra layer for a
-  // debugging aid, not a security boundary.
-  const [transitDebugEnabled, setTransitDebugEnabled] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setTransitDebugEnabled(new URLSearchParams(window.location.search).get("transitDebug") === "1");
-  }, []);
+  const [transitNearestStopDraft, setTransitNearestStopDraft] = useState("");
+  const [transitWalkingTimeDraft, setTransitWalkingTimeDraft] = useState("");
+  const [transitWalkingDistanceDraft, setTransitWalkingDistanceDraft] = useState("");
+  const [transitAgencyDraft, setTransitAgencyDraft] = useState("");
+  const [transitBusRoutesDraft, setTransitBusRoutesDraft] = useState("");
+  const [transitDateVerifiedDraft, setTransitDateVerifiedDraft] = useState("");
+  const [transitNotes, setTransitNotes] = useState("");
+
+  const [transitSaved, setTransitSaved] = useState<ManualTransitVerification | null>(null);
 
   const transitEffectiveMaxWalkSetting: TransitMaxWalkSetting = useMemo(() => {
     const timeMinutes =
@@ -3806,101 +3617,48 @@ export default function SharedHousingCalculator() {
     transitMaxWalkDistanceCustomDraft,
   ]);
 
-  // Re-evaluates pass/caution/fail against the current max-walk setting
-  // purely client-side, from the already-fetched result -- changing the
-  // limit never triggers another API request (spec section 7/18).
-  const transitDisplayStatus: TransitResultStatus | null = useMemo(() => {
-    if (!transitResult) return null;
-    const nearest = transitResult.nearestStop;
-    if (!nearest || !nearest.hasValidWalkingRoute) return "noResult";
-    return (
-      evaluateWalkResult(nearest.walkingMinutes, nearest.walkingMiles, transitEffectiveMaxWalkSetting) ??
-      "noResult"
+  // True once a result has been saved for an address that no longer
+  // matches the current Property Address -- the saved figures are kept
+  // (not erased), but the displayed status falls back to Not Verified so
+  // a stale PASS/FAIL is never silently reused for a different property
+  // (spec section 9: "Do not silently reuse the prior stop result").
+  const transitOutdated = Boolean(transitSaved && transitSaved.savedAtAddress !== propertyAddress.trim());
+
+  const transitDisplayStatus: TransitManualStatus = useMemo(() => {
+    if (!transitSaved || transitOutdated) return "notVerified";
+    return computeManualTransitStatus(
+      transitSaved.walkingTimeMinutes,
+      transitSaved.walkingDistanceMiles,
+      transitEffectiveMaxWalkSetting
     );
-  }, [transitResult, transitEffectiveMaxWalkSetting]);
+  }, [transitSaved, transitOutdated, transitEffectiveMaxWalkSetting]);
 
   const transitDisplayMessage: string = useMemo(() => {
-    if (!transitResult) return "";
-    const nearest = transitResult.nearestStop;
-    const limitLabel = formatMaxWalkLabel(transitEffectiveMaxWalkSetting);
-    if (transitDisplayStatus === "pass" && nearest?.hasValidWalkingRoute) {
-      return `PASS – The nearest bus stop is approximately ${nearest.walkingMiles} miles or ${nearest.walkingMinutes} minutes away on foot.`;
-    }
-    if (transitDisplayStatus === "caution" && nearest?.hasValidWalkingRoute) {
-      return `CAUTION – The nearest stop is close to the maximum allowed walking distance (${limitLabel}). Verify the route and pedestrian conditions manually.`;
-    }
-    if (transitDisplayStatus === "fail" && nearest?.hasValidWalkingRoute) {
-      return `FAIL – The closest bus stop is approximately ${nearest.walkingMiles} miles or ${nearest.walkingMinutes} minutes away on foot, exceeding the selected ${limitLabel} limit.`;
-    }
-    return "No reliable bus-stop result was found for this address. Verify transit access manually.";
-  }, [transitResult, transitDisplayStatus, transitEffectiveMaxWalkSetting]);
+    if (!transitSaved || transitOutdated) return "NOT VERIFIED";
+    return buildManualTransitMessage(
+      transitDisplayStatus,
+      transitSaved.nearestStop,
+      transitSaved.walkingTimeMinutes,
+      transitSaved.walkingDistanceMiles,
+      transitEffectiveMaxWalkSetting
+    );
+  }, [transitSaved, transitOutdated, transitDisplayStatus, transitEffectiveMaxWalkSetting]);
 
-  const transitOutdated = Boolean(
-    transitResult && transitResultAddress && propertyAddress.trim() !== transitResultAddress
-  );
-
-  // Coarse Pass/Fail/Not Verified/Not Applicable status for the
-  // underwriting summary (spec section 20) and print/Excel "Transit
-  // Result Used in Underwriting" -- this is an acquisition-criteria
-  // screening result, so it never feeds cash flow or ROI math.
-  const transitStatusUsed: "Pass" | "Fail" | "Not Verified" | "Not Applicable" = (() => {
-    if (transitOverrideStatus === "pass") return "Pass";
-    if (transitOverrideStatus === "fail") return "Fail";
-    if (transitOverrideStatus === "notVerified") return "Not Verified";
-    if (transitOverrideStatus === "notApplicable") return "Not Applicable";
-    // automatic
-    if (transitDisplayStatus === "pass" || transitDisplayStatus === "caution") return "Pass";
-    if (transitDisplayStatus === "fail") return "Fail";
-    return "Not Verified";
-  })();
-  const transitStatusSourceLabel = transitOverrideStatus === "automatic" ? "Automated Result" : "Manual Override";
-
-  async function runTransitLookupClient(address: string, opts: { forceRefresh?: boolean } = {}) {
-    const trimmed = address.trim();
-    if (!looksLikeCompleteAddress(trimmed)) {
-      setTransitError("Please enter a complete property address, including city, state, and ZIP code.");
-      return;
-    }
-    // Guard against duplicate simultaneous requests for the same address
-    // (spec section 6/18).
-    if (transitInFlightAddressRef.current === trimmed && !opts.forceRefresh) return;
-    transitInFlightAddressRef.current = trimmed;
-    setTransitLoading(true);
-    setTransitError(null);
-    try {
-      const response = await fetch("/api/transit/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          address: trimmed,
-          forceRefresh: !!opts.forceRefresh,
-          maxWalkSetting: transitEffectiveMaxWalkSetting,
-        }),
-      });
-      const data: TransitLookupResponseBody = await response.json();
-      if (data.success) {
-        setTransitResult(data.result);
-        setTransitResultAddress(trimmed);
-        setTransitErrorDiagnostics(null);
-      } else {
-        setTransitError(data.error);
-        setTransitErrorDiagnostics(data.diagnostics ?? null);
-      }
-    } catch {
-      setTransitError("Network error while checking transit access. Please try again.");
-      setTransitErrorDiagnostics(null);
-    } finally {
-      setTransitLoading(false);
-      if (transitInFlightAddressRef.current === trimmed) transitInFlightAddressRef.current = null;
-    }
-  }
-
-  function handlePropertyAddressBlur() {
-    const trimmed = propertyAddress.trim();
-    if (!trimmed) return;
-    if (trimmed === transitResultAddress && transitResult) return; // nothing changed
-    if (!looksLikeCompleteAddress(trimmed)) return; // wait for a complete address, don't error on blur
-    void runTransitLookupClient(trimmed);
+  function handleSaveTransitResult() {
+    const trimmedAddress = propertyAddress.trim();
+    const parsedTime = transitWalkingTimeDraft.trim() === "" ? null : Number(transitWalkingTimeDraft);
+    const parsedDistance = transitWalkingDistanceDraft.trim() === "" ? null : Number(transitWalkingDistanceDraft);
+    setTransitSaved({
+      nearestStop: transitNearestStopDraft.trim(),
+      walkingTimeMinutes: parsedTime !== null && Number.isFinite(parsedTime) ? parsedTime : null,
+      walkingDistanceMiles: parsedDistance !== null && Number.isFinite(parsedDistance) ? parsedDistance : null,
+      transitAgency: transitAgencyDraft.trim(),
+      busRoutes: transitBusRoutesDraft.trim(),
+      dateVerified: transitDateVerifiedDraft,
+      notes: transitNotes,
+      savedAtAddress: trimmedAddress,
+      savedAt: new Date().toISOString(),
+    });
   }
 
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
@@ -4629,12 +4387,14 @@ export default function SharedHousingCalculator() {
     setTransitMaxWalkTimeCustomDraft("15");
     setTransitMaxWalkDistanceSelection("0.50");
     setTransitMaxWalkDistanceCustomDraft("0.50");
-    setTransitResult(null);
-    setTransitResultAddress("");
-    setTransitError(null);
-    setTransitShowAlternates(false);
-    setTransitOverrideStatus("automatic");
+    setTransitNearestStopDraft("");
+    setTransitWalkingTimeDraft("");
+    setTransitWalkingDistanceDraft("");
+    setTransitAgencyDraft("");
+    setTransitBusRoutesDraft("");
+    setTransitDateVerifiedDraft("");
     setTransitNotes("");
+    setTransitSaved(null);
     setPropertyImages((prev) => {
       prev.forEach(revokeMediaFile);
       return [];
@@ -6981,40 +6741,26 @@ export default function SharedHousingCalculator() {
         roiRefinanceRatePct: roiRefinanceControls?.rateUsed ?? 0,
 
         transit: ((): ExportTransitResult | null => {
-          if (!transitResult) return null;
-          const nearest = transitResult.nearestStop;
-          const automatedResult: "Pass" | "Fail" | "Not Verified" =
-            transitDisplayStatus === "pass" || transitDisplayStatus === "caution"
-              ? "Pass"
-              : transitDisplayStatus === "fail"
-                ? "Fail"
-                : "Not Verified";
+          if (!transitSaved) return null;
           return {
             propertyAddress,
-            matchedAddress: transitResult.matchedAddress,
-            nearestBusStopName: nearest?.name ?? null,
-            stopAddress: nearest?.address ?? null,
-            walkingDistanceMiles: nearest?.hasValidWalkingRoute ? nearest.walkingMiles : null,
-            walkingTimeMinutes: nearest?.hasValidWalkingRoute ? nearest.walkingMinutes : null,
-            straightLineDistanceMiles: nearest?.straightLineMiles ?? null,
-            transitAgency: nearest?.transitAgency ?? null,
-            busRoutes: nearest?.busRoutes.join(", ") ?? "",
-            maxAllowedWalkingTimeMinutes: transitEffectiveMaxWalkSetting.minutes,
-            maxAllowedWalkingDistanceMiles: transitEffectiveMaxWalkSetting.miles,
-            maxAllowedWalkingMode: transitEffectiveMaxWalkSetting.mode === "time" ? "Walking Time" : "Walking Distance",
-            automatedResult,
-            transitResultUsed: transitStatusUsed,
-            resultSource: transitOverrideStatus === "automatic" ? "Automatic" : "Manual Override",
-            dataProvider: transitResult.dataSource,
-            dateChecked: new Date(transitResult.dateChecked).toLocaleDateString("en-US", {
-              month: "long",
-              day: "numeric",
-              year: "numeric",
-            }),
-            transitNotes: transitNotes.trim(),
-            verificationStatus: nearest
-              ? transitVerificationLabel(nearest)
-              : "Bus service should be independently verified",
+            nearestBusStop: transitSaved.nearestStop || null,
+            walkingTimeMinutes: transitSaved.walkingTimeMinutes,
+            walkingDistanceMiles: transitSaved.walkingDistanceMiles,
+            transitAgency: transitSaved.transitAgency || null,
+            busRoutes: transitSaved.busRoutes,
+            maxRequirement: formatMaxWalkLabel(transitEffectiveMaxWalkSetting),
+            status: transitStatusLabel(transitDisplayStatus) as "PASS" | "FAIL" | "NOT VERIFIED",
+            dateVerified: transitSaved.dateVerified
+              ? new Date(`${transitSaved.dateVerified}T00:00:00`).toLocaleDateString("en-US", {
+                  month: "long",
+                  day: "numeric",
+                  year: "numeric",
+                })
+              : "Not entered",
+            transitNotes: transitSaved.notes.trim(),
+            outdated: transitOutdated,
+            verificationSource: "Google Maps Manual Verification",
           };
         })(),
       };
@@ -7303,34 +7049,30 @@ export default function SharedHousingCalculator() {
             headline tile. Shown once a lookup has run or a manual status
             has been chosen; hidden before that so the summary band isn't
             cluttered for a property that hasn't been checked yet. */}
-        {(transitResult || transitOverrideStatus !== "automatic") && (
+        {transitSaved && (
           <div className="print:hidden mt-4 border border-line bg-ink-2 p-5 sm:p-6">
             <p className="eyebrow text-brass-light mb-3">Transit and Bus Stop Access</p>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-2 text-sm text-bone/80">
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Transit Status</span>
-                <span className="lg:block font-medium text-bone">{transitStatusUsed}</span>
+                <span className="lg:block font-medium text-bone">{transitStatusLabel(transitDisplayStatus)}</span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Nearest Bus Stop</span>
                 <span className="lg:block font-medium text-bone break-words">
-                  {transitResult?.nearestStop?.name ?? "Not checked"}
+                  {transitSaved.nearestStop || "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Walking Time</span>
                 <span className="lg:block font-medium text-bone">
-                  {transitResult?.nearestStop?.hasValidWalkingRoute
-                    ? `${transitResult.nearestStop.walkingMinutes} minutes`
-                    : "Unavailable"}
+                  {transitSaved.walkingTimeMinutes !== null ? `${transitSaved.walkingTimeMinutes} minutes` : "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Walking Distance</span>
                 <span className="lg:block font-medium text-bone">
-                  {transitResult?.nearestStop?.hasValidWalkingRoute
-                    ? `${transitResult.nearestStop.walkingMiles} miles`
-                    : "Unavailable"}
+                  {transitSaved.walkingDistanceMiles !== null ? `${transitSaved.walkingDistanceMiles} miles` : "Not entered"}
                 </span>
               </div>
               <div className="flex justify-between gap-3 lg:block">
@@ -7341,12 +7083,20 @@ export default function SharedHousingCalculator() {
               </div>
               <div className="flex justify-between gap-3 lg:block">
                 <span className="text-bone/50">Status Source</span>
-                <span className="lg:block font-medium text-bone">{transitStatusSourceLabel}</span>
+                <span className="lg:block font-medium text-bone">Google Maps Manual Verification</span>
               </div>
-              {transitNotes.trim() && (
+              {transitOutdated && (
+                <div className="sm:col-span-2 lg:col-span-4 flex justify-between gap-3 lg:block">
+                  <span className="text-amber-400/80">Notice</span>
+                  <span className="lg:block font-medium text-amber-300">
+                    The property address changed. Verify transit access again.
+                  </span>
+                </div>
+              )}
+              {transitSaved.notes.trim() && (
                 <div className="sm:col-span-2 lg:col-span-2 flex justify-between gap-3 lg:block">
                   <span className="text-bone/50">Transit Notes</span>
-                  <span className="lg:block font-medium text-bone break-words">{transitNotes.trim()}</span>
+                  <span className="lg:block font-medium text-bone break-words">{transitSaved.notes.trim()}</span>
                 </div>
               )}
             </div>
@@ -7395,7 +7145,6 @@ export default function SharedHousingCalculator() {
               type="text"
               value={propertyAddress}
               onChange={(e) => setPropertyAddress(e.target.value)}
-              onBlur={handlePropertyAddressBlur}
               placeholder="Enter the property address"
               className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
             />
@@ -7423,22 +7172,24 @@ export default function SharedHousingCalculator() {
           maxWalkDistanceCustomDraft={transitMaxWalkDistanceCustomDraft}
           onMaxWalkDistanceCustomChange={setTransitMaxWalkDistanceCustomDraft}
           effectiveMaxWalkSetting={transitEffectiveMaxWalkSetting}
-          onCheckClick={() => void runTransitLookupClient(propertyAddress, { forceRefresh: true })}
-          onRefreshClick={() => void runTransitLookupClient(propertyAddress, { forceRefresh: true })}
-          loading={transitLoading}
-          error={transitError}
-          result={transitResult}
+          nearestStopDraft={transitNearestStopDraft}
+          onNearestStopDraftChange={setTransitNearestStopDraft}
+          walkingTimeDraft={transitWalkingTimeDraft}
+          onWalkingTimeDraftChange={setTransitWalkingTimeDraft}
+          walkingDistanceDraft={transitWalkingDistanceDraft}
+          onWalkingDistanceDraftChange={setTransitWalkingDistanceDraft}
+          transitAgencyDraft={transitAgencyDraft}
+          onTransitAgencyDraftChange={setTransitAgencyDraft}
+          busRoutesDraft={transitBusRoutesDraft}
+          onBusRoutesDraftChange={setTransitBusRoutesDraft}
+          dateVerifiedDraft={transitDateVerifiedDraft}
+          onDateVerifiedDraftChange={setTransitDateVerifiedDraft}
+          notesDraft={transitNotes}
+          onNotesDraftChange={setTransitNotes}
+          onSave={handleSaveTransitResult}
           outdated={transitOutdated}
-          showAlternates={transitShowAlternates}
-          onToggleAlternates={() => setTransitShowAlternates((prev) => !prev)}
-          overrideStatus={transitOverrideStatus}
-          onOverrideChange={setTransitOverrideStatus}
-          notes={transitNotes}
-          onNotesChange={setTransitNotes}
           displayStatus={transitDisplayStatus}
           displayMessage={transitDisplayMessage}
-          diagnostics={transitResult?.diagnostics ?? transitErrorDiagnostics}
-          debugEnabled={transitDebugEnabled}
         />
 
         {/* ---------------------------------------------------------- */}
@@ -10843,9 +10594,10 @@ export default function SharedHousingCalculator() {
 
           <TransitPrintSection
             propertyAddress={propertyAddress}
-            result={transitResult}
-            overrideStatus={transitOverrideStatus}
-            notes={transitNotes}
+            saved={transitSaved}
+            displayStatus={transitDisplayStatus}
+            displayMessage={transitDisplayMessage}
+            outdated={transitOutdated}
           />
 
           {financingMode === "traditional" && traditionalLongTermRent !== null && (

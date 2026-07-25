@@ -237,34 +237,28 @@ export interface UnderwritingExportData {
   roiRefinanceAtBalloon: boolean;
   roiRefinanceRatePct: number;
 
-  // Transit and Bus Stop Access: an acquisition-criteria/property-
-  // screening result, resolved entirely on the website (the same
-  // TransitLookupResult the printable report reads); this module never
-  // calls the Google Maps or OpenStreetMap APIs itself and never
-  // receives an API key, so there is nothing here that could leak one.
+  // Transit and Bus Stop Access: a manually-verified property-screening
+  // result. The person underwriting the deal looks up nearby bus stops
+  // themselves in an embedded Google Maps search panel and types in what
+  // they found (see lib/transit/manual.ts); this module never calls any
+  // transit/maps API itself and never receives an API key, so there is
+  // nothing here that could leak one.
   transit: ExportTransitResult | null;
 }
 
 export interface ExportTransitResult {
   propertyAddress: string;
-  matchedAddress: string;
-  nearestBusStopName: string | null;
-  stopAddress: string | null;
-  walkingDistanceMiles: number | null;
+  nearestBusStop: string | null;
   walkingTimeMinutes: number | null;
-  straightLineDistanceMiles: number | null;
+  walkingDistanceMiles: number | null;
   transitAgency: string | null;
-  busRoutes: string; // comma-joined, "" when none
-  maxAllowedWalkingTimeMinutes: number;
-  maxAllowedWalkingDistanceMiles: number;
-  maxAllowedWalkingMode: "Walking Time" | "Walking Distance";
-  automatedResult: "Pass" | "Fail" | "Not Verified";
-  transitResultUsed: "Pass" | "Fail" | "Not Verified" | "Not Applicable";
-  resultSource: "Automatic" | "Manual Override";
-  dataProvider: string;
-  dateChecked: string; // already formatted, e.g. "July 24, 2026"
+  busRoutes: string; // "" when none entered
+  maxRequirement: string; // e.g. "15 minutes" or "0.50 miles"
+  status: "PASS" | "FAIL" | "NOT VERIFIED";
+  dateVerified: string; // already formatted, e.g. "July 24, 2026", or "Not entered"
   transitNotes: string;
-  verificationStatus: string;
+  outdated: boolean;
+  verificationSource: string; // "Google Maps Manual Verification"
 }
 
 // ---------------------------------------------------------------------
@@ -571,12 +565,14 @@ function addSupportingDocumentsSheet(wb: ExcelJS.Workbook, data: UnderwritingExp
 
 // ---------------------------------------------------------------------
 // "Transit and Bus Stop Access" worksheet -- added to every export path
-// whenever a transit lookup has run (data.transit is non-null). Plain
-// label/value rows only, since this is an acquisition-criteria/
-// property-screening result rather than a cash-flow input -- no
-// formulas needed. Never includes an API key, raw JSON, authentication
-// headers, or private URLs/tokens (spec section 22): every value here is
-// a plain string or number the website already resolved.
+// whenever a manually verified transit result has been saved on the
+// underwriting page (data.transit is non-null). Plain label/value rows
+// only, since this is an acquisition-criteria/property-screening result
+// rather than a cash-flow input -- no formulas needed. This result comes
+// entirely from what the person underwriting the deal typed in after
+// looking up the address in the embedded Google Maps search panel; no
+// API key, raw JSON, authentication header, or private URL/token is ever
+// involved, so there is nothing here that could leak one.
 // ---------------------------------------------------------------------
 function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
   const transit = data.transit;
@@ -608,39 +604,34 @@ function addTransitSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
   };
 
   writeRow("Property Address", transit.propertyAddress || "Not entered");
-  writeRow("Matched Address", transit.matchedAddress || "Not available");
-  writeRow("Nearest Bus Stop", transit.nearestBusStopName || "None found");
-  writeRow("Stop Address or Intersection", transit.stopAddress || "Not available");
-  writeRow(
-    "Walking Distance (Miles)",
-    transit.walkingDistanceMiles === null ? "Unavailable" : String(transit.walkingDistanceMiles)
-  );
+  writeRow("Nearest Bus Stop", transit.nearestBusStop || "Not entered");
   writeRow(
     "Walking Time (Minutes)",
-    transit.walkingTimeMinutes === null ? "Unavailable" : String(transit.walkingTimeMinutes)
+    transit.walkingTimeMinutes === null ? "Not entered" : String(transit.walkingTimeMinutes)
   );
   writeRow(
-    "Straight-Line Distance (Miles)",
-    transit.straightLineDistanceMiles === null ? "Not retained" : String(transit.straightLineDistanceMiles)
+    "Walking Distance (Miles)",
+    transit.walkingDistanceMiles === null ? "Not entered" : String(transit.walkingDistanceMiles)
   );
-  writeRow("Transit Agency", transit.transitAgency || "Not available");
-  writeRow("Bus Routes", transit.busRoutes || "Not available");
-  writeRow("Maximum Allowed Walking Mode", transit.maxAllowedWalkingMode);
-  writeRow("Maximum Allowed Walking Time (Minutes)", String(transit.maxAllowedWalkingTimeMinutes));
-  writeRow("Maximum Allowed Walking Distance (Miles)", String(transit.maxAllowedWalkingDistanceMiles));
-  writeRow("Automated Pass or Fail Result", transit.automatedResult);
-  writeRow("Transit Result Used in Underwriting", transit.transitResultUsed);
-  writeRow("Automatic or Manual Source", transit.resultSource);
-  writeRow("Data Provider", transit.dataProvider);
-  writeRow("Date Checked", transit.dateChecked);
+  writeRow("Transit Agency", transit.transitAgency || "Not entered");
+  writeRow("Bus Routes", transit.busRoutes || "Not entered");
+  writeRow("Maximum Requirement", transit.maxRequirement);
+  writeRow("Pass, Fail, or Not Verified", transit.status);
+  writeRow("Date Verified", transit.dateVerified);
   writeRow("Transit Notes", transit.transitNotes || "None entered");
-  writeRow("Verification Status", transit.verificationStatus);
+  if (transit.outdated) {
+    writeRow(
+      "Outdated Notice",
+      "The property address changed after this transit result was saved. Verify transit access again."
+    );
+  }
+  writeRow("Verification Source", transit.verificationSource);
 
   row++;
   const notice = ws.getCell(row, 2);
   ws.mergeCells(row, 2, row, 3);
   notice.value =
-    "Walking time and distance are estimates. Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route schedules, and current bus service before acquiring the property.";
+    "This result was verified manually using the embedded Google Maps search panel on the underwriting page, not an automatic lookup. Verify sidewalks, road crossings, lighting, terrain, accessibility, stop activity, route schedules, and current bus service before acquiring the property.";
   notice.font = { italic: true, size: 9, name: "Calibri" };
   notice.alignment = { wrapText: true, vertical: "top" };
   ws.getRow(row).height = 45;
