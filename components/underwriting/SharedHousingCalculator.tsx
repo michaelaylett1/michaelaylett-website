@@ -2807,6 +2807,14 @@ function PropertyAddressAutocomplete({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [notConfigured, setNotConfigured] = useState(false);
+  // Distinct from notConfigured: the key is present, but loading the
+  // Maps JavaScript API or fetching suggestions actually failed (e.g.
+  // Places API (New) not enabled, key not authorized for this domain,
+  // network error). The specific reason is always logged to the
+  // browser console (see loadGooglePlacesLibrary and the catch blocks
+  // below) so a broken deployment is diagnosable rather than silently
+  // showing nothing.
+  const [loadError, setLoadError] = useState(false);
 
   const sessionTokenRef = useRef<GoogleAutocompleteSessionToken | null>(null);
   // Bumped on every new fetch and every time the input drops below the
@@ -2864,13 +2872,20 @@ function PropertyAddressAutocomplete({
       .then(({ suggestions: results }) => {
         if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return; // superseded by a newer keystroke
         setNotConfigured(false);
+        setLoadError(false);
         setSuggestions(results);
         setOpen(results.length > 0);
         setActiveIndex(-1);
       })
-      .catch(() => {
+      .catch((err) => {
         if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return;
+        // loadGooglePlacesLibrary already logs the specific failure
+        // reason (script/key/API-enablement problem); this logs the
+        // query that triggered it so the two log lines can be matched
+        // up in the console.
+        console.error(`[PropertyAddressAutocomplete] Suggestion fetch failed for "${query}":`, err);
         setSuggestions([]);
+        setLoadError(true);
         closeSuggestions();
       });
   }
@@ -2883,6 +2898,7 @@ function PropertyAddressAutocomplete({
     if (!shouldFetchSuggestions(next)) {
       requestSeqRef.current++; // invalidate any request already in flight
       setSuggestions([]);
+      setLoadError(false);
       closeSuggestions();
       return;
     }
@@ -2994,6 +3010,12 @@ function PropertyAddressAutocomplete({
       {notConfigured && (
         <p className="mt-1.5 text-xs text-ink/40">
           Address autocomplete is not configured for this site -- you can still type the address by hand.
+        </p>
+      )}
+      {loadError && !notConfigured && (
+        <p className="mt-1.5 text-xs text-ink/40">
+          Address suggestions are temporarily unavailable -- you can still type the address by hand. (Details
+          logged to the browser console.)
         </p>
       )}
     </div>

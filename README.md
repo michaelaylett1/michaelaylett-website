@@ -654,6 +654,50 @@ rest of the site, not Google's own autocomplete widget.
 - Typing the address out by hand, ignoring suggestions entirely, always
   keeps working.
 
+### If no address suggestions appear
+
+`lib/transit/googleMapsLoader.ts` loads the Maps JavaScript API using
+Google's official "dynamic library import" bootstrap loader (the small
+inline snippet from
+[Google's own documentation](https://developers.google.com/maps/documentation/javascript/load-maps-js-api#dynamic-library-import)),
+not a plain `<script src="...&loading=async">` tag with an `onload`
+handler. That distinction matters: Google's docs state that
+`loading=async` means "no JavaScript code is triggered by the script's
+load event," so an `onload` handler is not guaranteed to fire, which
+silently breaks autocomplete with no suggestions and no error -- this
+was root-caused as the most likely reason an earlier version of this
+feature showed nothing in production. The bootstrap loader instead uses
+Google's own `callback` mechanism internally, so it does not depend on
+`onload` at all.
+
+Every failure point in the loading and suggestion-fetching chain now
+logs a specific `console.error` message prefixed
+`[PropertyAddressAutocomplete]`, so if suggestions still do not appear
+after deploying this version, open the browser's developer console
+(F12 or right-click > Inspect > Console) while typing in the Property
+Address field and read that message -- it distinguishes between:
+
+- No key configured (`NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` missing or
+  not set for the environment that was deployed -- check the embedded
+  map on this same page too; if that also shows "not configured," the
+  environment variable itself is the problem, not autocomplete).
+- The bootstrap script failing to inject (a Content Security Policy
+  blocking inline scripts is the most common cause).
+- `google.maps.importLibrary("places")` rejecting -- this is the most
+  likely case for a key that is already working for the embedded map:
+  it almost always means **Maps JavaScript API** and/or **Places API
+  (New)** are not enabled for the same Google Cloud project as the key,
+  or the key's HTTP referrer restriction does not include the domain
+  the site is actually running on. See "Already had this key from
+  before address autocomplete was added?" above for the exact fix.
+
+If the console shows no error at all and suggestions still do not
+appear, check that the dropdown is not being visually clipped by a
+browser extension or custom CSS injected outside this project -- the
+dropdown itself (`#propertyAddressSuggestions`) is a normal
+`position: absolute` element with no ancestor `overflow: hidden` or
+conflicting `z-index` in this codebase.
+
 ## Content guardrails in place
 
 - No em dash characters anywhere in the project.
