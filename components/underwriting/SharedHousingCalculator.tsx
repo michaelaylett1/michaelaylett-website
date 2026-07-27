@@ -1974,15 +1974,30 @@ function PrintKpiCard({
         </p>
         {rateLines && rateLines.length > 0 && (
           <div className="mt-1.5 pt-1.5 border-t border-ink/30 w-full">
-            {rateLines.map((r) => (
-              <p
-                key={r.label}
-                className="text-[6.5pt] font-semibold text-ink leading-snug break-words"
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {r.label}: {r.value}
-              </p>
-            ))}
+            {rateLines.map((r) => {
+              // Mirrors the COCR value's own long-value fallback above
+              // (isLongValue), one typographic step down on this
+              // design system's scale (13pt/10.5pt is the same pairing
+              // PrintKpiCard's non-highlighted cards use for their own
+              // value text) -- large and bold enough to read at a
+              // glance next to COCR, never competing with COCR's own
+              // 15pt/19pt figure for primary emphasis.
+              const isLongRateValue = r.value.length > 10;
+              const rateValueSize = isLongRateValue ? "text-[10.5pt]" : "text-[13pt]";
+              return (
+                <div key={r.label} className="mt-1 first:mt-0">
+                  <p className="text-[7pt] font-semibold uppercase tracking-wide text-ink/70 leading-snug">
+                    {r.label}
+                  </p>
+                  <p
+                    className={`font-bold text-ink leading-tight tracking-tight break-words ${rateValueSize}`}
+                    style={{ fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {r.value}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
