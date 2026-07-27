@@ -434,7 +434,9 @@ degrades gracefully if either (or both) are missing:
   (Geocoding, Places, and Directions APIs), server-side only. Without
   it, automatic lookup is skipped entirely and the transit fields simply
   start blank for hand entry -- there is no error banner and no
-  automatic "no bus stops were found" failure result.
+  automatic "no bus stops were found" failure result. This same key
+  also powers the printable report's static transit map image (Static
+  Maps API) -- see below.
 
 The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
 (pure functions plus the actual Google API calls) and is only ever
@@ -449,6 +451,27 @@ googlePlacesTypes.ts` for the minimal type definitions this uses instead
 of pulling in the full `@types/google.maps` package. The transit UI is
 `TransitAndBusStopAccessSection` and `TransitPrintSection`. All of this
 lives in `components/underwriting/SharedHousingCalculator.tsx`.
+
+**Printable report's transit map.** The printed/PDF underwriting report
+shows a static map image (property marker, nearest-bus-stop marker, and
+the actual walking route between them) inside the Transit and Bus Stop
+Access card, built from the exact same automatic-lookup result already
+shown on the live page -- it never performs a second lookup or picks a
+different route. This is a plain `<img>` (not the live page's
+interactive iframe) so it always rasterizes correctly in browser print
+preview and saved PDFs. The image itself comes from `app/api/transit/
+static-map/route.ts`, a same-origin proxy that builds the Google Static
+Maps API request and fetches the image entirely server-side using the
+same `GOOGLE_MAPS_API_KEY` as the automatic lookup above -- the browser
+only ever requests this app's own `/api/transit/static-map` URL with
+plain coordinates, never the API key itself, so the key never appears
+in any browser-visible markup or network request. No new environment
+variable is needed, but the same Google Cloud project/key does need
+**Maps Static API** enabled and added to its API restrictions (see step
+2 below) in addition to Geocoding, Places, and Directions. If no
+automatic lookup has completed for the current address, the map is
+simply omitted from the printed report rather than showing an empty box
+or a broken image.
 
 The rest of the Underwriting calculator (all five financing structures,
 the printable report, and the Excel export) works fully regardless of
@@ -494,19 +517,21 @@ environment variable is needed -- the existing
 
 1. In the same (or a different) Google Cloud project, go to **APIs &
    Services > Library** and enable each of: **Geocoding API**, **Places
-   API**, **Directions API**.
+   API**, **Directions API**, **Maps Static API**. The first three run
+   the automatic lookup itself; Maps Static API renders the printable
+   report's transit map image from that same lookup's result.
 2. Go to **APIs & Services > Credentials**, click **Create Credentials >
    API Key**, and copy the key. **Use a separate key from the embed key
    above** -- this one is never exposed to the browser, so it should
    never carry the embed key's HTTP referrer restriction.
 3. Click the new key to edit it, and under **API restrictions**,
-   restrict it to only the three APIs above. Since it is only ever
+   restrict it to only the four APIs above. Since it is only ever
    called from your Vercel server, not a browser, an HTTP referrer
    restriction would not work here; if your Vercel project uses a
    static outbound IP range you can optionally add an IP restriction
    instead, or leave it unrestricted (still access-restricted to just
-   those three APIs).
-4. Confirm billing is enabled; all three APIs require an active billing
+   those four APIs).
+4. Confirm billing is enabled; all four APIs require an active billing
    account, even within Google's free monthly usage credit.
 
 ### 3. Create both environment variables in Vercel
@@ -568,7 +593,11 @@ The Underwriting page still works either way:
 - Missing `GOOGLE_MAPS_API_KEY`: automatic transit lookup is skipped and
   the section shows "Automatic bus stop lookup is not configured for
   this site. Enter the details manually below." The transit fields stay
-  fully editable by hand either way.
+  fully editable by hand either way. Since the printable report's
+  transit map is only ever built from that same automatic lookup's
+  result, a missing key also means the printed report simply omits the
+  map (no lookup ever completed, so there is nothing to draw), rather
+  than showing an empty box or a broken image.
 
 **Never commit a real API key to this repository.** Both keys must only
 ever be set as Vercel Environment Variables (or in your local,

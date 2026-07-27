@@ -59,6 +59,14 @@ export interface AutoTransitFound {
   matchedAddress: string;
   propertyLatitude: number;
   propertyLongitude: number;
+  // Encoded Google polyline (routes[0].overview_polyline.points) for the
+  // winning candidate's walking route, captured from the very same
+  // Directions API response used for walkingTimeMinutes/
+  // walkingDistanceMiles -- never a second API call. Used by the
+  // printable report's static map so the printed route matches the
+  // live on-page directions exactly. null on the rare response that has
+  // a usable duration/distance but no overview polyline.
+  routePolyline: string | null;
 }
 
 export interface AutoTransitNotFound {
@@ -132,22 +140,34 @@ export function parsePlacesResponse(body: unknown): PlaceCandidate[] {
 }
 
 /** Parses a walking-mode Directions API response body into a duration
- * (seconds) and distance (meters) for the first route's first leg, or
- * null if the API did not return a usable walking route (this is a
- * normal outcome for some origin/destination pairs, e.g. across water
- * with no footpath -- not necessarily an error). */
-export function parseDirectionsWalkingResponse(body: unknown): { durationSeconds: number; distanceMeters: number } | null {
+ * (seconds), distance (meters), and encoded route polyline for the
+ * first route's first leg, or null if the API did not return a usable
+ * walking route (this is a normal outcome for some origin/destination
+ * pairs, e.g. across water with no footpath -- not necessarily an
+ * error). `polyline` is read from the route-level
+ * `overview_polyline.points` (not the leg), which is always present
+ * whenever `routes[0]` itself is present -- it is optional here only
+ * to tolerate a malformed/missing field without discarding the
+ * duration/distance that came back fine. */
+export function parseDirectionsWalkingResponse(
+  body: unknown
+): { durationSeconds: number; distanceMeters: number; polyline: string | null } | null {
   if (!body || typeof body !== "object") return null;
   const b = body as {
     status?: string;
-    routes?: Array<{ legs?: Array<{ duration?: { value?: number }; distance?: { value?: number } }> }>;
+    routes?: Array<{
+      legs?: Array<{ duration?: { value?: number }; distance?: { value?: number } }>;
+      overview_polyline?: { points?: string };
+    }>;
   };
   if (b.status !== "OK" || !Array.isArray(b.routes) || b.routes.length === 0) return null;
-  const leg = b.routes[0].legs?.[0];
+  const route = b.routes[0];
+  const leg = route.legs?.[0];
   const durationSeconds = leg?.duration?.value;
   const distanceMeters = leg?.distance?.value;
   if (typeof durationSeconds !== "number" || typeof distanceMeters !== "number") return null;
-  return { durationSeconds, distanceMeters };
+  const polyline = typeof route.overview_polyline?.points === "string" ? route.overview_polyline.points : null;
+  return { durationSeconds, distanceMeters, polyline };
 }
 
 /** Merges two Places candidate lists into one, de-duplicated set.
@@ -186,8 +206,8 @@ export function shortlistCandidates(propertyLocation: LatLng, candidates: PlaceC
  * two-minute walk always beats the fifty-nine-minute walk regardless of
  * which type either stop happens to be tagged. */
 export function pickShortestWalk(
-  routed: Array<{ candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number }>
-): { candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number } | null {
+  routed: Array<{ candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number; polyline: string | null }>
+): { candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number; polyline: string | null } | null {
   if (routed.length === 0) return null;
   return routed.reduce((best, current) => {
     if (current.durationSeconds < best.durationSeconds) return current;
@@ -274,7 +294,7 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
 
   const shortlist = shortlistCandidates(propertyLocation, candidates);
 
-  const routed: Array<{ candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number }> = [];
+  const routed: Array<{ candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number; polyline: string | null }> = [];
   for (const candidate of shortlist) {
     try {
       const directionsUrl =
@@ -285,7 +305,12 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
         `&key=${apiKey}`;
       const parsed = parseDirectionsWalkingResponse(await fetchJson(directionsUrl));
       if (parsed) {
-        routed.push({ candidate, durationSeconds: parsed.durationSeconds, distanceMeters: parsed.distanceMeters });
+        routed.push({
+          candidate,
+          durationSeconds: parsed.durationSeconds,
+          distanceMeters: parsed.distanceMeters,
+          polyline: parsed.polyline,
+        });
       }
     } catch {
       // Skip this candidate's route on a failed request -- other
@@ -311,5 +336,6 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
     matchedAddress: formattedAddress || address,
     propertyLatitude: propertyLocation.lat,
     propertyLongitude: propertyLocation.lng,
+    routePolyline: best.polyline,
   };
 }

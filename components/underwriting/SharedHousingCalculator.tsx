@@ -163,6 +163,17 @@ function formatPercent(n: number) {
   return `${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
+// Used for the interest rate(s) shown beside Cash-on-Cash Return on the
+// printable report's first page: every "*InterestRatePct"/"*RatePct"
+// field is normally a real, clamped number, but this guards against
+// the rare not-a-number case (e.g. a field never touched/initialized
+// for a given financing structure) so the report shows "Not Provided"
+// rather than a misleading "0.00%".
+function formatRateOrNotProvided(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "Not Provided";
+  return formatPercent(value);
+}
+
 // Stack Method's Current Leverage Ratio is displayed as both a decimal
 // (the standard metric lenders use, e.g. 1.15x) and a percentage
 // (e.g. 115.00%), decimal shown first. `decimal` is Total Debt at
@@ -1928,11 +1939,20 @@ function PrintKpiCard({
   label,
   value,
   highlight,
+  rateLines,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   highlight?: boolean;
+  // Only used on the highlighted Cash-on-Cash Return card: the
+  // financing-specific interest rate(s) shown immediately beside COCR
+  // so both are visible together on the report's first page (Hybrid
+  // and Stack Method can supply two lines, one per applicable rate).
+  // Deliberately its own small block below the COCR figure rather than
+  // a 6th grid column -- keeps the five-card row from squeezing and
+  // keeps the pairing visually anchored to COCR specifically.
+  rateLines?: { label: string; value: string }[];
 }) {
   const isLongValue = value.length > 10;
   if (highlight) {
@@ -1952,6 +1972,19 @@ function PrintKpiCard({
         >
           {value}
         </p>
+        {rateLines && rateLines.length > 0 && (
+          <div className="mt-1.5 pt-1.5 border-t border-ink/30 w-full">
+            {rateLines.map((r) => (
+              <p
+                key={r.label}
+                className="text-[6.5pt] font-semibold text-ink leading-snug break-words"
+                style={{ fontVariantNumeric: "tabular-nums" }}
+              >
+                {r.label}: {r.value}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -3181,9 +3214,16 @@ function TransitAndBusStopAccessSection({
 function TransitPrintSection({
   propertyAddress,
   data,
+  mapData,
 }: {
   propertyAddress: string;
   data: TransitResult | null;
+  // The same property/stop coordinates and route polyline captured
+  // when the automatic lookup succeeded (see transitPrintMapData in
+  // the main component) -- null whenever no lookup has completed, in
+  // which case the map is omitted entirely rather than showing an
+  // empty placeholder or a broken image.
+  mapData: { propertyLat: number; propertyLng: number; stopLat: number; stopLng: number; polyline: string | null } | null;
 }) {
   if (!data) return null;
 
@@ -3193,6 +3233,21 @@ function TransitPrintSection({
       <span className="text-ink flex-shrink-0 text-right">{value}</span>
     </div>
   );
+
+  // Static Maps API image, proxied through our own /api/transit/
+  // static-map route so the private GOOGLE_MAPS_API_KEY never reaches
+  // the browser -- see that route for how the URL is built server-side.
+  // A plain <img> (not the live page's iframe) so it rasterizes
+  // reliably in browser print preview and saved PDFs. Fixed 640x400
+  // (8:5) intrinsic size plus `w-full h-auto` keeps the aspect ratio
+  // correct at any print width, and `print:break-inside-avoid-page` on
+  // this whole card (already applied below) keeps the map from
+  // splitting across two printed pages.
+  const mapImageUrl = mapData
+    ? `/api/transit/static-map?propertyLat=${mapData.propertyLat}&propertyLng=${mapData.propertyLng}&stopLat=${mapData.stopLat}&stopLng=${mapData.stopLng}${
+        mapData.polyline ? `&polyline=${encodeURIComponent(mapData.polyline)}` : ""
+      }`
+    : null;
 
   return (
     <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
@@ -3215,6 +3270,27 @@ function TransitPrintSection({
         )}
         {row("Data Source", "Google Maps (Automatic Lookup)")}
       </div>
+      {mapImageUrl && (
+        <div
+          className="mt-2 print:break-inside-avoid-page rounded-lg overflow-hidden border border-ink/10 bg-ink/5"
+          style={{ maxHeight: "3.1in" }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- a
+              plain <img> is required here (not next/image) so the
+              static map rasterizes as a normal image in browser print
+              output; next/image's lazy-loading and layout wrapper are
+              unnecessary for a single server-proxied print image and
+              have caused print-omission issues with other tools. */}
+          <img
+            src={mapImageUrl}
+            width={640}
+            height={400}
+            alt="Map showing the property, the nearest bus stop, and the walking route between them"
+            className="block w-full h-auto"
+            style={{ aspectRatio: "640 / 400", objectFit: "contain", maxHeight: "3.1in" }}
+          />
+        </div>
+      )}
       {data.notes.trim() && (
         <p className="mt-2 pt-2 border-t border-ink/10 text-[9pt] text-ink leading-relaxed">
           Transit Notes: {data.notes.trim()}
@@ -3793,6 +3869,22 @@ export default function SharedHousingCalculator() {
   // lookup for the new property.
   const [transitAutoStatus, setTransitAutoStatus] = useState<TransitAutoStatus>("idle");
   const [transitAutoStopCoords, setTransitAutoStopCoords] = useState<{ lat: number; lng: number } | null>(null);
+  // Everything the printable report's static transit map needs, kept
+  // separate from transitAutoStopCoords (which only feeds the live
+  // directions iframe): the property's own coordinates, the winning
+  // stop's coordinates, and the encoded walking-route polyline from
+  // that same Directions API response. Captured once when the
+  // automatic lookup succeeds and never recomputed at print time, so
+  // the printed map always matches "the most recently completed
+  // transit lookup" shown on the live page -- never a different route
+  // or a different bus stop.
+  const [transitPrintMapData, setTransitPrintMapData] = useState<{
+    propertyLat: number;
+    propertyLng: number;
+    stopLat: number;
+    stopLng: number;
+    polyline: string | null;
+  } | null>(null);
   const transitAutoLookupAddressRef = useRef("");
 
   useEffect(() => {
@@ -3801,6 +3893,7 @@ export default function SharedHousingCalculator() {
     if (!looksLikeCompleteAddress(trimmed)) {
       transitAutoLookupAddressRef.current = "";
       setTransitAutoStopCoords(null);
+      setTransitPrintMapData(null);
       setTransitAutoStatus("idle");
       return;
     }
@@ -3821,6 +3914,7 @@ export default function SharedHousingCalculator() {
     // from the autocomplete dropdown. Transit Notes is left alone since
     // it is hand-written commentary, not an automatic lookup result.
     setTransitAutoStopCoords(null);
+    setTransitPrintMapData(null);
     setTransitNearestStopDraft("");
     setTransitWalkingTimeDraft("");
     setTransitWalkingDistanceDraft("");
@@ -3842,6 +3936,13 @@ export default function SharedHousingCalculator() {
             setTransitWalkingTimeDraft(String(data.walkingTimeMinutes));
             setTransitWalkingDistanceDraft(data.walkingDistanceMiles.toFixed(2));
             setTransitAutoStopCoords({ lat: data.nearestStop.latitude, lng: data.nearestStop.longitude });
+            setTransitPrintMapData({
+              propertyLat: data.propertyLatitude,
+              propertyLng: data.propertyLongitude,
+              stopLat: data.nearestStop.latitude,
+              stopLng: data.nearestStop.longitude,
+              polyline: data.routePolyline,
+            });
             setTransitAutoStatus("found");
           } else if (data.status === "notFound") {
             setTransitAutoStatus("notFound");
@@ -10188,6 +10289,45 @@ export default function SharedHousingCalculator() {
               label="Est. Cash-on-Cash Return"
               value={results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
               highlight
+              rateLines={
+                financingMode === "traditional"
+                  ? [{ label: "Interest Rate", value: formatRateOrNotProvided(percent.traditionalInterestRatePct) }]
+                  : financingMode === "subjectTo"
+                    ? [{ label: "Interest Rate", value: formatRateOrNotProvided(percent.loanInterestRatePct) }]
+                    : financingMode === "sellerFinancing"
+                      ? [{ label: "Interest Rate", value: formatRateOrNotProvided(percent.loanInterestRatePct) }]
+                      : financingMode === "hybrid"
+                        ? [
+                            {
+                              label: "Existing Mortgage Rate",
+                              value: formatRateOrNotProvided(percent.hybridExistingMortgageRatePct),
+                            },
+                            ...(hybridSellerFinancePaymentsRequired
+                              ? [
+                                  {
+                                    label: "Seller-Finance Rate",
+                                    value: formatRateOrNotProvided(percent.hybridSellerFinanceRatePct),
+                                  },
+                                ]
+                              : []),
+                          ]
+                        : financingMode === "stackMethod"
+                          ? [
+                              {
+                                label: "Primary Loan Rate",
+                                value: formatRateOrNotProvided(percent.stackBankInterestRatePct),
+                              },
+                              ...(stackSellerFinancePaymentsRequired
+                                ? [
+                                    {
+                                      label: "Seller-Carried 2nd Rate",
+                                      value: formatRateOrNotProvided(percent.stackSellerFinanceRatePct),
+                                    },
+                                  ]
+                                : []),
+                            ]
+                          : []
+              }
             />
           </div>
 
@@ -10538,6 +10678,7 @@ export default function SharedHousingCalculator() {
           <TransitPrintSection
             propertyAddress={propertyAddress}
             data={transitResult}
+            mapData={transitPrintMapData}
           />
 
           {financingMode === "traditional" && traditionalLongTermRent !== null && (
