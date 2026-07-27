@@ -11,21 +11,27 @@ import type { RoiProjectionResult } from "./roiProjection";
  * recalculates underwriting math on its own.
  *
  * Two export paths:
- *  - Subject To and Subject To & Seller Finance Hybrid load the supplied
- *    template workbook (public/templates/underwriting-subject-to-template.xlsx)
- *    and populate it in place, preserving its fonts, fills, borders,
- *    column widths, and number formats. A handful of the template's
- *    original formulas were broken (a literal #REF!, stale cell
- *    references, a hard-coded management-fee percentage) or simply
- *    incomplete (the right-hand "Financing Information" area was an
- *    unlabeled placeholder merged cell) -- those are corrected/rebuilt
- *    here, everything else in the template is left as designed.
- *  - Traditional Financing, Seller Financing, and Stack Method build a
- *    new workbook from scratch (their layouts do not match the
- *    Subject-To-shaped template), using the same visual language
- *    (bold labels, accounting-style currency, a green highlighted
- *    final result) so the output still looks like one consistent,
- *    professional underwriting workbook.
+ *  - Subject To, Seller Financing, and Subject To & Seller Finance
+ *    Hybrid (buildTemplateWorkbook) build a one-page "Underwriting"
+ *    sheet that reproduces the visual design of the reference
+ *    underwriting workbook this was modeled on (borders, yellow input
+ *    cells, green result cells, accounting-style currency format,
+ *    column widths), an "Inputs" sheet the main sheet's formulas
+ *    reference (so Annual Utilities / Insurance / Property Taxes /
+ *    Cleaning-Lawn-Pest Control are genuine Excel formulas rather than
+ *    pasted-in numbers), and a "Financing Details" sheet with the full
+ *    itemized breakdown. The reference workbook's broken formulas (a
+ *    literal #REF! in the Equity cell, Monthly Cash Flow dividing by
+ *    undefined cells, a hard-coded management-fee percentage) are all
+ *    corrected here, and Total Capital Required / Cash-on-Cash Return
+ *    are guarded against a $0 denominator.
+ *  - Traditional Financing and Stack Method (buildGeneratedWorkbook)
+ *    build a different-shaped workbook from scratch (their inputs and
+ *    capital-required line items do not match the other three
+ *    structures), using the same visual language (bold labels,
+ *    accounting-style currency, a green highlighted final result) so
+ *    the output still looks like one consistent, professional
+ *    underwriting workbook.
  *
  * Every workbook also gets a "Supporting Documents" worksheet (property
  * file names/types/counts, never binary data or object URLs) and, when
@@ -1133,294 +1139,447 @@ function writeKVBlock(
 }
 
 // ---------------------------------------------------------------------
-// TEMPLATE-BASED PATH: Subject To and Subject To & Seller Finance Hybrid
+// TEMPLATE-STYLE PATH: Subject To, Seller Financing, and Subject To &
+// Seller Finance Hybrid. Built directly with ExcelJS (rather than
+// loading and mutating a static .xlsx template file) so every label,
+// formula, fill, border, and column width can be controlled precisely
+// and consistently across all three financing structures -- the visual
+// design (borders, yellow input cells, green result cells, accounting
+// currency format) matches the attached reference workbook exactly,
+// while every formula is corrected and, where the reference workbook
+// only had a pasted-in number, replaced with a genuine Excel formula
+// referencing the "Inputs" worksheet built alongside it.
 // ---------------------------------------------------------------------
-const TEMPLATE_URL = "/templates/underwriting-subject-to-template.xlsx";
 
-async function fetchTemplateBuffer(): Promise<ArrayBuffer> {
-  const res = await fetch(TEMPLATE_URL);
-  if (!res.ok) {
-    throw new Error("Could not load the underwriting Excel template. Please try again.");
-  }
-  return res.arrayBuffer();
+// Whether the Primary Monthly Payment in E3 already includes taxes and
+// insurance (PITI) or is Principal-and-Interest only. Subject To and
+// Seller Financing share the exact same "Monthly Loan Payment Type"
+// toggle on the website (paymentType), so which one applies is never
+// hardcoded by financing structure -- only Hybrid is fixed, since its
+// Subject-To payment (hybridSubjectToPITI) is always collected as one
+// all-in PITI figure with no separate P&I-only variant.
+function underwritingE3IsPiti(data: UnderwritingExportData): boolean {
+  if (data.financingMode === "hybrid") return true;
+  return data.paymentType === "piti";
 }
 
-function populateTemplateWorkbook(ws: ExcelJS.Worksheet, data: UnderwritingExportData) {
-  const isHybrid = data.financingMode === "hybrid";
+// ---------------------------------------------------------------------
+// "Inputs" worksheet -- backs the genuine Excel formulas in the main
+// Underwriting sheet's Annual Maintenance / Annual Utilities / Annual
+// Insurance / Annual Property Taxes / Annual Cleaning-Lawn-Pest cells
+// with clearly labeled, traceable source values (matching the
+// website's underwriting inputs exactly), so clicking any of those
+// cells shows a real calculation or a direct cell link in the formula
+// bar rather than a pasted-in final number.
+// ---------------------------------------------------------------------
+interface InputsSheetAddresses {
+  totalBedrooms: string;
+  utilityCostPerBedroom: string;
+  monthlyMaintenance: string;
+  monthlyCleaning: string;
+  monthlyLawnCare: string;
+  monthlyPestControl: string;
+  annualInsurance: string;
+  annualPropertyTaxes: string;
+}
 
-  // ---- Clear the old, partially-built right-hand skeleton -----------
-  // (E2/F3/F4/E6/E7/F7/E9/E11 plus the broken =#REF!-F6 formula, and the
-  // single giant E12:F35 merged placeholder cell) so the rebuilt
-  // Financing Information panel below starts from a clean area. F3/F4/
-  // F7 are overwritten by the new panel itself; the rest are explicitly
-  // cleared here.
-  try {
-    ws.unMergeCells("E12:F35");
-  } catch {
-    // Already unmerged (e.g. a re-export in the same session) -- safe to ignore.
-  }
-  ["E2", "E6", "E7", "E9", "E11", "D2", "D5"].forEach((addr) => {
-    const cell = ws.getCell(addr);
-    if (addr !== "D2") cell.value = null;
-  });
-  ws.getColumn(6).width = 34; // F
-  ws.getColumn(7).width = 20; // G
+// $80/bedroom/month is a fixed, sitewide utilities assumption (see
+// SharedHousingCalculator.tsx's UTILITIES_PER_BEDROOM constant), not a
+// per-export input -- written here as its own labeled, traceable
+// Inputs-sheet row for the same reason Annual Maintenance's fixed
+// $400/month assumption gets one below, rather than being buried
+// unlabeled inside a formula.
+const UTILITIES_PER_BEDROOM_MONTHLY = 80;
 
-  // ---- Operating Underwriting (rows 2-17, template's original layout) ----
-  ws.getCell("C3").value = money(data.purchasePrice);
+function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): InputsSheetAddresses {
+  const ws = wb.addWorksheet("Inputs", { views: [{ showGridLines: false }] });
+  ws.getColumn(1).width = 2.5;
+  ws.getColumn(2).width = 42;
+  ws.getColumn(3).width = 18;
 
-  ws.getCell("D4").value = pct(data.vacancyPct);
-  ws.getCell("C4").value = { formula: "C14*12*D4" } as ExcelJS.CellFormulaValue; // Annual Vacancy (unchanged, already correct)
+  let row = 2;
+  const header = ws.getCell(row, 2);
+  ws.mergeCells(row, 2, row, 3);
+  header.value = "Underwriting Inputs";
+  header.font = { bold: true, size: 13, color: { argb: COLOR_WHITE }, name: "Calibri" };
+  header.fill = FILL_HEADER;
+  header.alignment = { vertical: "middle", indent: 1 };
+  ws.getRow(row).height = 22;
+  row++;
 
-  ws.getCell("C5").value = { formula: "(C14*12)-C4" } as ExcelJS.CellFormulaValue; // Effective Gross Income (unchanged)
+  const note = ws.getCell(row, 2);
+  ws.mergeCells(row, 2, row, 3);
+  note.value =
+    'Source values referenced by formulas on the "Underwriting" sheet (Annual Maintenance, Annual Utilities, Annual Insurance, Annual Property Taxes, Annual Cleaning / Lawn / Pest Control). Matches the website\'s underwriting inputs exactly.';
+  note.font = { italic: true, size: 9, name: "Calibri" };
+  note.alignment = { wrapText: true, vertical: "top" };
+  ws.getRow(row).height = 30;
+  row += 2;
 
-  // Annual Maintenance stays the template's original formula: it is a
-  // fixed, non-editable $400/month assumption throughout the site, so
-  // =400*12 is already correct, not broken.
-  ws.getCell("C6").value = { formula: "400*12" } as ExcelJS.CellFormulaValue;
+  const addr = {} as InputsSheetAddresses;
+  const writeInput = (key: keyof InputsSheetAddresses, label: string, value: number, format: string) => {
+    const labelCell = ws.getCell(row, 2);
+    labelCell.value = label;
+    fmtLabel(labelCell, { bold: false });
+    const valueCell = ws.getCell(row, 3);
+    valueCell.value = value;
+    fmtValue(valueCell, format, { input: true });
+    addr[key] = `C${row}`;
+    row++;
+  };
 
-  ws.getCell("B7").value = "Annual Mgmt/Platform Fees";
-  // Was hard-coded to a fixed "=15%+5%" (20%) regardless of the actual
-  // platform/management percentages entered on the website. Corrected to
-  // the real combined percentage so this cell (and everything computed
-  // from it) always matches the site.
-  ws.getCell("D7").value = pct(data.platformFeePct + data.propertyManagementPct);
-  ws.getCell("C7").value = { formula: "(C5*D7)" } as ExcelJS.CellFormulaValue; // unchanged, already correct
+  writeInput("totalBedrooms", "Total Bedrooms", data.totalBedrooms, FMT_WHOLE);
+  writeInput("utilityCostPerBedroom", "Utility Cost per Bedroom (Monthly)", UTILITIES_PER_BEDROOM_MONTHLY, FMT_CURRENCY);
+  writeInput("monthlyMaintenance", "Monthly Maintenance", money(data.maintenanceMonthly), FMT_CURRENCY);
+  writeInput("monthlyCleaning", "Monthly Cleaning", money(data.cleaningMonthly), FMT_CURRENCY);
+  writeInput("monthlyLawnCare", "Monthly Lawn Care", money(data.lawnCareMonthly), FMT_CURRENCY);
+  writeInput("monthlyPestControl", "Monthly Pest Control", money(data.pestControlMonthly), FMT_CURRENCY);
+  writeInput("annualInsurance", "Annual Property Insurance", money(data.annualPropertyInsurance), FMT_CURRENCY);
+  writeInput("annualPropertyTaxes", "Annual Property Taxes", money(data.annualPropertyTaxes), FMT_CURRENCY);
 
-  ws.getCell("B8").value = "Annual Utilities, Cleaning, Lawn Care & Pest Control";
-  ws.getCell("C8").value = money(
-    (data.utilitiesMonthly + data.cleaningMonthly + data.lawnCareMonthly + data.pestControlMonthly) * 12
-  );
+  return addr;
+}
 
-  // Annual Insurance / Annual Taxes / Annual P&I: for Subject To these
-  // decompose the entered monthly payment (PITI or P&I-only) into its
-  // component parts so Monthly Operating Cost (C13) below never double-
-  // counts taxes or insurance. Hybrid does not collect a separate
-  // taxes/insurance figure at all (its Subject-To PITI payment is
-  // entered as one all-in figure and the website never adds a second
-  // taxes/insurance line on top of it), so Annual Insurance/Taxes are
-  // $0 here and the complete payment is carried entirely in Annual P&I.
-  if (isHybrid) {
-    ws.getCell("C9").value = 0;
-    ws.getCell("C10").value = 0;
-    ws.getCell("C11").value = money(data.hybridTotalMonthlyHousingPayment * 12);
-  } else {
-    ws.getCell("C9").value = money(data.annualPropertyInsurance);
-    ws.getCell("C10").value = money(data.annualPropertyTaxes);
-    const annualPI = Math.max(
-      0,
-      round2(data.monthlyHousingPayment * 12 - data.annualPropertyTaxes - data.annualPropertyInsurance)
+// Short, readable summary written into the main sheet's Financing Notes
+// text box (E15:F37) -- the full itemized breakdown always lives on the
+// "Financing Details" worksheet; this is just an at-a-glance summary
+// visible on the same one-page sheet as the numbers it explains.
+function financingNotesText(data: UnderwritingExportData): string {
+  const paymentTypeNote =
+    data.paymentType === "piti"
+      ? "PITI (taxes and insurance included in the payment above)"
+      : "Principal and Interest only (taxes and insurance added separately)";
+
+  if (data.financingMode === "subjectTo") {
+    return (
+      `Subject To existing financing. Existing mortgage balance ${fmtDollarsCents(money(data.loanBalance))} at ` +
+      `${data.loanInterestRatePct.toFixed(2)}% interest, ${data.loanRemainingAmortizationYears} years remaining ` +
+      `amortization. Monthly payment type: ${paymentTypeNote}. Seller down payment: ` +
+      `${fmtDollarsCents(money(data.sellerDownPayment))}. See the "Financing Details" worksheet for the complete breakdown.`
     );
-    ws.getCell("C11").value = money(annualPI);
   }
-  [ws.getCell("C9"), ws.getCell("C10")].forEach((c) => (c.fill = FILL_INPUT));
-
-  ws.getCell("B11").value = "Annual P&I";
-  // Monthly Operating Cost -- unchanged, already correct once C4/C6-C11
-  // above are populated.
-  ws.getCell("C13").value = { formula: "(C4+C6+C7+C8+C9+C10+C11)/12" } as ExcelJS.CellFormulaValue;
-
-  ws.getCell("C14").value = money(data.grossMonthlyRent);
-
-  // Monthly Cash Flow: the template's original formula referenced two
-  // undefined cells (F8, E5) and would have shown a #REF!/0 error. Fixed
-  // to Gross Monthly Room Revenue - Monthly Operating Cost, exactly
-  // matching the website's results.monthlyCashFlow (before financing-
-  // specific capital adjustments, which only apply to Stack Method).
-  ws.getCell("C15").value = { formula: "C14-C13" } as ExcelJS.CellFormulaValue;
-
-  ws.getCell("B16").value = bedroomSummaryString(data);
-
-  ws.getCell("B17").value = "Monthly PITI";
-  // Monthly PITI: previously referenced undefined E3:E4. Fixed to the
-  // annualized Insurance + Taxes + P&I already built above (identical to
-  // results.monthlyHousingPayment).
-  ws.getCell("C17").value = { formula: "(C9+C10+C11)/12" } as ExcelJS.CellFormulaValue;
-
-  // ---- Capital Required (rows 19-36) ---------------------------------
-  // The original template had no Arrears line at all; Arrears is
-  // applicable to both Subject To and Hybrid (it was only removed from
-  // Traditional Financing and Seller Financing), so a new row is added
-  // here rather than silently leaving it out of Total Capital Required.
-  ws.getCell("B19").value = "Arrears";
-  ws.getCell("C19").value = money(data.arrears);
-  ws.getCell("C19").fill = FILL_INPUT;
-
-  ws.getCell("B20").value = "Down Payment";
-  ws.getCell("C20").value = money(data.downPaymentForCapital);
-  ws.getCell("C20").fill = FILL_INPUT;
-
-  ws.getCell("B21").value = "Renovations";
-  ws.getCell("C21").value = money(data.renovationCost);
-
-  ws.getCell("B22").value = "Furniture";
-  ws.getCell("C22").value = money(data.furniture);
-
-  ws.getCell("B23").value = "Appliances";
-  ws.getCell("C23").value = money(data.appliances);
-
-  ws.getCell("B24").value = "Photos";
-  ws.getCell("C24").value = money(data.photos);
-
-  ws.getCell("B25").value = "Holding Costs";
-  ws.getCell("C25").value = money(data.holdingCosts);
-
-  ws.getCell("B26").value = "Reserves";
-  ws.getCell("C26").value = money(data.reserves);
-
-  ws.getCell("B27").value = "Upfront Insurance Cost";
-  ws.getCell("C27").value = money(data.upfrontInsurance);
-
-  ws.getCell("B28").value = "Acquisition Cost";
-  ws.getCell("C28").value = money(data.acquisitionFee);
-
-  ws.getCell("B29").value = "TC Fee";
-  ws.getCell("C29").value = money(data.tcFee);
-
-  ws.getCell("B30").value = "LLC Entity Formation Cost";
-  ws.getCell("C30").value = money(data.llcFee);
-
-  ws.getCell("B31").value = "Closing Costs";
-  ws.getCell("D31").value = pct(data.closingCostPct);
-  ws.getCell("C31").value = { formula: "C3*D31" } as ExcelJS.CellFormulaValue;
-
-  ws.getCell("B32").value = "Agent Fee";
-  ws.getCell("C32").value = money(data.agentFee);
-
-  ws.getCell("B33").value = "Assignment Fee";
-  ws.getCell("C33").value = money(data.assignmentFee);
-
-  ws.getCell("B34").value = "Total Capital Required";
-  ws.getCell("C34").value = { formula: "SUM(C19:C33)" } as ExcelJS.CellFormulaValue;
-  fmtLabel(ws.getCell("B34"), { bold: true });
-  fmtValue(ws.getCell("C34"), TEMPLATE_CURRENCY_FMT, { emphasis: false });
-  ws.getCell("C34").border = BORDER_THIN_BOTTOM;
-  ws.getCell("B34").border = BORDER_THIN_BOTTOM;
-
-  ws.getCell("B36").value = "C on C Return";
-  ws.getCell("C36").value = { formula: "(C15*12)/C34" } as ExcelJS.CellFormulaValue;
-  fmtLabel(ws.getCell("B36"), { bold: true });
-  fmtValue(ws.getCell("C36"), FMT_PERCENT, { emphasis: true });
-  ws.getCell("B36").border = BORDER_THIN_BOTTOM;
-  ws.getRow(34).height = 15.75;
-  ws.getRow(36).height = 15.75;
-
-  // Every C-column currency cell that doesn't already carry the
-  // template's own accounting format (freshly written rows below the
-  // original row 35) gets it applied explicitly so the whole capital
-  // section looks consistent.
-  for (let r = 19; r <= 33; r++) {
-    const cell = ws.getCell(r, 3);
-    if (!cell.numFmt) cell.numFmt = TEMPLATE_CURRENCY_FMT;
-    ws.getRow(r).height = 15.75;
+  if (data.financingMode === "sellerFinancing") {
+    return (
+      `Seller-financed purchase. Loan balance ${fmtDollarsCents(money(data.loanBalance))} at ` +
+      `${data.loanInterestRatePct.toFixed(2)}% interest, ${data.loanRemainingAmortizationYears} years remaining ` +
+      `amortization. Monthly payment type: ${paymentTypeNote}. Seller down payment: ` +
+      `${fmtDollarsCents(money(data.sellerDownPayment))}. See the "Financing Details" worksheet for the complete breakdown.`
+    );
   }
+  // Hybrid
+  const sellerFinancePart = data.hybridSellerFinancePaymentsRequired
+    ? `Seller-financed balance ${fmtDollarsCents(money(data.hybridSellerFinancedBalanceUsed))} at ` +
+      `${data.hybridSellerFinanceRatePct.toFixed(2)}% interest, monthly payment ` +
+      `${fmtDollarsCents(money(data.hybridMonthlySellerFinancePayment))} (${data.hybridSellerFinanceRepaymentStructure}).`
+    : `Seller-financed balance ${fmtDollarsCents(money(data.hybridSellerFinancedBalanceUsed))}, with no monthly ` +
+      `seller-finance payments required.`;
+  return (
+    `Hybrid structure: Subject To existing mortgage (${fmtDollarsCents(money(data.hybridExistingMortgageBalance))} ` +
+    `balance at ${data.hybridExistingMortgageRatePct.toFixed(2)}% interest) plus seller financing. ${sellerFinancePart} ` +
+    `See the "Financing Details" worksheet for the complete breakdown.`
+  );
+}
 
-  // ---- Financing Information panel (columns F/G), rebuilt from what ----
-  // was an incomplete, unlabeled placeholder (a single merged blank
-  // cell spanning E12:F35 plus a handful of orphaned header fragments
-  // and the #REF! Equity formula noted above).
-  const headerCell = ws.getCell("F2");
-  ws.mergeCells("F2:G2");
-  headerCell.value = "FINANCING INFORMATION";
-  headerCell.font = { bold: true, size: 12, name: "Calibri" };
-  headerCell.border = { bottom: { style: "double" } };
-  headerCell.alignment = { horizontal: "left" };
+// The main, one-page "Underwriting" sheet -- visual layout (column
+// widths, borders, yellow input fills, green result fills, accounting
+// currency format) matches the attached reference workbook. Every
+// formula is either corrected from the reference workbook's original
+// (the Equity cell was a literal #REF!; Monthly Cash Flow divided by
+// two undefined cells) or newly built to satisfy the no-double-counting
+// rules for whichever financing structure is active.
+function buildUnderwritingSheet(
+  wb: ExcelJS.Workbook,
+  data: UnderwritingExportData,
+  inputs: InputsSheetAddresses
+): ExcelJS.Worksheet {
+  const ws = wb.addWorksheet("Underwriting", { views: [{ showGridLines: false }] });
+  ws.getColumn(1).width = 2.16;
+  ws.getColumn(2).width = 36.16;
+  ws.getColumn(3).width = 14;
+  ws.getColumn(4).width = 11.66;
+  ws.getColumn(5).width = 13.83;
+  ws.getColumn(6).width = 23.16;
+  ws.getColumn(7).width = 3;
 
-  // Effective Tax Rate detail rows for this panel: written immediately
-  // after "Purchase Price" (row 3, value cell G3) so "Effective Tax
-  // Rate" always lands at row 5 (G5) and "Calculated Annual Property
-  // Taxes" can reference both directly via the fixed formula "G3*G5".
-  // Every row below this block shifts down by 6 as a result, which is
-  // why the "Estimated Equity" formulas further down were updated from
-  // their original G4/G9 references to G10/G15 (hybrid) and G4 to G10
-  // (non-hybrid).
-  const propertyTaxPanelRows: KVRow[] = [
-    { label: "Selected County", value: data.propertyTaxCounty || "Not Selected" },
-    { label: "Effective Tax Rate", value: pct(data.propertyTaxRatePct), format: FMT_PERCENT, input: true },
-    { label: "Rate Source", value: data.propertyTaxRateSource },
-    { label: "Calculated Annual Property Taxes", formula: "G3*G5", format: FMT_CURRENCY },
-    { label: "Property Tax Source", value: data.propertyTaxSource },
-    {
-      label: "Property Taxes Used in Underwriting",
-      value: money(data.annualPropertyTaxes),
-      format: FMT_CURRENCY,
-      input: true,
-    },
+  const isHybrid = data.financingMode === "hybrid";
+  const e3IsPiti = underwritingE3IsPiti(data);
+  const leftBorder = (addr: string) => {
+    ws.getCell(addr).border = { ...ws.getCell(addr).border, left: { style: "thin" } };
+  };
+
+  // ---- Row 2: column headers ----
+  ws.getCell("C2").value = "Amount";
+  ws.getCell("D2").value = "Percentage";
+  ws.getCell("E2").value = "Financing";
+  ["C2", "D2", "E2"].forEach((addr) => {
+    const cell = ws.getCell(addr);
+    cell.font = { bold: true, size: 11, name: "Calibri" };
+    cell.border = { top: { style: "thin" } };
+  });
+
+  // ---- Row 3: Purchase Price / Primary Monthly Payment ----
+  ws.getCell("B3").value = "Purchase Price";
+  fmtLabel(ws.getCell("B3"));
+  leftBorder("B3");
+  fmtValue(ws.getCell("C3"), TEMPLATE_CURRENCY_FMT, { input: true });
+  ws.getCell("C3").value = money(data.purchasePrice);
+  fmtValue(ws.getCell("E3"), TEMPLATE_CURRENCY_FMT, { input: true });
+  ws.getCell("E3").value = money(isHybrid ? data.hybridSubjectToPITI : data.monthlyPayment);
+  ws.getCell("F3").value = "Primary Monthly Payment (P&I / PITI)";
+  ws.getCell("F3").font = { size: 10, name: "Calibri" };
+  ws.getCell("F3").border = { right: { style: "thin" } };
+
+  // ---- Row 4: Annual Vacancy / Hybrid Seller-Finance Payment ----
+  ws.getCell("B4").value = "Annual Vacancy";
+  fmtLabel(ws.getCell("B4"));
+  leftBorder("B4");
+  ws.getCell("C4").value = { formula: "C17*12*D4" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C4"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("D4").value = pct(data.vacancyPct);
+  fmtValue(ws.getCell("D4"), FMT_PERCENT, { input: true });
+  fmtValue(ws.getCell("E4"), TEMPLATE_CURRENCY_FMT, { input: true });
+  ws.getCell("E4").value = isHybrid ? money(data.hybridMonthlySellerFinancePayment) : 0;
+  ws.getCell("F4").value = "Hybrid Seller-Finance Payment";
+  ws.getCell("F4").font = { size: 10, name: "Calibri" };
+  ws.getCell("F4").border = { right: { style: "thin" } };
+
+  // ---- Row 5: Effective Gross Income ----
+  ws.getCell("B5").value = "Effective Gross Income";
+  fmtLabel(ws.getCell("B5"));
+  leftBorder("B5");
+  ws.getCell("C5").value = { formula: "(C17*12)-C4" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C5"), TEMPLATE_CURRENCY_FMT);
+
+  // ---- Row 6: Annual Maintenance / Loan Balance ----
+  ws.getCell("B6").value = "Annual Maintenance";
+  fmtLabel(ws.getCell("B6"));
+  leftBorder("B6");
+  ws.getCell("C6").value = { formula: `'Inputs'!${inputs.monthlyMaintenance}*12` } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C6"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("E6").value = "Loan Balance";
+  ws.getCell("E6").font = { size: 11, name: "Calibri" };
+  const loanBalance = isHybrid
+    ? money(data.hybridExistingMortgageBalance + data.hybridSellerFinancedBalanceUsed)
+    : money(data.loanBalance);
+  ws.getCell("F6").value = loanBalance;
+  fmtValue(ws.getCell("F6"), TEMPLATE_CURRENCY_FMT, { input: true });
+  ws.getCell("F6").border = { right: { style: "thin" } };
+
+  // ---- Row 7: Annual Mgmt/Platform Fees / Estimated Equity ----
+  ws.getCell("B7").value = "Annual Mgmt/Platform Fees";
+  fmtLabel(ws.getCell("B7"));
+  leftBorder("B7");
+  ws.getCell("C7").value = { formula: "C5*D7" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C7"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("D7").value = pct(data.platformFeePct + data.propertyManagementPct);
+  fmtValue(ws.getCell("D7"), FMT_PERCENT, { input: true });
+  ws.getCell("E7").value = "Estimated Equity";
+  ws.getCell("E7").font = { size: 11, name: "Calibri" };
+  // Fixed from the reference workbook's literal =#REF!-F6: Estimated
+  // Equity is simply Purchase Price minus Loan Balance.
+  ws.getCell("F7").value = { formula: "C3-F6" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("F7"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("F7").border = { right: { style: "thin" } };
+
+  // ---- Rows 8-11: reorganized annual operating-expense rows ----
+  ws.getCell("B8").value = "Annual Utilities";
+  fmtLabel(ws.getCell("B8"));
+  leftBorder("B8");
+  ws.getCell("C8").value = {
+    formula: `'Inputs'!${inputs.totalBedrooms}*'Inputs'!${inputs.utilityCostPerBedroom}*12`,
+  } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C8"), TEMPLATE_CURRENCY_FMT);
+
+  ws.getCell("B9").value = "Annual Insurance";
+  fmtLabel(ws.getCell("B9"));
+  leftBorder("B9");
+  ws.getCell("C9").value = { formula: `'Inputs'!${inputs.annualInsurance}` } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C9"), TEMPLATE_CURRENCY_FMT);
+
+  ws.getCell("B10").value = "Annual Property Taxes";
+  fmtLabel(ws.getCell("B10"));
+  leftBorder("B10");
+  ws.getCell("C10").value = { formula: `'Inputs'!${inputs.annualPropertyTaxes}` } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C10"), TEMPLATE_CURRENCY_FMT);
+
+  ws.getCell("B11").value = "Annual Cleaning / Lawn / Pest Control";
+  fmtLabel(ws.getCell("B11"));
+  leftBorder("B11");
+  ws.getCell("C11").value = {
+    formula: `('Inputs'!${inputs.monthlyCleaning}*12)+('Inputs'!${inputs.monthlyLawnCare}*12)+('Inputs'!${inputs.monthlyPestControl}*12)`,
+  } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C11"), TEMPLATE_CURRENCY_FMT);
+
+  // ---- Row 12: Interest Rate (B/C left blank -- freed by the rows 8-11 consolidation) ----
+  leftBorder("B12");
+  ws.getCell("E12").value = "Interest Rate";
+  ws.getCell("E12").font = { size: 11, name: "Calibri" };
+  const rate = isHybrid ? pct(data.hybridExistingMortgageRatePct) : pct(data.loanInterestRatePct);
+  ws.getCell("F12").value = rate;
+  fmtValue(ws.getCell("F12"), FMT_PERCENT, { input: true });
+  ws.getCell("F12").border = { right: { style: "thin" } };
+
+  // ---- Row 13: blank spacer (also freed by the rows 8-11 consolidation) ----
+  leftBorder("B13");
+
+  // ---- Row 14: Annual Debt Payments / Financing Notes ----
+  ws.getCell("B14").value = "Annual Debt Payments";
+  fmtLabel(ws.getCell("B14"));
+  leftBorder("B14");
+  ws.getCell("C14").value = { formula: "(E3+E4)*12" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C14"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("E14").value = "Financing Notes";
+  ws.getCell("E14").font = { size: 11, name: "Calibri" };
+
+  ws.mergeCells("E15:F37");
+  const notesCell = ws.getCell("E15");
+  notesCell.value = financingNotesText(data);
+  notesCell.font = { size: 9, name: "Calibri" };
+  notesCell.alignment = { wrapText: true, vertical: "top", horizontal: "left" };
+  notesCell.border = { right: { style: "thin" } };
+
+  // ---- Row 16: Monthly Operating Cost ----
+  // Includes Insurance (C9) and Property Taxes (C10) only when the
+  // Primary Monthly Payment in E3 is Principal-and-Interest only --
+  // when E3 is already PITI, C9/C10 are already baked into the Annual
+  // Debt Payments total (C14) and would otherwise be double-counted.
+  ws.getCell("B16").value = "Monthly Operating Cost";
+  fmtLabel(ws.getCell("B16"));
+  leftBorder("B16");
+  const opCostFormula = e3IsPiti ? "(C4+C6+C7+C8+C11+C14)/12" : "(C4+C6+C7+C8+C9+C10+C11+C14)/12";
+  ws.getCell("C16").value = { formula: opCostFormula } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C16"), TEMPLATE_CURRENCY_FMT);
+
+  // ---- Row 17: Monthly Rents ----
+  ws.getCell("B17").value = "Monthly Rents";
+  fmtLabel(ws.getCell("B17"));
+  leftBorder("B17");
+  ws.getCell("C17").value = money(data.grossMonthlyRent);
+  fmtValue(ws.getCell("C17"), TEMPLATE_CURRENCY_FMT, { input: true });
+
+  // ---- Row 18: Monthly Cash Flow ----
+  // Fixed from the reference workbook's original formula, which divided
+  // by an undefined cell (F8) and subtracted another (E5) -- both blank,
+  // so the result was #DIV/0! / meaningless. Monthly Rents minus Monthly
+  // Operating Cost already correctly reflects financing costs either
+  // way, since C16 above already includes Annual Debt Payments.
+  ws.getCell("B18").value = "Monthly Cash Flow";
+  fmtLabel(ws.getCell("B18"));
+  leftBorder("B18");
+  ws.getCell("C18").value = { formula: "C17-C16" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C18"), TEMPLATE_CURRENCY_FMT, { emphasis: true });
+
+  // ---- Row 19: bedroom summary (merged B19:D19) ----
+  ws.mergeCells("B19:D19");
+  ws.getCell("B19").value = bedroomSummaryString(data);
+  fmtLabel(ws.getCell("B19"));
+  leftBorder("B19");
+
+  // ---- Row 20: Total Monthly Housing Payment ----
+  ws.getCell("B20").value = "Total Monthly Housing Payment";
+  fmtLabel(ws.getCell("B20"));
+  leftBorder("B20");
+  const totalHousingFormula = e3IsPiti ? "E3+E4" : "E3+E4+(C9+C10)/12";
+  ws.getCell("C20").value = { formula: totalHousingFormula } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C20"), TEMPLATE_CURRENCY_FMT);
+
+  // ---- Row 21: blank spacer ----
+  leftBorder("B21");
+
+  // ---- Rows 22-36: Capital Required ----
+  // Arrears applies to Subject To and Hybrid; Seller Financing never
+  // includes it in Total Capital Required on the website (matching
+  // SharedHousingCalculator.tsx's totalCapitalRequired computation), so
+  // it is always written as 0 here for that structure regardless of any
+  // stale Arrears value left over from switching financing modes.
+  const arrearsForExport = data.financingMode === "sellerFinancing" ? 0 : data.arrears;
+  const capitalRows: { row: number; label: string; value?: number; formula?: string }[] = [
+    { row: 22, label: "Arrears", value: money(arrearsForExport) },
+    { row: 23, label: data.downPaymentLabel, value: money(data.downPaymentForCapital) },
+    { row: 24, label: "Renovations", value: money(data.renovationCost) },
+    { row: 25, label: "Furniture", value: money(data.furniture) },
+    { row: 26, label: "Appliances", value: money(data.appliances) },
+    { row: 27, label: "Photos", value: money(data.photos) },
+    { row: 28, label: "Holding Costs", value: money(data.holdingCosts) },
+    { row: 29, label: "Reserves", value: money(data.reserves) },
+    { row: 30, label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) },
+    { row: 31, label: "Acquisition Cost", value: money(data.acquisitionFee) },
+    { row: 32, label: "TC Fee", value: money(data.tcFee) },
+    { row: 33, label: "LLC Entity Formation Cost", value: money(data.llcFee) },
+    { row: 34, label: "Closing Costs", formula: "C3*D34" },
+    { row: 35, label: "Agent Fee", value: money(data.agentFee) },
+    { row: 36, label: "Assignment Fee", value: money(data.assignmentFee) },
   ];
+  for (const r of capitalRows) {
+    const labelCell = ws.getCell(r.row, 2);
+    labelCell.value = r.label;
+    fmtLabel(labelCell);
+    leftBorder(`B${r.row}`);
+    const valueCell = ws.getCell(r.row, 3);
+    if (r.formula) {
+      valueCell.value = { formula: r.formula } as ExcelJS.CellFormulaValue;
+      fmtValue(valueCell, TEMPLATE_CURRENCY_FMT);
+    } else {
+      valueCell.value = r.value ?? 0;
+      fmtValue(valueCell, TEMPLATE_CURRENCY_FMT, { input: true });
+    }
+    ws.getRow(r.row).height = 15.75;
+  }
+  ws.getCell("D34").value = pct(data.closingCostPct);
+  fmtValue(ws.getCell("D34"), FMT_PERCENT, { input: true });
 
-  let nextRow: number;
-  if (isHybrid) {
-    nextRow = writeKVBlock(ws, 3, 6, 7, [
-      { label: "Purchase Price", formula: "C3", format: TEMPLATE_CURRENCY_FMT },
-      ...propertyTaxPanelRows,
-      { label: "Existing Mortgage Balance", value: money(data.hybridExistingMortgageBalance), format: FMT_CURRENCY, input: true },
-      { label: "Existing Mortgage Interest Rate", value: pct(data.hybridExistingMortgageRatePct), format: FMT_PERCENT, input: true },
-      { label: "Existing Mortgage Remaining Amortization", value: data.hybridExistingMortgageAmortizationYears, format: FMT_YEARS, input: true },
-      { label: "Monthly Subject-To PITI Payment", value: money(data.hybridSubjectToPITI), format: FMT_CURRENCY, input: true },
-      { label: "Suggested Seller-Financed Balance", value: money(data.hybridSuggestedSellerFinancedBalance), format: FMT_CURRENCY },
-      { label: "Seller-Financed Balance Used", value: money(data.hybridSellerFinancedBalanceUsed), format: FMT_CURRENCY, input: true },
-      { label: "Manual Seller-Financed Balance Override", value: data.hybridSellerFinancedBalanceIsManual ? "Yes" : "No" },
-      { label: "Are Monthly Seller-Finance Payments Required?", value: data.hybridSellerFinancePaymentsRequired ? "Yes" : "No" },
-      {
-        label: "Seller-Finance Interest Rate",
-        value: data.hybridSellerFinancePaymentsRequired ? pct(data.hybridSellerFinanceRatePct) : "Not Applicable",
-        format: data.hybridSellerFinancePaymentsRequired ? FMT_PERCENT : undefined,
-      },
-      {
-        label: "Seller-Finance Amortization Term",
-        value: data.hybridSellerFinancePaymentsRequired ? "30 Years (360 Monthly Payments)" : "Not Applicable",
-      },
-      { label: "Seller-Finance Repayment Structure", value: data.hybridSellerFinanceRepaymentStructure },
-      { label: "Monthly Seller-Finance Payment", value: money(data.hybridMonthlySellerFinancePayment), format: FMT_CURRENCY },
-      { label: "Total Monthly Housing Payment (Total PITI)", formula: "C17", format: TEMPLATE_CURRENCY_FMT },
-      { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
-      { label: "Arrears", formula: "C19", format: TEMPLATE_CURRENCY_FMT },
-      {
-        label: "Estimated Equity",
-        formula: "C3-G10-G15",
-        format: FMT_CURRENCY,
-        emphasis: true,
-      },
-    ]);
-  } else {
-    nextRow = writeKVBlock(ws, 3, 6, 7, [
-      { label: "Purchase Price", formula: "C3", format: TEMPLATE_CURRENCY_FMT },
-      ...propertyTaxPanelRows,
-      { label: "Existing Mortgage Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
-      { label: "Existing Mortgage Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
-      { label: "Existing Mortgage Remaining Amortization", value: data.loanRemainingAmortizationYears, format: FMT_YEARS, input: true },
-      { label: "Monthly Payment Type", value: data.paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
-      { label: data.housingPaymentLabel, value: money(data.monthlyPayment), format: FMT_CURRENCY, input: true },
-      { label: "Monthly PITI (Total)", formula: "C17", format: TEMPLATE_CURRENCY_FMT },
-      { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
-      { label: "Arrears", formula: "C19", format: TEMPLATE_CURRENCY_FMT },
-      { label: "Estimated Equity", formula: "C3-G4", format: FMT_CURRENCY, emphasis: true },
-    ]);
+  // ---- Row 37: Total Capital Required ----
+  ws.getCell("B37").value = "Total Capital Required";
+  fmtLabel(ws.getCell("B37"), { bold: true });
+  ws.getCell("B37").border = { left: { style: "thin" }, bottom: { style: "thin" } };
+  ws.getCell("C37").value = { formula: "SUM(C22:C36)" } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C37"), TEMPLATE_CURRENCY_FMT);
+  ws.getCell("C37").border = { bottom: { style: "thin" } };
+  ws.getRow(37).height = 15.75;
+
+  // ---- Row 38: blank spacer ----
+  leftBorder("B38");
+
+  // ---- Row 39: Cash-on-Cash Return ----
+  // Guarded against a $0 Total Capital Required (which the reference
+  // workbook's original =(C18*12)/C36 would have turned into #DIV/0!)
+  // -- shows "-" instead, matching the site's own zero-capital display.
+  ws.getCell("B39").value = "C on C Return";
+  fmtLabel(ws.getCell("B39"), { bold: true });
+  ws.getCell("B39").border = { left: { style: "thin" }, bottom: { style: "thin" } };
+  ws.getCell("C39").value = { formula: 'IF(C37=0,"-",(C18*12)/C37)' } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell("C39"), FMT_PERCENT, { emphasis: true });
+  ws.getCell("C39").border = { bottom: { style: "thin" } };
+  ws.getRow(39).height = 15.75;
+
+  // Thin white spacer column on the far right (matches the reference
+  // workbook's column G) for a clean printable right edge.
+  for (let r = 2; r <= 39; r++) {
+    ws.getCell(r, 7).fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_WHITE } };
   }
 
-  const balloon = activeBalloon(data);
-  if (balloon) {
-    nextRow += 1;
-    const balloonHeader = ws.getCell(nextRow, 6);
-    ws.mergeCells(nextRow, 6, nextRow, 7);
-    balloonHeader.value = "BALLOON REFINANCE ANALYSIS";
-    balloonHeader.font = { bold: true, size: 12, name: "Calibri" };
-    balloonHeader.border = { bottom: { style: "double" } };
-    nextRow += 1;
-    writeKVBlock(ws, nextRow, 6, 7, balloon.rows);
-  }
+  ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 1, orientation: "landscape" };
+  return ws;
 }
 
 export async function buildTemplateWorkbook(data: UnderwritingExportData): Promise<ExcelJS.Workbook> {
-  const buffer = await fetchTemplateBuffer();
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.load(buffer);
-  const ws = wb.worksheets[0];
-  populateTemplateWorkbook(ws, data);
+  wb.creator = "Michael Aylett Underwriting Calculator";
+  wb.created = new Date();
+  wb.calcProperties.fullCalcOnLoad = true;
+
+  const inputs = addInputsSheet(wb, data);
+  buildUnderwritingSheet(wb, data, inputs);
+  writeKeyValueSheet(wb, "Financing Details", [{ title: "Financing Details", rows: financingDetailsRows(data) }]);
+  const balloon = activeBalloon(data);
+  if (balloon) {
+    writeKeyValueSheet(wb, "Balloon Analysis", [{ title: "Balloon Refinance Analysis", rows: balloon.rows }]);
+  }
   addScopeOfWorkSheet(wb, data);
   addRoiProjectionSheet(wb, data);
   addSupportingDocumentsSheet(wb, data);
   addTransitSheet(wb, data);
+  wb.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 0, activeTab: 0, visibility: "visible" }];
   return wb;
 }
 
@@ -1523,7 +1682,7 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   }
   if (data.financingMode === "sellerFinancing") {
     return [
-      { label: "Purchase Price", value: money(data.purchasePrice), format: FMT_CURRENCY, input: true },
+      { label: "Purchase Price", formula: "Underwriting!C3", format: TEMPLATE_CURRENCY_FMT },
       ...propertyTaxDetailRows(data),
       { label: "Loan Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
       { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
@@ -1533,7 +1692,86 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
       { label: "Loan Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
       { label: "Remaining Amortization", value: data.loanRemainingAmortizationYears, format: FMT_YEARS, input: true },
       { label: "Estimated Closing Cost Percentage", value: pct(data.closingCostPct), format: FMT_PERCENT, input: true },
-      { label: "Estimated Equity", value: money(data.equity), format: FMT_CURRENCY, emphasis: true },
+      { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
+    ];
+  }
+  if (data.financingMode === "subjectTo") {
+    return [
+      { label: "Purchase Price", formula: "Underwriting!C3", format: TEMPLATE_CURRENCY_FMT },
+      ...propertyTaxDetailRows(data),
+      { label: "Existing Mortgage Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
+      { label: "Existing Mortgage Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
+      {
+        label: "Existing Mortgage Remaining Amortization",
+        value: data.loanRemainingAmortizationYears,
+        format: FMT_YEARS,
+        input: true,
+      },
+      { label: "Monthly Payment Type", value: data.paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
+      { label: data.housingPaymentLabel, value: money(data.monthlyPayment), format: FMT_CURRENCY, input: true },
+      { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
+      { label: "Arrears", formula: "Underwriting!C22", format: TEMPLATE_CURRENCY_FMT },
+      { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
+    ];
+  }
+  if (data.financingMode === "hybrid") {
+    return [
+      { label: "Purchase Price", formula: "Underwriting!C3", format: TEMPLATE_CURRENCY_FMT },
+      ...propertyTaxDetailRows(data),
+      {
+        label: "Existing Mortgage Balance",
+        value: money(data.hybridExistingMortgageBalance),
+        format: FMT_CURRENCY,
+        input: true,
+      },
+      {
+        label: "Existing Mortgage Interest Rate",
+        value: pct(data.hybridExistingMortgageRatePct),
+        format: FMT_PERCENT,
+        input: true,
+      },
+      {
+        label: "Existing Mortgage Remaining Amortization",
+        value: data.hybridExistingMortgageAmortizationYears,
+        format: FMT_YEARS,
+        input: true,
+      },
+      { label: "Monthly Subject-To PITI Payment", value: money(data.hybridSubjectToPITI), format: FMT_CURRENCY, input: true },
+      {
+        label: "Suggested Seller-Financed Balance",
+        value: money(data.hybridSuggestedSellerFinancedBalance),
+        format: FMT_CURRENCY,
+      },
+      {
+        label: "Seller-Financed Balance Used",
+        value: money(data.hybridSellerFinancedBalanceUsed),
+        format: FMT_CURRENCY,
+        input: true,
+      },
+      { label: "Manual Seller-Financed Balance Override", value: data.hybridSellerFinancedBalanceIsManual ? "Yes" : "No" },
+      {
+        label: "Are Monthly Seller-Finance Payments Required?",
+        value: data.hybridSellerFinancePaymentsRequired ? "Yes" : "No",
+      },
+      {
+        label: "Seller-Finance Interest Rate",
+        value: data.hybridSellerFinancePaymentsRequired ? pct(data.hybridSellerFinanceRatePct) : "Not Applicable",
+        format: data.hybridSellerFinancePaymentsRequired ? FMT_PERCENT : undefined,
+      },
+      {
+        label: "Seller-Finance Amortization Term",
+        value: data.hybridSellerFinancePaymentsRequired ? "30 Years (360 Monthly Payments)" : "Not Applicable",
+      },
+      { label: "Seller-Finance Repayment Structure", value: data.hybridSellerFinanceRepaymentStructure },
+      {
+        label: "Monthly Seller-Finance Payment",
+        value: money(data.hybridMonthlySellerFinancePayment),
+        format: FMT_CURRENCY,
+      },
+      { label: "Total Monthly Housing Payment (Total PITI)", formula: "Underwriting!C20", format: TEMPLATE_CURRENCY_FMT },
+      { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
+      { label: "Arrears", formula: "Underwriting!C22", format: TEMPLATE_CURRENCY_FMT },
+      { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
     ];
   }
   // Stack Method
@@ -1600,10 +1838,11 @@ function capitalRequiredRows(data: UnderwritingExportData): { rows: KVRow[]; tot
   if (data.financingMode !== "stackMethod") {
     rows.push({ label: data.downPaymentLabel, value: money(data.downPaymentForCapital), format: FMT_CURRENCY, input: true });
   }
-  // Arrears applies only to Subject To and Hybrid (the template-based
-  // export path); this generated path only ever covers Traditional
-  // Financing, Seller Financing, and Stack Method, none of which
-  // include an Arrears line, matching the on-page/CSV/print behavior.
+  // Arrears applies only to Subject To and Hybrid (both on the
+  // template-style export path, which now also covers Seller
+  // Financing); this generated path only ever covers Traditional
+  // Financing and Stack Method, neither of which include an Arrears
+  // line, matching the on-page/CSV/print behavior.
   rows.push({ label: "Renovation Cost", value: money(data.renovationCost), format: FMT_CURRENCY });
   rows.push({ label: "Furniture", value: money(data.furniture), format: FMT_CURRENCY });
   rows.push({ label: "Appliances", value: money(data.appliances), format: FMT_CURRENCY });
@@ -1764,7 +2003,7 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
 // ---------------------------------------------------------------------
 export async function exportUnderwritingToExcel(data: UnderwritingExportData): Promise<void> {
   const wb =
-    data.financingMode === "subjectTo" || data.financingMode === "hybrid"
+    data.financingMode === "subjectTo" || data.financingMode === "hybrid" || data.financingMode === "sellerFinancing"
       ? await buildTemplateWorkbook(data)
       : await buildGeneratedWorkbook(data);
 
