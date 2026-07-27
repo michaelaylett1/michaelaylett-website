@@ -11444,6 +11444,43 @@ export default function SharedHousingCalculator() {
             </div>
           )}
 
+          {/* Capital Partner call-to-action. Sits at the very bottom of
+              every printed/PDF report, after all underwriting sections
+              and calculations, for every financing structure -- this
+              is the shared JSX tree all five modes render through, so
+              nothing mode-specific is needed here. Generous top margin
+              plus a border separates it visually from the report
+              content above so it reads as its own footer section
+              rather than a continuation of the last card.
+              print:break-inside-avoid-page keeps the whole block
+              together: if it does not fit in the remaining space on
+              the last page, the browser's print engine pushes the
+              entire block onto a fresh page rather than splitting the
+              heading from the link across two pages. The link uses the
+              full https://michaelaylett.com URL (not an internal
+              /capital-partners anchor) specifically so it still
+              resolves correctly once the report is downloaded/emailed
+              as a standalone PDF, disconnected from the site itself. */}
+          <div className="hidden print:block mt-10 pt-6 border-t border-ink/15 text-center print:break-inside-avoid-page">
+            <p className="text-[11pt] font-display font-bold text-ink mb-1.5">
+              Interested in being a Capital Partner?
+            </p>
+            <p className="text-[9pt] text-ink/70 leading-relaxed max-w-[5in] mx-auto">
+              If you&apos;d like to partner with us on future co-living investments, we&apos;d love
+              to hear from you.
+            </p>
+            <p className="text-[9pt] text-ink mt-2">
+              Fill out an application{" "}
+              <a
+                href="https://michaelaylett.com/capital-partners"
+                className="text-blue-600 underline underline-offset-2"
+              >
+                here
+              </a>
+              .
+            </p>
+          </div>
+
           {/* Branded footer. Rendered once, in normal document flow, at
               the very end of the report. An earlier version used
               position:fixed to try to repeat this on every printed page,

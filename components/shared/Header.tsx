@@ -10,7 +10,7 @@ const LINKS = [
   { href: "/sellers", label: "Sellers" },
   { href: "/seller-calculators", label: "How Much Will I Be Paid If I Sell?" },
   { href: "/rv-parks", label: "RV Parks" },
-  { href: "/capital-partners", label: "Capital Partners" },
+  { href: "/capital-partners", label: "Want to be a Capital Partner?" },
   { href: "/underwriting", label: "Underwriting" },
   { href: "/ecomranx", label: "EcomRanx" },
   { href: "/about", label: "About" },
