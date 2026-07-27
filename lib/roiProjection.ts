@@ -20,32 +20,18 @@
  */
 
 // ---------------------------------------------------------------------
-// True amortization math (mirrors remainingBalanceAfterMonths in
-// SharedHousingCalculator.tsx exactly -- kept as its own copy here so
-// this module has no dependency on the component file). B_k = P x
-// [(1+r)^n - (1+r)^k] / [(1+r)^n - 1], with a straight-line special
-// case at a 0% rate.
+// True amortization math -- imported from lib/amortization.ts, the one
+// canonical implementation shared by the on-page amortization
+// schedules, this ROI projection, Balloon Refinance Analysis, and the
+// Excel export's Amortization Schedule worksheets, so a loan's
+// projected balance is always identical no matter which surface is
+// asking (this used to be a separate, independently maintained copy of
+// the same formula; re-exported here so every existing import of
+// `remainingBalanceAfterMonths` from this module keeps working
+// unchanged).
 // ---------------------------------------------------------------------
-export function remainingBalanceAfterMonths(
-  principal: number,
-  annualRatePct: number,
-  totalMonths: number,
-  monthsElapsed: number
-): number {
-  if (!Number.isFinite(principal) || principal <= 0) return 0;
-  const n = Math.max(1, Math.round(totalMonths));
-  const k = Math.max(0, Math.min(n, Math.round(monthsElapsed)));
-  if (k >= n) return 0;
-  const monthlyRate = annualRatePct / 100 / 12;
-  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
-    return (principal * (n - k)) / n;
-  }
-  const factor = Math.pow(1 + monthlyRate, n);
-  const factorK = Math.pow(1 + monthlyRate, k);
-  if (!Number.isFinite(factor) || factor <= 1) return principal;
-  const balance = (principal * (factor - factorK)) / (factor - 1);
-  return Number.isFinite(balance) ? Math.max(0, balance) : 0;
-}
+import { remainingBalanceAfterMonths } from "./amortization";
+export { remainingBalanceAfterMonths };
 
 // ---------------------------------------------------------------------
 // Input types

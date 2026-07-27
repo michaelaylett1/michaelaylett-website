@@ -60,6 +60,7 @@ import {
 } from "lucide-react";
 import {
   exportUnderwritingToExcel,
+  type ExportAmortizationSchedule,
   type ExportFinancingMode,
   type ExportTransitResult,
   type UnderwritingExportData,
@@ -95,6 +96,15 @@ import {
   isStaleAutocompleteResponse,
   shouldFetchSuggestions,
 } from "@/lib/transit/addressAutocomplete";
+import {
+  buildAmortizationScheduleForTerm,
+  buildAnnualAmortizationSummary,
+  calculateMonthlyPaymentForTerm,
+  remainingBalanceAfterMonths,
+  SUBJECT_TO_AMORTIZATION_DISCLOSURE,
+  type AmortizationRow,
+  type AnnualAmortizationRow,
+} from "@/lib/amortization";
 
 // ---------------------------------------------------------------------
 // Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
@@ -922,6 +932,64 @@ function BalloonRefinancePrintCard({
   );
 }
 
+// The printable-report counterpart to the on-page
+// <AmortizationScheduleBlock>: a compact annual summary table (Year,
+// Beginning Balance, Total Payments, Principal Paid, Interest Paid,
+// Ending Balance) for one loan leg, matching the same annual figures
+// shown on-page by default. `disclosure`, when provided, renders the
+// required estimation notice for Subject-To and Hybrid's
+// existing-mortgage schedules directly above the table. Renders nothing
+// for an empty schedule (e.g. a $0 balance).
+function AmortizationPrintCard({
+  title,
+  schedule,
+  disclosure,
+}: {
+  title: string;
+  schedule: AmortizationRow[];
+  disclosure?: string;
+}) {
+  if (schedule.length === 0) return null;
+  const annualRows = buildAnnualAmortizationSummary(schedule);
+  return (
+    <div className="mb-4 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-3">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <Landmark size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">{title}</p>
+      </div>
+      {disclosure && (
+        <p className="text-[8pt] text-ink bg-brass/5 border border-brass/50 rounded p-2 mb-2 leading-relaxed">
+          {disclosure}
+        </p>
+      )}
+      <table className="w-full text-[8.5pt] border-collapse">
+        <thead>
+          <tr className="border-b border-ink/20 text-left text-ink/60">
+            <th className="py-1 pr-2 font-medium">Year</th>
+            <th className="py-1 pr-2 font-medium">Beginning Balance</th>
+            <th className="py-1 pr-2 font-medium">Total Payments</th>
+            <th className="py-1 pr-2 font-medium">Principal Paid</th>
+            <th className="py-1 pr-2 font-medium">Interest Paid</th>
+            <th className="py-1 pr-2 font-medium">Ending Balance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {annualRows.map((row) => (
+            <tr key={row.year} className="border-b border-ink/10">
+              <td className="py-1 pr-2">{row.year}</td>
+              <td className="py-1 pr-2">{formatCents(row.beginningBalance)}</td>
+              <td className="py-1 pr-2">{formatCents(row.totalPayments)}</td>
+              <td className="py-1 pr-2">{formatCents(row.principalPaid)}</td>
+              <td className="py-1 pr-2">{formatCents(row.interestPaid)}</td>
+              <td className="py-1 pr-2">{formatCents(row.endingBalance)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------
 // 30-Year ROI Projection: presentational components shared by the
 // on-page panel and the printable report. Every figure comes from a
@@ -1486,136 +1554,17 @@ function calculateMonthlyPrincipalAndInterest(loanAmount: number, annualRatePct:
   return Number.isFinite(payment) ? payment : 0;
 }
 
-type AmortizationRow = {
-  paymentNumber: number;
-  beginningBalance: number;
-  principalPaid: number;
-  interestPaid: number;
-  totalPayment: number;
-  endingBalance: number;
-};
-
-// Builds the complete month-by-month amortization schedule using
-// declining principal (not simple/flat interest): each payment's
-// interest portion is calculated on that month's actual beginning
-// balance. The unrounded monthly payment drives every month's math
-// internally; only the final, displayed figures are rounded to cents.
-// The very last payment is adjusted by whatever a few cents of
-// accumulated rounding requires, so the schedule always ends at exactly
-// $0.00 rather than a few cents above or below zero.
+// Builds the complete month-by-month amortization schedule for
+// Traditional Financing's fixed 30-year / 360-payment loan. A thin
+// wrapper around the shared buildAmortizationScheduleForTerm (imported
+// from lib/amortization.ts -- see the import block above) so every
+// financing structure's schedule, Traditional included, comes from
+// exactly one declining-balance implementation.
 function buildAmortizationSchedule(
   loanAmount: number,
   annualRatePct: number
 ): { schedule: AmortizationRow[]; monthlyPayment: number } {
-  const roundedLoanAmount = round2(Math.max(0, loanAmount));
-  const monthlyPaymentUnrounded = calculateMonthlyPrincipalAndInterest(roundedLoanAmount, annualRatePct);
-  const monthlyPayment = round2(monthlyPaymentUnrounded);
-
-  if (roundedLoanAmount <= 0) {
-    return { schedule: [], monthlyPayment: 0 };
-  }
-
-  const monthlyRate = annualRatePct / 100 / 12;
-  const schedule: AmortizationRow[] = [];
-  let balance = roundedLoanAmount;
-
-  for (let i = 1; i <= TRADITIONAL_NUM_PAYMENTS; i++) {
-    const beginningBalance = balance;
-    const interestPaid = round2(beginningBalance * monthlyRate);
-    const isFinalPayment = i === TRADITIONAL_NUM_PAYMENTS;
-    let principalPaid = round2(monthlyPayment - interestPaid);
-
-    // Guards against rounding ever taking the balance below $0, whether
-    // on the scheduled final payment or (in an edge case with a very
-    // small loan/high rate) an earlier one.
-    if (isFinalPayment || principalPaid >= beginningBalance) {
-      principalPaid = beginningBalance;
-    }
-
-    const totalPayment = round2(interestPaid + principalPaid);
-    const endingBalance = Math.max(0, round2(beginningBalance - principalPaid));
-
-    schedule.push({
-      paymentNumber: i,
-      beginningBalance,
-      principalPaid,
-      interestPaid,
-      totalPayment,
-      endingBalance,
-    });
-
-    balance = endingBalance;
-    if (balance <= 0) break;
-  }
-
-  return { schedule, monthlyPayment };
-}
-
-// ---------------------------------------------------------------------
-// Stack Method: unlike Traditional Financing and the Hybrid structure
-// (both fixed at 30 years / 360 monthly payments), the Stack Method's
-// Bank Amortization Term and Seller Finance Amortization Term are both
-// editable, so the two functions below generalize the same standard
-// fixed-rate amortization formula and schedule builder to accept any
-// number of monthly payments rather than the fixed 360.
-// ---------------------------------------------------------------------
-function calculateMonthlyPaymentForTerm(principal: number, annualRatePct: number, numPayments: number): number {
-  if (!Number.isFinite(principal) || principal <= 0) return 0;
-  const n = Math.max(1, Math.round(numPayments));
-  const monthlyRate = annualRatePct / 100 / 12;
-  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
-    return principal / n;
-  }
-  const factor = Math.pow(1 + monthlyRate, n);
-  const payment = (principal * (monthlyRate * factor)) / (factor - 1);
-  return Number.isFinite(payment) ? payment : 0;
-}
-
-function buildAmortizationScheduleForTerm(
-  principal: number,
-  annualRatePct: number,
-  numPayments: number
-): { schedule: AmortizationRow[]; monthlyPayment: number } {
-  const roundedPrincipal = round2(Math.max(0, principal));
-  const n = Math.max(1, Math.round(numPayments));
-  const monthlyPaymentUnrounded = calculateMonthlyPaymentForTerm(roundedPrincipal, annualRatePct, n);
-  const monthlyPayment = round2(monthlyPaymentUnrounded);
-
-  if (roundedPrincipal <= 0) {
-    return { schedule: [], monthlyPayment: 0 };
-  }
-
-  const monthlyRate = annualRatePct / 100 / 12;
-  const schedule: AmortizationRow[] = [];
-  let balance = roundedPrincipal;
-
-  for (let i = 1; i <= n; i++) {
-    const beginningBalance = balance;
-    const interestPaid = round2(beginningBalance * monthlyRate);
-    const isFinalPayment = i === n;
-    let principalPaid = round2(monthlyPayment - interestPaid);
-
-    if (isFinalPayment || principalPaid >= beginningBalance) {
-      principalPaid = beginningBalance;
-    }
-
-    const totalPayment = round2(interestPaid + principalPaid);
-    const endingBalance = Math.max(0, round2(beginningBalance - principalPaid));
-
-    schedule.push({
-      paymentNumber: i,
-      beginningBalance,
-      principalPaid,
-      interestPaid,
-      totalPayment,
-      endingBalance,
-    });
-
-    balance = endingBalance;
-    if (balance <= 0) break;
-  }
-
-  return { schedule, monthlyPayment };
+  return buildAmortizationScheduleForTerm(loanAmount, annualRatePct, TRADITIONAL_NUM_PAYMENTS);
 }
 
 // ---------------------------------------------------------------------
@@ -1625,34 +1574,14 @@ function buildAmortizationScheduleForTerm(
 // here works in unrounded values internally -- only the values actually
 // displayed are rounded to cents/percent, per the "use unrounded values
 // internally" requirement.
+//
+// calculateMonthlyPaymentForTerm, buildAmortizationScheduleForTerm, and
+// remainingBalanceAfterMonths are the shared implementations imported
+// from lib/amortization.ts (see the import block above), not defined
+// locally, so this component, the ROI projection (lib/roiProjection.ts),
+// and the Excel export (lib/underwritingExcelExport.ts) all resolve a
+// loan's balance/schedule identically.
 // ---------------------------------------------------------------------
-
-// The remaining principal balance of a fully-amortizing loan after
-// `monthsElapsed` of its `totalMonths` term, using the true amortization
-// formula (never simple/linear division): B_k = P x [(1+r)^n - (1+r)^k]
-// / [(1+r)^n - 1]. At a 0% rate this correctly reduces to equal
-// principal payments each month (straight-line), matching how a 0%
-// seller-finance note actually pays down.
-function remainingBalanceAfterMonths(
-  principal: number,
-  annualRatePct: number,
-  totalMonths: number,
-  monthsElapsed: number
-): number {
-  if (!Number.isFinite(principal) || principal <= 0) return 0;
-  const n = Math.max(1, Math.round(totalMonths));
-  const k = Math.max(0, Math.min(n, Math.round(monthsElapsed)));
-  if (k >= n) return 0;
-  const monthlyRate = annualRatePct / 100 / 12;
-  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
-    return (principal * (n - k)) / n;
-  }
-  const factor = Math.pow(1 + monthlyRate, n);
-  const factorK = Math.pow(1 + monthlyRate, k);
-  if (!Number.isFinite(factor) || factor <= 1) return principal;
-  const balance = (principal * (factor - factorK)) / (factor - 1);
-  return Number.isFinite(balance) ? Math.max(0, balance) : 0;
-}
 
 // Projected appraised value at the balloon date, using compound annual
 // appreciation (never simple/linear appreciation): Purchase Price x
@@ -3303,6 +3232,184 @@ function TransitPrintSection({
 
 
 // ---------------------------------------------------------------------
+// Amortization Schedule display: one reusable block used by every
+// financing structure (Traditional, Subject To, Seller Financing,
+// Hybrid's two legs, Stack Method's two legs). Defaults to a clean
+// annual summary (Year, Beginning Balance, Total Payments, Principal
+// Paid, Interest Paid, Ending Balance) rather than hundreds of monthly
+// rows, with an option to expand to the full monthly detail or download
+// the complete monthly schedule as a CSV. `disclosure`, when provided,
+// renders the required estimation notice for Subject-To and Hybrid's
+// existing-mortgage schedules. `note`, when provided, renders a short
+// plain-text clarification (e.g. that the schedule is based on the
+// entered interest rate and amortization term, never on a PITI figure).
+function AmortizationScheduleBlock({
+  title,
+  schedule,
+  disclosure,
+  note,
+  csvFilename,
+}: {
+  title: string;
+  schedule: AmortizationRow[];
+  disclosure?: string;
+  note?: string;
+  csvFilename: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"annual" | "monthly">("annual");
+  const [showAllMonths, setShowAllMonths] = useState(false);
+  const annualRows = useMemo(() => buildAnnualAmortizationSummary(schedule), [schedule]);
+
+  function downloadCsv() {
+    const lines: string[] = [
+      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Total Payment,Ending Balance",
+    ];
+    for (const row of schedule) {
+      lines.push(
+        [
+          row.paymentNumber,
+          row.beginningBalance.toFixed(2),
+          row.principalPaid.toFixed(2),
+          row.interestPaid.toFixed(2),
+          row.totalPayment.toFixed(2),
+          row.endingBalance.toFixed(2),
+        ].join(",")
+      );
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = csvFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  if (schedule.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-8 pt-6 border-t border-line-dark">
+      <p className="eyebrow text-ink/70 mb-2">{title}</p>
+      {note && <p className="text-xs text-ink/50 leading-relaxed mb-3">{note}</p>}
+      {disclosure && (
+        <p className="text-xs text-ink/70 leading-relaxed mb-4 rounded border border-brass/50 bg-brass/5 p-3">
+          {disclosure}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+        >
+          {open ? "Hide" : "View"} Amortization Schedule
+        </button>
+        <button
+          type="button"
+          onClick={downloadCsv}
+          className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
+        >
+          Download Full Monthly Schedule as CSV
+        </button>
+      </div>
+
+      {open && (
+        <div className="mt-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <p className="text-xs text-ink/50">
+              {viewMode === "annual"
+                ? `Annual summary (${annualRows.length} year${annualRows.length === 1 ? "" : "s"})`
+                : `Full monthly detail (${schedule.length} payment${schedule.length === 1 ? "" : "s"})`}
+            </p>
+            <button
+              type="button"
+              onClick={() => setViewMode((v) => (v === "annual" ? "monthly" : "annual"))}
+              className="text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+            >
+              {viewMode === "annual" ? "View Monthly Detail" : "View Annual Summary"}
+            </button>
+          </div>
+
+          {viewMode === "annual" ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs sm:text-sm border-collapse">
+                <thead>
+                  <tr className="border-b border-line-dark text-left text-ink/60">
+                    <th className="py-2 pr-3 font-medium">Year</th>
+                    <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                    <th className="py-2 pr-3 font-medium">Total Payments</th>
+                    <th className="py-2 pr-3 font-medium">Principal Paid</th>
+                    <th className="py-2 pr-3 font-medium">Interest Paid</th>
+                    <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {annualRows.map((row) => (
+                    <tr key={row.year} className="border-b border-line-dark/40">
+                      <td className="py-1.5 pr-3">{row.year}</td>
+                      <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                      <td className="py-1.5 pr-3">{formatCents(row.totalPayments)}</td>
+                      <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                      <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                      <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs sm:text-sm border-collapse">
+                  <thead>
+                    <tr className="border-b border-line-dark text-left text-ink/60">
+                      <th className="py-2 pr-3 font-medium">Payment #</th>
+                      <th className="py-2 pr-3 font-medium">Beginning Balance</th>
+                      <th className="py-2 pr-3 font-medium">Principal Paid</th>
+                      <th className="py-2 pr-3 font-medium">Interest Paid</th>
+                      <th className="py-2 pr-3 font-medium">Total Payment</th>
+                      <th className="py-2 pr-3 font-medium">Ending Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(showAllMonths ? schedule : schedule.slice(0, 12)).map((row) => (
+                      <tr key={row.paymentNumber} className="border-b border-line-dark/40">
+                        <td className="py-1.5 pr-3">{row.paymentNumber}</td>
+                        <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
+                        <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
+                        <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
+                        <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
+                        <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {schedule.length > 12 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllMonths((v) => !v)}
+                  className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                >
+                  {showAllMonths ? "Show First 12 Payments" : `View All ${schedule.length} Payments`}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
 // Breakdown row types, shared by the on-page table, CSV export, and the
 // printable summary
 // ---------------------------------------------------------------------
@@ -3803,28 +3910,11 @@ export default function SharedHousingCalculator() {
     setFinancingMode((prev) => (prev === mode ? "" : mode));
   }
 
-  // Amortization schedule expand/collapse state for the Traditional
-  // Financing section (see the "View Estimated Amortization Schedule"
-  // section further down).
-  const [amortizationOpen, setAmortizationOpen] = useState(false);
-  const [amortizationShowAll, setAmortizationShowAll] = useState(false);
-
-  // Amortization schedule expand/collapse state for the Hybrid
-  // structure's Seller Finance Amortization Schedule (see "View Seller
-  // Finance Amortization Schedule" further down). Kept separate from
-  // the Traditional Financing schedule state above so each behaves
-  // independently even though only one is ever visible at a time.
-  const [hybridAmortizationOpen, setHybridAmortizationOpen] = useState(false);
-  const [hybridAmortizationShowAll, setHybridAmortizationShowAll] = useState(false);
-
-  // Amortization schedule expand/collapse state for the Stack Method's
-  // two separate schedules: the first-position Bank Loan and the
-  // second-position Seller Finance balance. Kept independent from each
-  // other and from the schedules above.
-  const [stackBankAmortizationOpen, setStackBankAmortizationOpen] = useState(false);
-  const [stackBankAmortizationShowAll, setStackBankAmortizationShowAll] = useState(false);
-  const [stackSellerAmortizationOpen, setStackSellerAmortizationOpen] = useState(false);
-  const [stackSellerAmortizationShowAll, setStackSellerAmortizationShowAll] = useState(false);
+  // Amortization schedule expand/collapse and annual/monthly view state
+  // is now owned internally by the shared <AmortizationScheduleBlock>
+  // component (one per loan leg) rather than by top-level state here --
+  // each block naturally resets when it unmounts on a financing-mode
+  // switch, so there is nothing left to reset centrally.
 
   // --- generic currency/percent/integer handlers, keyed by field name ---
   function handleFinancingChange(key: FinancingKey, raw: string) {
@@ -4511,17 +4601,11 @@ export default function SharedHousingCalculator() {
     // are reset above via `financing`; Down Payment Percentage 20%,
     // Interest Rate 7%, Traditional Closing Cost Percentage 5%, and
     // Seller Finance Interest Rate 2% are reset above via `percent`),
-    // and both amortization schedules -- being derived entirely from
-    // that state -- reset automatically along with it.
+    // and every amortization schedule -- being derived entirely from
+    // that state, and their expand/collapse UI state living inside the
+    // shared <AmortizationScheduleBlock> component itself -- reset
+    // automatically along with it.
     setFinancingMode(FINANCING_MODE_DEFAULT);
-    setAmortizationOpen(false);
-    setAmortizationShowAll(false);
-    setHybridAmortizationOpen(false);
-    setHybridAmortizationShowAll(false);
-    setStackBankAmortizationOpen(false);
-    setStackBankAmortizationShowAll(false);
-    setStackSellerAmortizationOpen(false);
-    setStackSellerAmortizationShowAll(false);
   }
 
   // ---------------------------------------------------------------------
@@ -4638,6 +4722,27 @@ export default function SharedHousingCalculator() {
   );
 
   // ---------------------------------------------------------------------
+  // Subject To / Seller Financing: the full month-by-month amortization
+  // schedule for the existing/seller-financed loan, using the Existing
+  // Mortgage Interest Rate (or Seller Financing Interest Rate) and
+  // Remaining Amortization (Years) fields shared by both modes. Deriving
+  // the payment from balance/rate/term via buildAmortizationScheduleForTerm
+  // (never from the entered Monthly Payment field, which may be a PITI
+  // figure) structurally guarantees taxes and insurance can never be
+  // mistaken for principal or interest here, and that Subject To never
+  // uses a full PITI payment as the amortizing payment.
+  // ---------------------------------------------------------------------
+  const existingMortgageAmortization = useMemo(
+    () =>
+      buildAmortizationScheduleForTerm(
+        financing.loanBalance,
+        percent.loanInterestRatePct,
+        Math.max(1, Math.round(loanRemainingAmortizationYears * 12))
+      ),
+    [financing.loanBalance, percent.loanInterestRatePct, loanRemainingAmortizationYears]
+  );
+
+  // ---------------------------------------------------------------------
   // Hybrid (Subject To & Seller Finance Hybrid): the buyer takes over
   // making the existing mortgage's monthly Subject-To PITI payment
   // (entered directly, since the existing loan's own terms are not
@@ -4719,6 +4824,25 @@ export default function SharedHousingCalculator() {
   const hybridAmortization = useMemo(
     () => buildAmortizationSchedule(hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct),
     [hybridSellerFinancedBalanceUsed, percent.hybridSellerFinanceRatePct]
+  );
+
+  // The full month-by-month amortization schedule for the existing
+  // subject-to mortgage leg of a Hybrid deal only -- kept completely
+  // separate from the seller-finance schedule above, using its own
+  // Existing Mortgage Interest Rate and Remaining Amortization (Years),
+  // never blended with the seller-finance rate or term.
+  const hybridExistingMortgageAmortization = useMemo(
+    () =>
+      buildAmortizationScheduleForTerm(
+        financing.hybridExistingMortgageBalance,
+        percent.hybridExistingMortgageRatePct,
+        Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12))
+      ),
+    [
+      financing.hybridExistingMortgageBalance,
+      percent.hybridExistingMortgageRatePct,
+      hybridExistingMortgageAmortizationYears,
+    ]
   );
 
   // Total Monthly Housing Payment (Total PITI) = Monthly Subject-To PITI
@@ -6678,6 +6802,88 @@ export default function SharedHousingCalculator() {
                 ? { tcFee: capital.sellerFinancingTcFee, llcFee: capital.sellerFinancingLlcFee }
                 : { tcFee: capital.stackTcFee, llcFee: capital.stackLlcFee };
 
+      // Amortization schedules for the Excel export: one leg per loan for
+      // the active financing structure, built from the exact same
+      // schedules (traditionalAmortization / existingMortgageAmortization
+      // / hybridExistingMortgageAmortization / hybridAmortization /
+      // stackBankAmortization / stackSellerAmortization) already driving
+      // the on-page <AmortizationScheduleBlock> panels above, so the
+      // Excel figures always match the website exactly. The disclosure
+      // is attached only to Subject-To's leg and Hybrid's
+      // existing-mortgage leg, matching the on-page/print placement.
+      const amortizationSchedules: ExportAmortizationSchedule[] = (() => {
+        if (financingMode === "traditional") {
+          return [
+            {
+              sheetName: "Amortization Schedule",
+              title: "Amortization Schedule",
+              rows: traditionalAmortization.schedule,
+            },
+          ];
+        }
+        if (financingMode === "subjectTo") {
+          return [
+            {
+              sheetName: "Existing Mortgage Amort",
+              title: "Existing Mortgage Amortization Schedule",
+              disclosure: SUBJECT_TO_AMORTIZATION_DISCLOSURE,
+              balloonAtPaymentNumber: subjectToBalloonExists ? Math.round(subjectToBalloonYears * 12) : null,
+              rows: existingMortgageAmortization.schedule,
+            },
+          ];
+        }
+        if (financingMode === "sellerFinancing") {
+          return [
+            {
+              sheetName: "Seller Finance Amort",
+              title: "Seller Financing Amortization Schedule",
+              balloonAtPaymentNumber: sellerFinancingBalloonExists
+                ? Math.round(sellerFinancingBalloonYears * 12)
+                : null,
+              rows: existingMortgageAmortization.schedule,
+            },
+          ];
+        }
+        if (financingMode === "hybrid") {
+          const schedules: ExportAmortizationSchedule[] = [
+            {
+              sheetName: "Existing Mortgage Amort",
+              title: "Existing Subject-To Mortgage Amortization Schedule",
+              disclosure: SUBJECT_TO_AMORTIZATION_DISCLOSURE,
+              balloonAtPaymentNumber: hybridBalloonExists ? Math.round(hybridBalloonYears * 12) : null,
+              rows: hybridExistingMortgageAmortization.schedule,
+            },
+          ];
+          if (hybridSellerFinancePaymentsRequired) {
+            schedules.push({
+              sheetName: "Hybrid Seller Fin Amort",
+              title: "Hybrid Seller-Finance Amortization Schedule",
+              balloonAtPaymentNumber: hybridBalloonExists ? Math.round(hybridBalloonYears * 12) : null,
+              rows: hybridAmortization.schedule,
+            });
+          }
+          return schedules;
+        }
+        // Stack Method
+        const schedules: ExportAmortizationSchedule[] = [
+          {
+            sheetName: "Primary Loan Amort",
+            title: "Primary Bank/DSCR Loan Amortization Schedule",
+            balloonAtPaymentNumber: stackBalloonExists ? Math.round(stackBalloonYears * 12) : null,
+            rows: stackBankAmortization.schedule,
+          },
+        ];
+        if (stackSellerFinancePaymentsRequired) {
+          schedules.push({
+            sheetName: "Seller-Carried 2nd Amort",
+            title: "Seller-Carried Second Amortization Schedule",
+            balloonAtPaymentNumber: stackBalloonExists ? Math.round(stackBalloonYears * 12) : null,
+            rows: stackSellerAmortization.schedule,
+          });
+        }
+        return schedules;
+      })();
+
       const exportData: UnderwritingExportData = {
         financingMode: financingMode as ExportFinancingMode,
         propertyAddress,
@@ -6821,6 +7027,8 @@ export default function SharedHousingCalculator() {
           padSplitFilename: padSplitScreenshot?.name || null,
         },
 
+        amortizationSchedules,
+
         roiAppreciationPct: activeRoiAppreciationPct,
         roiProjection: activeRoiProjection,
         roiHasBalloon: activeRoiBalloon !== null,
@@ -6850,129 +7058,11 @@ export default function SharedHousingCalculator() {
     }
   }
 
-  // Downloads the complete 360-payment Traditional Financing
-  // amortization schedule as its own CSV, separate from the main
-  // underwriting summary CSV above.
-  function downloadAmortizationCsv() {
-    const lines: string[] = [
-      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Total Payment,Ending Balance",
-    ];
-    for (const row of traditionalAmortization.schedule) {
-      lines.push(
-        [
-          row.paymentNumber,
-          row.beginningBalance.toFixed(2),
-          row.principalPaid.toFixed(2),
-          row.interestPaid.toFixed(2),
-          row.totalPayment.toFixed(2),
-          row.endingBalance.toFixed(2),
-        ].join(",")
-      );
-    }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "traditional-financing-amortization-schedule.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  // Downloads the complete 360-payment Hybrid seller-finance
-  // amortization schedule as its own CSV. Covers only the
-  // seller-financed balance, not the existing subject-to mortgage.
-  function downloadHybridAmortizationCsv() {
-    const lines: string[] = [
-      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Total Payment,Ending Balance",
-    ];
-    for (const row of hybridAmortization.schedule) {
-      lines.push(
-        [
-          row.paymentNumber,
-          row.beginningBalance.toFixed(2),
-          row.principalPaid.toFixed(2),
-          row.interestPaid.toFixed(2),
-          row.totalPayment.toFixed(2),
-          row.endingBalance.toFixed(2),
-        ].join(",")
-      );
-    }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "hybrid-seller-finance-amortization-schedule.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  // Downloads the Stack Method's first-position Bank Loan amortization
-  // schedule as its own CSV, separate from the second-position Seller
-  // Finance schedule below and from the main underwriting summary CSV.
-  function downloadStackBankAmortizationCsv() {
-    const lines: string[] = [
-      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Principal and Interest Payment,Ending Balance",
-    ];
-    for (const row of stackBankAmortization.schedule) {
-      lines.push(
-        [
-          row.paymentNumber,
-          row.beginningBalance.toFixed(2),
-          row.principalPaid.toFixed(2),
-          row.interestPaid.toFixed(2),
-          row.totalPayment.toFixed(2),
-          row.endingBalance.toFixed(2),
-        ].join(",")
-      );
-    }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "stack-method-bank-loan-amortization-schedule.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  // Downloads the Stack Method's second-position Seller Finance
-  // amortization schedule as its own CSV. Covers only the seller-
-  // financed balance, never the first-position bank loan.
-  function downloadStackSellerAmortizationCsv() {
-    const lines: string[] = [
-      "Payment Number,Beginning Balance,Principal Paid,Interest Paid,Seller Finance Payment,Ending Balance",
-    ];
-    for (const row of stackSellerAmortization.schedule) {
-      lines.push(
-        [
-          row.paymentNumber,
-          row.beginningBalance.toFixed(2),
-          row.principalPaid.toFixed(2),
-          row.interestPaid.toFixed(2),
-          row.totalPayment.toFixed(2),
-          row.endingBalance.toFixed(2),
-        ].join(",")
-      );
-    }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "stack-method-seller-finance-amortization-schedule.csv";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  // Every amortization schedule's CSV download is now handled inside the
+  // shared <AmortizationScheduleBlock> component itself (one "Download
+  // Full Monthly Schedule as CSV" button per loan leg), so the four
+  // separate download*AmortizationCsv functions that used to live here
+  // have been removed.
 
   // Browsers that offer "Save as PDF" in the print dialog (Chrome, Edge,
   // etc.) suggest document.title as the default filename. Setting it just
@@ -7735,34 +7825,29 @@ export default function SharedHousingCalculator() {
                 }
               />
 
-              {((financingMode === "subjectTo" && subjectToBalloonExists) ||
-                (financingMode === "sellerFinancing" && sellerFinancingBalloonExists)) && (
-                <>
-                  <PercentField
-                    id="loanInterestRatePct"
-                    label={
-                      financingMode === "subjectTo" ? "Existing Mortgage Interest Rate" : "Seller Financing Interest Rate"
-                    }
-                    draft={percentDraft.loanInterestRatePct}
-                    onChange={(raw) => handlePercentChange("loanInterestRatePct", raw)}
-                    onBlur={() => handlePercentBlur("loanInterestRatePct")}
-                    info="Decimals are allowed. Used only for the Balloon Refinance Analysis's projected loan-balance calculation below, never for the monthly payment above."
-                  />
-                  <IntegerField
-                    id="loanRemainingAmortizationYears"
-                    label="Remaining Amortization (Years)"
-                    draft={loanRemainingAmortizationYearsDraft}
-                    onChange={(raw) => {
-                      setLoanRemainingAmortizationYearsDraft(raw);
-                      setLoanRemainingAmortizationYears(Math.max(1, parseTypedInt(raw)));
-                    }}
-                    onBlur={() =>
-                      setLoanRemainingAmortizationYearsDraft(String(Math.max(1, loanRemainingAmortizationYears)))
-                    }
-                    info="How many years remain on this loan's amortization schedule, starting today. Used only for the Balloon Refinance Analysis below."
-                  />
-                </>
-              )}
+              <PercentField
+                id="loanInterestRatePct"
+                label={
+                  financingMode === "subjectTo" ? "Existing Mortgage Interest Rate" : "Seller Financing Interest Rate"
+                }
+                draft={percentDraft.loanInterestRatePct}
+                onChange={(raw) => handlePercentChange("loanInterestRatePct", raw)}
+                onBlur={() => handlePercentBlur("loanInterestRatePct")}
+                info="Decimals are allowed. Drives the amortization schedule, principal-paydown and ROI projections, the Balloon Refinance Analysis below, the printable report, and the Excel export -- never the monthly payment field above."
+              />
+              <IntegerField
+                id="loanRemainingAmortizationYears"
+                label="Remaining Amortization (Years)"
+                draft={loanRemainingAmortizationYearsDraft}
+                onChange={(raw) => {
+                  setLoanRemainingAmortizationYearsDraft(raw);
+                  setLoanRemainingAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                }}
+                onBlur={() =>
+                  setLoanRemainingAmortizationYearsDraft(String(Math.max(1, loanRemainingAmortizationYears)))
+                }
+                info="How many years remain on this loan's amortization schedule, starting today. Drives the amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export."
+              />
             </div>
 
             <PropertyTaxSection
@@ -7787,6 +7872,24 @@ export default function SharedHousingCalculator() {
               }
             />
             </>
+          )}
+
+          {(financingMode === "subjectTo" || financingMode === "sellerFinancing") && (
+            <AmortizationScheduleBlock
+              title={financingMode === "subjectTo" ? "Existing Mortgage Amortization Schedule" : "Seller Financing Amortization Schedule"}
+              schedule={existingMortgageAmortization.schedule}
+              disclosure={financingMode === "subjectTo" ? SUBJECT_TO_AMORTIZATION_DISCLOSURE : undefined}
+              note={
+                financingMode === "subjectTo"
+                  ? "Calculated from the Existing Mortgage Interest Rate and Remaining Amortization (Years) above -- never from the entered PITI payment, so taxes and insurance are never mistaken for principal or interest here."
+                  : "Calculated from the Seller Financing Interest Rate and Remaining Amortization (Years) above."
+              }
+              csvFilename={
+                financingMode === "subjectTo"
+                  ? "subject-to-existing-mortgage-amortization-schedule.csv"
+                  : "seller-financing-amortization-schedule.csv"
+              }
+            />
           )}
 
           {financingMode === "subjectTo" && (
@@ -8061,73 +8164,14 @@ export default function SharedHousingCalculator() {
               </div>
 
               {/* Amortization schedule: a complete, internally generated
-                  360-payment schedule. The first 12 payments are shown
-                  by default; a visitor may expand to all 360, collapse
-                  back, or download the complete schedule as a CSV. */}
-              <div className="mt-8 pt-6 border-t border-line-dark">
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setAmortizationOpen((v) => !v)}
-                    aria-expanded={amortizationOpen}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    {amortizationOpen ? "Hide" : "View"} Estimated Amortization Schedule
-                  </button>
-                  <button
-                    type="button"
-                    onClick={downloadAmortizationCsv}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    Download Amortization Schedule as CSV
-                  </button>
-                </div>
-
-                {amortizationOpen && (
-                  <div className="mt-5">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs sm:text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b border-line-dark text-left text-ink/60">
-                            <th className="py-2 pr-3 font-medium">Payment #</th>
-                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
-                            <th className="py-2 pr-3 font-medium">Principal Paid</th>
-                            <th className="py-2 pr-3 font-medium">Interest Paid</th>
-                            <th className="py-2 pr-3 font-medium">Total Payment</th>
-                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(amortizationShowAll
-                            ? traditionalAmortization.schedule
-                            : traditionalAmortization.schedule.slice(0, 12)
-                          ).map((row) => (
-                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
-                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {traditionalAmortization.schedule.length > 12 && (
-                      <button
-                        type="button"
-                        onClick={() => setAmortizationShowAll((v) => !v)}
-                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
-                      >
-                        {amortizationShowAll
-                          ? "Show First 12 Payments"
-                          : `View All ${traditionalAmortization.schedule.length} Payments`}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+                  360-payment schedule, shown as a clean annual summary
+                  by default with an option to expand to the full
+                  monthly detail or download it as a CSV. */}
+              <AmortizationScheduleBlock
+                title="Amortization Schedule"
+                schedule={traditionalAmortization.schedule}
+                csvFilename="traditional-financing-amortization-schedule.csv"
+              />
             </div>
           )}
 
@@ -8220,33 +8264,29 @@ export default function SharedHousingCalculator() {
                     onBlur={() => handleFinancingBlur("hybridSubjectToPITI")}
                     helperText="The buyer takes over making this existing monthly payment."
                   />
-                  {hybridBalloonExists && (
-                    <>
-                      <PercentField
-                        id="hybridExistingMortgageRatePct"
-                        label="Existing Mortgage Interest Rate"
-                        draft={percentDraft.hybridExistingMortgageRatePct}
-                        onChange={(raw) => handlePercentChange("hybridExistingMortgageRatePct", raw)}
-                        onBlur={() => handlePercentBlur("hybridExistingMortgageRatePct")}
-                        info="Decimals are allowed. Used only for the Balloon Refinance Analysis's projected loan-balance calculation below, never for the monthly payment above."
-                      />
-                      <IntegerField
-                        id="hybridExistingMortgageAmortizationYears"
-                        label="Remaining Amortization (Years)"
-                        draft={hybridExistingMortgageAmortizationYearsDraft}
-                        onChange={(raw) => {
-                          setHybridExistingMortgageAmortizationYearsDraft(raw);
-                          setHybridExistingMortgageAmortizationYears(Math.max(1, parseTypedInt(raw)));
-                        }}
-                        onBlur={() =>
-                          setHybridExistingMortgageAmortizationYearsDraft(
-                            String(Math.max(1, hybridExistingMortgageAmortizationYears))
-                          )
-                        }
-                        info="How many years remain on the existing mortgage's amortization schedule, starting today. Used only for the Balloon Refinance Analysis below."
-                      />
-                    </>
-                  )}
+                  <PercentField
+                    id="hybridExistingMortgageRatePct"
+                    label="Existing Mortgage Interest Rate"
+                    draft={percentDraft.hybridExistingMortgageRatePct}
+                    onChange={(raw) => handlePercentChange("hybridExistingMortgageRatePct", raw)}
+                    onBlur={() => handlePercentBlur("hybridExistingMortgageRatePct")}
+                    info="Decimals are allowed. Kept separate from the Hybrid Seller-Finance Interest Rate below -- drives this loan's own amortization schedule, principal-paydown and ROI projections, the Balloon Refinance Analysis below, the printable report, and the Excel export, never the monthly payment above."
+                  />
+                  <IntegerField
+                    id="hybridExistingMortgageAmortizationYears"
+                    label="Remaining Amortization (Years)"
+                    draft={hybridExistingMortgageAmortizationYearsDraft}
+                    onChange={(raw) => {
+                      setHybridExistingMortgageAmortizationYearsDraft(raw);
+                      setHybridExistingMortgageAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                    }}
+                    onBlur={() =>
+                      setHybridExistingMortgageAmortizationYearsDraft(
+                        String(Math.max(1, hybridExistingMortgageAmortizationYears))
+                      )
+                    }
+                    info="How many years remain on the existing mortgage's amortization schedule, starting today. Drives this loan's own amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export."
+                  />
                 </div>
               </div>
 
@@ -8328,11 +8368,11 @@ export default function SharedHousingCalculator() {
                     <div className="mt-6 grid sm:grid-cols-2 gap-5">
                       <PercentField
                         id="hybridSellerFinanceRatePct"
-                        label="Seller Finance Interest Rate"
+                        label="Hybrid Seller-Finance Interest Rate"
                         draft={percentDraft.hybridSellerFinanceRatePct}
                         onChange={(raw) => handlePercentChange("hybridSellerFinanceRatePct", raw)}
                         onBlur={() => handlePercentBlur("hybridSellerFinanceRatePct")}
-                        info="Allows decimals, e.g. 2.5%."
+                        info="Allows decimals, e.g. 2.5%. Kept separate from the Existing Mortgage Interest Rate above -- drives this loan's own amortization schedule, ROI projection, and Excel export."
                       />
                       <ReadOnlyStat
                         label="Seller Finance Amortization Term"
@@ -8386,6 +8426,20 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
 
+              {/* Existing Subject-To Mortgage Amortization Schedule: this
+                  loan originated before the acquisition date, so it is
+                  always shown with the estimation disclosure and kept
+                  completely separate from the Hybrid Seller-Finance
+                  Amortization Schedule below -- its own Existing Mortgage
+                  Interest Rate and Remaining Amortization (Years), never
+                  the seller-finance rate or term. */}
+              <AmortizationScheduleBlock
+                title="Existing Subject-To Mortgage Amortization Schedule"
+                schedule={hybridExistingMortgageAmortization.schedule}
+                disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+                csvFilename="hybrid-existing-mortgage-amortization-schedule.csv"
+              />
+
               <BalloonRefinanceAnalysisPanel
                 balloonExists={hybridBalloonExists}
                 onToggleExists={setHybridBalloonExists}
@@ -8417,75 +8471,28 @@ export default function SharedHousingCalculator() {
                 }
               />
 
-              {/* Seller Finance Amortization Schedule: covers only the
-                  seller-financed balance, and only appears when monthly
-                  seller-finance payments are required -- when they are
-                  not required, the balance simply carries unamortized
-                  to the balloon date, so there is no schedule to show. */}
-              {hybridSellerFinancePaymentsRequired && (
+              {/* Hybrid Seller-Finance Amortization Schedule: covers only
+                  the seller-financed balance, using the Hybrid
+                  Seller-Finance Interest Rate (never the Existing
+                  Mortgage Interest Rate above), and only appears when
+                  monthly seller-finance payments are required -- when
+                  they are not required, the balance simply carries
+                  unamortized to the balloon date, so there is no
+                  schedule to show. */}
+              {hybridSellerFinancePaymentsRequired ? (
+                <AmortizationScheduleBlock
+                  title="Hybrid Seller-Finance Amortization Schedule"
+                  schedule={hybridAmortization.schedule}
+                  csvFilename="hybrid-seller-finance-amortization-schedule.csv"
+                />
+              ) : (
                 <div className="mt-8 pt-6 border-t border-line-dark">
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setHybridAmortizationOpen((v) => !v)}
-                      aria-expanded={hybridAmortizationOpen}
-                      className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                    >
-                      {hybridAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
-                    </button>
-                    <button
-                      type="button"
-                      onClick={downloadHybridAmortizationCsv}
-                      className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                    >
-                      Download Seller Finance Amortization Schedule as CSV
-                    </button>
-                  </div>
-
-                  {hybridAmortizationOpen && (
-                    <div className="mt-5">
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs sm:text-sm border-collapse">
-                          <thead>
-                            <tr className="border-b border-line-dark text-left text-ink/60">
-                              <th className="py-2 pr-3 font-medium">Payment #</th>
-                              <th className="py-2 pr-3 font-medium">Beginning Balance</th>
-                              <th className="py-2 pr-3 font-medium">Principal Paid</th>
-                              <th className="py-2 pr-3 font-medium">Interest Paid</th>
-                              <th className="py-2 pr-3 font-medium">Total Payment</th>
-                              <th className="py-2 pr-3 font-medium">Ending Balance</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(hybridAmortizationShowAll
-                              ? hybridAmortization.schedule
-                              : hybridAmortization.schedule.slice(0, 12)
-                            ).map((row) => (
-                              <tr key={row.paymentNumber} className="border-b border-line-dark/40">
-                                <td className="py-1.5 pr-3">{row.paymentNumber}</td>
-                                <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
-                                <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
-                                <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
-                                <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
-                                <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      {hybridAmortization.schedule.length > 12 && (
-                        <button
-                          type="button"
-                          onClick={() => setHybridAmortizationShowAll((v) => !v)}
-                          className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
-                        >
-                          {hybridAmortizationShowAll
-                            ? "Show First 12 Payments"
-                            : `View All ${hybridAmortization.schedule.length} Payments`}
-                        </button>
-                      )}
-                    </div>
-                  )}
+                  <p className="eyebrow text-ink/70 mb-2">Hybrid Seller-Finance Amortization Schedule</p>
+                  <p className="text-xs text-ink/50 leading-relaxed">
+                    No monthly seller-finance payments are required for this deal, so the
+                    seller-financed balance is not amortized -- it carries in full, unchanged, until
+                    the balloon date.
+                  </p>
                 </div>
               )}
             </div>
@@ -9020,135 +9027,37 @@ export default function SharedHousingCalculator() {
                 stackRefinanceDetail
               />
 
-              {/* Bank Loan Amortization Schedule */}
-              <div className="mt-8 pt-6 border-t border-line-dark">
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setStackBankAmortizationOpen((v) => !v)}
-                    aria-expanded={stackBankAmortizationOpen}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    {stackBankAmortizationOpen ? "Hide" : "View"} Bank Loan Amortization Schedule
-                  </button>
-                  <button
-                    type="button"
-                    onClick={downloadStackBankAmortizationCsv}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    Download Bank Loan Amortization Schedule as CSV
-                  </button>
-                </div>
-                {stackBankAmortizationOpen && (
-                  <div className="mt-5">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs sm:text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b border-line-dark text-left text-ink/60">
-                            <th className="py-2 pr-3 font-medium">Payment #</th>
-                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
-                            <th className="py-2 pr-3 font-medium">Principal</th>
-                            <th className="py-2 pr-3 font-medium">Interest</th>
-                            <th className="py-2 pr-3 font-medium">Principal and Interest Payment</th>
-                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(stackBankAmortizationShowAll
-                            ? stackBankAmortization.schedule
-                            : stackBankAmortization.schedule.slice(0, 12)
-                          ).map((row) => (
-                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
-                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {stackBankAmortization.schedule.length > 12 && (
-                      <button
-                        type="button"
-                        onClick={() => setStackBankAmortizationShowAll((v) => !v)}
-                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
-                      >
-                        {stackBankAmortizationShowAll
-                          ? "Show First 12 Payments"
-                          : `View All ${stackBankAmortization.schedule.length} Payments`}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+              {/* Bank Loan Amortization Schedule: the first-position
+                  bank/DSCR loan, always shown separately from the
+                  second-position seller-carried loan below -- never
+                  blended. */}
+              <AmortizationScheduleBlock
+                title="Bank Loan Amortization Schedule"
+                schedule={stackBankAmortization.schedule}
+                csvFilename="stack-method-bank-loan-amortization-schedule.csv"
+              />
 
-              {/* Seller Finance Amortization Schedule */}
-              <div className="mt-8 pt-6 border-t border-line-dark">
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setStackSellerAmortizationOpen((v) => !v)}
-                    aria-expanded={stackSellerAmortizationOpen}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    {stackSellerAmortizationOpen ? "Hide" : "View"} Seller Finance Amortization Schedule
-                  </button>
-                  <button
-                    type="button"
-                    onClick={downloadStackSellerAmortizationCsv}
-                    className="inline-flex items-center gap-2 border border-line-dark px-4 py-2 eyebrow text-ink/70 hover:border-brass hover:text-ink transition-colors"
-                  >
-                    Download Seller Finance Amortization Schedule as CSV
-                  </button>
+              {/* Seller Finance Amortization Schedule: the second-position
+                  seller-carried loan, and only appears when monthly
+                  seller-finance payments are required -- when they are
+                  not required, the balance simply carries unamortized to
+                  the balloon date, so there is no schedule to show. */}
+              {stackSellerFinancePaymentsRequired ? (
+                <AmortizationScheduleBlock
+                  title="Seller-Carried Second Amortization Schedule"
+                  schedule={stackSellerAmortization.schedule}
+                  csvFilename="stack-method-seller-finance-amortization-schedule.csv"
+                />
+              ) : (
+                <div className="mt-8 pt-6 border-t border-line-dark">
+                  <p className="eyebrow text-ink/70 mb-2">Seller-Carried Second Amortization Schedule</p>
+                  <p className="text-xs text-ink/50 leading-relaxed">
+                    No monthly seller-finance payments are required for this deal, so the
+                    seller-financed balance is not amortized -- it carries in full, unchanged, until
+                    the balloon date.
+                  </p>
                 </div>
-                {stackSellerAmortizationOpen && (
-                  <div className="mt-5">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs sm:text-sm border-collapse">
-                        <thead>
-                          <tr className="border-b border-line-dark text-left text-ink/60">
-                            <th className="py-2 pr-3 font-medium">Payment #</th>
-                            <th className="py-2 pr-3 font-medium">Beginning Balance</th>
-                            <th className="py-2 pr-3 font-medium">Principal</th>
-                            <th className="py-2 pr-3 font-medium">Interest</th>
-                            <th className="py-2 pr-3 font-medium">Seller Finance Payment</th>
-                            <th className="py-2 pr-3 font-medium">Ending Balance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(stackSellerAmortizationShowAll
-                            ? stackSellerAmortization.schedule
-                            : stackSellerAmortization.schedule.slice(0, 12)
-                          ).map((row) => (
-                            <tr key={row.paymentNumber} className="border-b border-line-dark/40">
-                              <td className="py-1.5 pr-3">{row.paymentNumber}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.beginningBalance)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.principalPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.interestPaid)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.totalPayment)}</td>
-                              <td className="py-1.5 pr-3">{formatCents(row.endingBalance)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {stackSellerAmortization.schedule.length > 12 && (
-                      <button
-                        type="button"
-                        onClick={() => setStackSellerAmortizationShowAll((v) => !v)}
-                        className="mt-4 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
-                      >
-                        {stackSellerAmortizationShowAll
-                          ? "Show First 12 Payments"
-                          : `View All ${stackSellerAmortization.schedule.length} Payments`}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* Co-Living Underwriting note: the existing shared-housing
                   underwriting fields and results immediately below this
@@ -10641,6 +10550,18 @@ export default function SharedHousingCalculator() {
             />
           )}
 
+          {financingMode === "traditional" && (
+            <AmortizationPrintCard title="Amortization Schedule" schedule={traditionalAmortization.schedule} />
+          )}
+
+          {financingMode === "subjectTo" && (
+            <AmortizationPrintCard
+              title="Existing Mortgage Amortization Schedule"
+              schedule={existingMortgageAmortization.schedule}
+              disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+            />
+          )}
+
           {financingMode === "subjectTo" && subjectToBalloonAnalysis && (
             <BalloonRefinancePrintCard
               analysis={subjectToBalloonAnalysis}
@@ -10653,6 +10574,13 @@ export default function SharedHousingCalculator() {
             />
           )}
 
+          {financingMode === "sellerFinancing" && (
+            <AmortizationPrintCard
+              title="Seller Financing Amortization Schedule"
+              schedule={existingMortgageAmortization.schedule}
+            />
+          )}
+
           {financingMode === "sellerFinancing" && sellerFinancingBalloonAnalysis && (
             <BalloonRefinancePrintCard
               analysis={sellerFinancingBalloonAnalysis}
@@ -10662,6 +10590,21 @@ export default function SharedHousingCalculator() {
                   value: sellerFinancingBalloonAnalysis.sellerFinanceBalanceAtBalloon,
                 },
               ]}
+            />
+          )}
+
+          {financingMode === "hybrid" && (
+            <AmortizationPrintCard
+              title="Existing Subject-To Mortgage Amortization Schedule"
+              schedule={hybridExistingMortgageAmortization.schedule}
+              disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+            />
+          )}
+
+          {financingMode === "hybrid" && hybridSellerFinancePaymentsRequired && (
+            <AmortizationPrintCard
+              title="Hybrid Seller-Finance Amortization Schedule"
+              schedule={hybridAmortization.schedule}
             />
           )}
 
@@ -10842,6 +10785,17 @@ export default function SharedHousingCalculator() {
                 <span className="text-[13pt] font-bold">{formatCents(results.monthlyHousingPayment)}</span>
               </div>
             </div>
+          )}
+
+          {financingMode === "stackMethod" && (
+            <AmortizationPrintCard title="Bank Loan Amortization Schedule" schedule={stackBankAmortization.schedule} />
+          )}
+
+          {financingMode === "stackMethod" && stackSellerFinancePaymentsRequired && (
+            <AmortizationPrintCard
+              title="Seller-Carried Second Amortization Schedule"
+              schedule={stackSellerAmortization.schedule}
+            />
           )}
 
           {financingMode === "stackMethod" && stackBalloonAnalysis && (
