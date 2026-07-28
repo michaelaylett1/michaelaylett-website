@@ -101,9 +101,11 @@ import {
   buildAnnualAmortizationSummary,
   calculateMonthlyPaymentForTerm,
   remainingBalanceAfterMonths,
+  resolveEffectiveAmortizationTerm,
   SUBJECT_TO_AMORTIZATION_DISCLOSURE,
   type AmortizationRow,
   type AnnualAmortizationRow,
+  type EffectiveAmortizationTerm,
 } from "@/lib/amortization";
 
 // ---------------------------------------------------------------------
@@ -3500,6 +3502,41 @@ function AmortizationScheduleBlock({
   );
 }
 
+// Shown alongside <AmortizationScheduleBlock> for Subject To and
+// Hybrid's existing-mortgage leg specifically, since the remaining
+// amortization term for those loans is optional (see
+// resolveEffectiveAmortizationTerm in lib/amortization.ts). Renders
+// nothing at all once a usable term exists -- either entered directly
+// or successfully estimated -- since <AmortizationScheduleBlock>
+// already renders the schedule itself (with an "(Estimated)" note) in
+// that case. This component only covers the two "no schedule" cases:
+// an entered payment that mathematically can never pay the loan off
+// (a real problem worth a clear warning, per spec), or simply not
+// enough information yet (a neutral note, never a silently assumed
+// term such as 30 years). Print-safe: the print: classes are inert
+// outside of print media, so the same markup works on-page and in the
+// printable report without a second copy.
+function AmortizationEstimateStatus({ term }: { term: EffectiveAmortizationTerm }) {
+  if (term.months !== null) return null;
+  if (term.insufficientPayment) {
+    return (
+      <p className="mt-6 print:mt-2 text-xs print:text-[8pt] text-red-700 bg-red-50 border border-red-200 rounded p-3 print:p-2 leading-relaxed print:break-inside-avoid-page">
+        <span className="font-semibold">Amortization schedule unavailable: </span>
+        the entered monthly principal and interest payment does not cover interest on this balance at
+        the entered rate, so the loan would never amortize at that payment. Enter the actual remaining
+        amortization term instead, or double-check the payment and interest rate.
+      </p>
+    );
+  }
+  return (
+    <p className="mt-6 print:mt-2 text-xs print:text-[8pt] text-ink/60 bg-paper-2 border border-line-dark rounded p-3 print:p-2 leading-relaxed print:break-inside-avoid-page">
+      The remaining amortization schedule cannot be calculated accurately until more loan information
+      is provided. Enter the remaining amortization term if it is known, or the loan&apos;s actual
+      monthly principal and interest payment so the term can be estimated.
+    </p>
+  );
+}
+
 // ---------------------------------------------------------------------
 // Breakdown row types, shared by the on-page table, CSV export, and the
 // printable summary
@@ -3771,24 +3808,88 @@ export default function SharedHousingCalculator() {
   // Subject To and Seller Financing already share the same underlying
   // loan-balance/monthly-payment fields (see the FinancingKey block
   // above and the shared input section below); they now also share
-  // these two fields, used only by the Balloon Refinance Analysis to
-  // project that same loan's remaining balance at the balloon date via
-  // its true amortization schedule. Never used for the existing
-  // PITI/operating-expense math, which continues to read only
-  // financing.monthlyPayment exactly as before.
-  const [loanRemainingAmortizationYears, setLoanRemainingAmortizationYears] = useState(30);
-  const [loanRemainingAmortizationYearsDraft, setLoanRemainingAmortizationYearsDraft] = useState("30");
+  // these two fields, used by the amortization schedule, Balloon
+  // Refinance Analysis, and 30-Year ROI Projection to project that same
+  // loan's remaining balance over time via its true amortization
+  // schedule. Never used for the existing PITI/operating-expense math,
+  // which continues to read only financing.monthlyPayment exactly as
+  // before.
+  //
+  // Both null (blank) by default -- the remaining term on an existing,
+  // assumed loan is very often simply not known, and this calculator
+  // must never silently assume a specific term (e.g. 30 years) on the
+  // person's behalf. If left blank, resolveEffectiveAmortizationTerm
+  // (see subjectToEffectiveAmortization below) falls back to
+  // mathematically estimating the term from loanKnownMonthlyPIPayment
+  // when that is entered, and otherwise the amortization schedule/
+  // balloon projection/ROI paydown for this leg simply is not shown,
+  // without blocking the rest of the underwriting calculation.
+  const [loanRemainingAmortizationYears, setLoanRemainingAmortizationYears] = useState<number | null>(
+    null
+  );
+  const [loanRemainingAmortizationYearsDraft, setLoanRemainingAmortizationYearsDraft] = useState("");
+  // The loan's actual monthly principal-and-interest payment (never
+  // PITI), entered only when the remaining term itself is not known --
+  // used solely to solve for that remaining term mathematically. Kept
+  // completely separate from financing.monthlyPayment (which may be a
+  // PITI figure and drives the real PITI/operating-expense math) so
+  // this estimate can never be contaminated by taxes or insurance.
+  const [loanKnownMonthlyPIPayment, setLoanKnownMonthlyPIPayment] = useState<number | null>(null);
+  const [loanKnownMonthlyPIPaymentDraft, setLoanKnownMonthlyPIPaymentDraft] = useState("");
 
   // Hybrid's existing subject-to first mortgage has the same gap: only
   // a monthly PITI payment is collected (financing.hybridSubjectToPITI),
-  // never a rate or remaining term, so this pair exists solely to
-  // project that mortgage's remaining balance at the balloon date.
-  const [hybridExistingMortgageAmortizationYears, setHybridExistingMortgageAmortizationYears] =
-    useState(30);
+  // never a rate or remaining term, so this pair (plus the known-payment
+  // pair below) exists to project that mortgage's remaining balance over
+  // time. Same blank-by-default, never-assume-30-years rule as above.
+  const [hybridExistingMortgageAmortizationYears, setHybridExistingMortgageAmortizationYears] = useState<
+    number | null
+  >(null);
   const [
     hybridExistingMortgageAmortizationYearsDraft,
     setHybridExistingMortgageAmortizationYearsDraft,
-  ] = useState("30");
+  ] = useState("");
+  const [hybridExistingMortgageKnownMonthlyPIPayment, setHybridExistingMortgageKnownMonthlyPIPayment] =
+    useState<number | null>(null);
+  const [
+    hybridExistingMortgageKnownMonthlyPIPaymentDraft,
+    setHybridExistingMortgageKnownMonthlyPIPaymentDraft,
+  ] = useState("");
+
+  // The single resolved answer for "how many months are left on this
+  // loan" that every Subject To / Seller Financing consumer (the
+  // on-page/print amortization schedule, Balloon Refinance Analysis,
+  // 30-Year ROI Projection, and Excel export) reads instead of each
+  // reimplementing its own fallback -- see resolveEffectiveAmortizationTerm
+  // in lib/amortization.ts for the exact precedence (entered term wins;
+  // otherwise estimate from the known payment; otherwise null).
+  const subjectToEffectiveAmortization: EffectiveAmortizationTerm = useMemo(
+    () =>
+      resolveEffectiveAmortizationTerm(
+        financing.loanBalance,
+        percent.loanInterestRatePct,
+        loanRemainingAmortizationYears,
+        loanKnownMonthlyPIPayment
+      ),
+    [financing.loanBalance, percent.loanInterestRatePct, loanRemainingAmortizationYears, loanKnownMonthlyPIPayment]
+  );
+
+  // Same resolution, independently, for Hybrid's existing mortgage leg.
+  const hybridExistingMortgageEffectiveAmortization: EffectiveAmortizationTerm = useMemo(
+    () =>
+      resolveEffectiveAmortizationTerm(
+        financing.hybridExistingMortgageBalance,
+        percent.hybridExistingMortgageRatePct,
+        hybridExistingMortgageAmortizationYears,
+        hybridExistingMortgageKnownMonthlyPIPayment
+      ),
+    [
+      financing.hybridExistingMortgageBalance,
+      percent.hybridExistingMortgageRatePct,
+      hybridExistingMortgageAmortizationYears,
+      hybridExistingMortgageKnownMonthlyPIPayment,
+    ]
+  );
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
@@ -4655,10 +4756,14 @@ export default function SharedHousingCalculator() {
     setStackRefinanceRateOverride(null);
     setStackRefinanceRateDraft(PERCENT_DEFAULTS.stackBankInterestRatePct.toFixed(2));
     setRoiProjectionOpen(false);
-    setLoanRemainingAmortizationYears(30);
-    setLoanRemainingAmortizationYearsDraft("30");
-    setHybridExistingMortgageAmortizationYears(30);
-    setHybridExistingMortgageAmortizationYearsDraft("30");
+    setLoanRemainingAmortizationYears(null);
+    setLoanRemainingAmortizationYearsDraft("");
+    setLoanKnownMonthlyPIPayment(null);
+    setLoanKnownMonthlyPIPaymentDraft("");
+    setHybridExistingMortgageAmortizationYears(null);
+    setHybridExistingMortgageAmortizationYearsDraft("");
+    setHybridExistingMortgageKnownMonthlyPIPayment(null);
+    setHybridExistingMortgageKnownMonthlyPIPaymentDraft("");
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
@@ -4848,15 +4953,14 @@ export default function SharedHousingCalculator() {
   // mistaken for principal or interest here, and that Subject To never
   // uses a full PITI payment as the amortizing payment.
   // ---------------------------------------------------------------------
-  const existingMortgageAmortization = useMemo(
-    () =>
-      buildAmortizationScheduleForTerm(
-        financing.loanBalance,
-        percent.loanInterestRatePct,
-        Math.max(1, Math.round(loanRemainingAmortizationYears * 12))
-      ),
-    [financing.loanBalance, percent.loanInterestRatePct, loanRemainingAmortizationYears]
-  );
+  const existingMortgageAmortization = useMemo(() => {
+    if (subjectToEffectiveAmortization.months === null) return { schedule: [], monthlyPayment: 0 };
+    return buildAmortizationScheduleForTerm(
+      financing.loanBalance,
+      percent.loanInterestRatePct,
+      subjectToEffectiveAmortization.months
+    );
+  }, [financing.loanBalance, percent.loanInterestRatePct, subjectToEffectiveAmortization.months]);
 
   // ---------------------------------------------------------------------
   // Hybrid (Subject To & Seller Finance Hybrid): the buyer takes over
@@ -4947,19 +5051,20 @@ export default function SharedHousingCalculator() {
   // separate from the seller-finance schedule above, using its own
   // Existing Mortgage Interest Rate and Remaining Amortization (Years),
   // never blended with the seller-finance rate or term.
-  const hybridExistingMortgageAmortization = useMemo(
-    () =>
-      buildAmortizationScheduleForTerm(
-        financing.hybridExistingMortgageBalance,
-        percent.hybridExistingMortgageRatePct,
-        Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12))
-      ),
-    [
+  const hybridExistingMortgageAmortization = useMemo(() => {
+    if (hybridExistingMortgageEffectiveAmortization.months === null) {
+      return { schedule: [], monthlyPayment: 0 };
+    }
+    return buildAmortizationScheduleForTerm(
       financing.hybridExistingMortgageBalance,
       percent.hybridExistingMortgageRatePct,
-      hybridExistingMortgageAmortizationYears,
-    ]
-  );
+      hybridExistingMortgageEffectiveAmortization.months
+    );
+  }, [
+    financing.hybridExistingMortgageBalance,
+    percent.hybridExistingMortgageRatePct,
+    hybridExistingMortgageEffectiveAmortization.months,
+  ]);
 
   // Total Monthly Housing Payment (Total PITI) = Monthly Subject-To PITI
   // Payment + Included Monthly Seller Finance Payment. The entered
@@ -5325,8 +5430,8 @@ export default function SharedHousingCalculator() {
   // Subject To has no separate seller-carried balance, so the projected
   // debt is this mortgage balance alone.
   const subjectToBalloonAnalysis = useMemo(() => {
-    if (!subjectToBalloonExists) return null;
-    const totalMonths = Math.max(1, Math.round(loanRemainingAmortizationYears * 12));
+    if (!subjectToBalloonExists || subjectToEffectiveAmortization.months === null) return null;
+    const totalMonths = subjectToEffectiveAmortization.months;
     const balloonMonths = Math.max(0, Math.round(subjectToBalloonYears * 12));
     const mortgageBalanceAtBalloon = remainingBalanceAfterMonths(
       financing.loanBalance,
@@ -5348,19 +5453,19 @@ export default function SharedHousingCalculator() {
         has70LtvContingency: subjectToBalloonHas70LtvContingency,
         purchasePrice: financing.purchasePrice,
         projectedDebtAtBalloon: mortgageBalanceAtBalloon,
-        amortizationCeilingYears: loanRemainingAmortizationYears,
+        amortizationCeilingYears: totalMonths / 12,
         debtAtYear,
       }),
       mortgageBalanceAtBalloon,
     };
   }, [
     subjectToBalloonExists,
+    subjectToEffectiveAmortization.months,
     subjectToBalloonYears,
     subjectToBalloonHas70LtvContingency,
     percent.subjectToBalloonAppreciationPct,
     financing.loanBalance,
     percent.loanInterestRatePct,
-    loanRemainingAmortizationYears,
     financing.purchasePrice,
   ]);
 
@@ -5370,8 +5475,8 @@ export default function SharedHousingCalculator() {
   // independently since each mode's balloon Yes/No, years, appreciation,
   // and 70% LTV contingency are all separate state.
   const sellerFinancingBalloonAnalysis = useMemo(() => {
-    if (!sellerFinancingBalloonExists) return null;
-    const totalMonths = Math.max(1, Math.round(loanRemainingAmortizationYears * 12));
+    if (!sellerFinancingBalloonExists || subjectToEffectiveAmortization.months === null) return null;
+    const totalMonths = subjectToEffectiveAmortization.months;
     const balloonMonths = Math.max(0, Math.round(sellerFinancingBalloonYears * 12));
     const sellerFinanceBalanceAtBalloon = remainingBalanceAfterMonths(
       financing.loanBalance,
@@ -5393,19 +5498,19 @@ export default function SharedHousingCalculator() {
         has70LtvContingency: sellerFinancingBalloonHas70LtvContingency,
         purchasePrice: financing.purchasePrice,
         projectedDebtAtBalloon: sellerFinanceBalanceAtBalloon,
-        amortizationCeilingYears: loanRemainingAmortizationYears,
+        amortizationCeilingYears: totalMonths / 12,
         debtAtYear,
       }),
       sellerFinanceBalanceAtBalloon,
     };
   }, [
     sellerFinancingBalloonExists,
+    subjectToEffectiveAmortization.months,
     sellerFinancingBalloonYears,
     sellerFinancingBalloonHas70LtvContingency,
     percent.sellerFinancingBalloonAppreciationPct,
     financing.loanBalance,
     percent.loanInterestRatePct,
-    loanRemainingAmortizationYears,
     financing.purchasePrice,
   ]);
 
@@ -5426,8 +5531,8 @@ export default function SharedHousingCalculator() {
   // assumed before the balloon -- the full hybridSellerFinancedBalanceUsed
   // is carried and is still due in full at the balloon date.
   const hybridBalloonAnalysis = useMemo(() => {
-    if (!hybridBalloonExists) return null;
-    const mortgageTotalMonths = Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12));
+    if (!hybridBalloonExists || hybridExistingMortgageEffectiveAmortization.months === null) return null;
+    const mortgageTotalMonths = hybridExistingMortgageEffectiveAmortization.months;
     const balloonMonths = Math.max(0, Math.round(hybridBalloonYears * 12));
     const mortgageBalanceAtBalloon = remainingBalanceAfterMonths(
       financing.hybridExistingMortgageBalance,
@@ -5469,10 +5574,7 @@ export default function SharedHousingCalculator() {
         has70LtvContingency: hybridBalloonHas70LtvContingency,
         purchasePrice: financing.purchasePrice,
         projectedDebtAtBalloon,
-        amortizationCeilingYears: Math.max(
-          hybridExistingMortgageAmortizationYears,
-          TRADITIONAL_NUM_PAYMENTS / 12
-        ),
+        amortizationCeilingYears: Math.max(mortgageTotalMonths / 12, TRADITIONAL_NUM_PAYMENTS / 12),
         debtAtYear,
       }),
       mortgageBalanceAtBalloon,
@@ -5480,12 +5582,12 @@ export default function SharedHousingCalculator() {
     };
   }, [
     hybridBalloonExists,
+    hybridExistingMortgageEffectiveAmortization.months,
     hybridBalloonYears,
     hybridBalloonHas70LtvContingency,
     percent.hybridBalloonAppreciationPct,
     financing.hybridExistingMortgageBalance,
     percent.hybridExistingMortgageRatePct,
-    hybridExistingMortgageAmortizationYears,
     hybridSellerFinancedBalanceUsed,
     hybridSellerFinancePaymentsRequired,
     percent.hybridSellerFinanceRatePct,
@@ -5867,8 +5969,12 @@ export default function SharedHousingCalculator() {
           label: "Existing Mortgage",
           balance: financing.loanBalance,
           ratePct: percent.loanInterestRatePct,
-          amortMonths: Math.max(1, Math.round(loanRemainingAmortizationYears * 12)),
-          active: true,
+          amortMonths: subjectToEffectiveAmortization.months ?? 1,
+          // When the remaining term is neither entered nor estimable
+          // (no balance/rate/known-payment to solve from), this leg is
+          // simply held flat in the projection -- never silently
+          // assumed to amortize over an invented term such as 30 years.
+          active: subjectToEffectiveAmortization.months !== null,
         },
       ];
     }
@@ -5878,8 +5984,8 @@ export default function SharedHousingCalculator() {
           label: "Existing Mortgage",
           balance: financing.hybridExistingMortgageBalance,
           ratePct: percent.hybridExistingMortgageRatePct,
-          amortMonths: Math.max(1, Math.round(hybridExistingMortgageAmortizationYears * 12)),
-          active: true,
+          amortMonths: hybridExistingMortgageEffectiveAmortization.months ?? 1,
+          active: hybridExistingMortgageEffectiveAmortization.months !== null,
         },
         {
           label: "Seller-Financed Balance",
@@ -5919,10 +6025,10 @@ export default function SharedHousingCalculator() {
     percent.traditionalInterestRatePct,
     financing.loanBalance,
     percent.loanInterestRatePct,
-    loanRemainingAmortizationYears,
+    subjectToEffectiveAmortization.months,
     financing.hybridExistingMortgageBalance,
     percent.hybridExistingMortgageRatePct,
-    hybridExistingMortgageAmortizationYears,
+    hybridExistingMortgageEffectiveAmortization.months,
     hybridSellerFinancedBalanceUsed,
     percent.hybridSellerFinanceRatePct,
     hybridSellerFinancePaymentsRequired,
@@ -7045,6 +7151,8 @@ export default function SharedHousingCalculator() {
         monthlyPayment: financing.monthlyPayment,
         loanInterestRatePct: percent.loanInterestRatePct,
         loanRemainingAmortizationYears,
+        loanKnownMonthlyPIPayment,
+        subjectToEffectiveAmortization,
 
         traditionalDownPaymentPct: traditionalEffectiveDownPaymentPct,
         traditionalDownPaymentAmount,
@@ -7059,6 +7167,8 @@ export default function SharedHousingCalculator() {
         hybridExistingMortgageBalance: financing.hybridExistingMortgageBalance,
         hybridExistingMortgageRatePct: percent.hybridExistingMortgageRatePct,
         hybridExistingMortgageAmortizationYears,
+        hybridExistingMortgageKnownMonthlyPIPayment,
+        hybridExistingMortgageEffectiveAmortization,
         hybridSubjectToPITI: financing.hybridSubjectToPITI,
         hybridSuggestedSellerFinancedBalance,
         hybridSellerFinancedBalanceUsed,
@@ -7129,19 +7239,6 @@ export default function SharedHousingCalculator() {
         scopeOfWorkItems: scopeOfWorkItems.map((item) => ({ name: item.name, cost: item.cost })),
         scopeOfWorkTotal,
         useItemizedScopeOfWork,
-
-        supportingDocuments: {
-          propertyFileCount: propertyImages.length,
-          propertyImageCount: propertyImages.filter((f) => f.kind === "image").length,
-          propertyPdfCount: propertyImages.filter((f) => f.kind === "pdf").length,
-          propertyFilenames: propertyImages.map((f) => f.name),
-          floorPlanUploaded: !!floorPlan,
-          floorPlanFileType: floorPlan ? (floorPlan.kind === "pdf" ? "PDF" : "Image") : null,
-          floorPlanFilename: floorPlan?.name || null,
-          padSplitUploaded: !!padSplitScreenshot,
-          padSplitFileType: padSplitScreenshot ? (padSplitScreenshot.kind === "pdf" ? "PDF" : "Image") : null,
-          padSplitFilename: padSplitScreenshot?.name || null,
-        },
 
         amortizationSchedules,
 
@@ -7953,17 +8050,47 @@ export default function SharedHousingCalculator() {
               />
               <IntegerField
                 id="loanRemainingAmortizationYears"
-                label="Remaining Amortization (Years)"
+                label="Remaining Amortization (Years) -- Optional"
                 draft={loanRemainingAmortizationYearsDraft}
                 onChange={(raw) => {
                   setLoanRemainingAmortizationYearsDraft(raw);
-                  setLoanRemainingAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                  setLoanRemainingAmortizationYears(raw.trim() === "" ? null : Math.max(1, parseTypedInt(raw)));
                 }}
-                onBlur={() =>
-                  setLoanRemainingAmortizationYearsDraft(String(Math.max(1, loanRemainingAmortizationYears)))
-                }
-                info="How many years remain on this loan's amortization schedule, starting today. Drives the amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export."
+                onBlur={() => {
+                  if (loanRemainingAmortizationYearsDraft.trim() === "") {
+                    setLoanRemainingAmortizationYears(null);
+                    setLoanRemainingAmortizationYearsDraft("");
+                    return;
+                  }
+                  setLoanRemainingAmortizationYearsDraft(
+                    String(Math.max(1, loanRemainingAmortizationYears ?? 1))
+                  );
+                }}
+                info="Optional -- leave blank if you don't know exactly how many years remain on this loan. Drives the amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export. If left blank and the loan's actual monthly principal and interest payment is entered below, the remaining term is estimated mathematically instead."
               />
+              <CurrencyField
+                id="loanKnownMonthlyPIPayment"
+                label="Known Monthly Principal & Interest Payment -- Optional"
+                draft={loanKnownMonthlyPIPaymentDraft}
+                onChange={(raw) => {
+                  setLoanKnownMonthlyPIPaymentDraft(raw);
+                  setLoanKnownMonthlyPIPayment(raw.trim() === "" ? null : parseTypedAmount(raw));
+                }}
+                onBlur={() => {
+                  if (loanKnownMonthlyPIPaymentDraft.trim() === "") {
+                    setLoanKnownMonthlyPIPayment(null);
+                    setLoanKnownMonthlyPIPaymentDraft("");
+                    return;
+                  }
+                  const clamped = round2(Math.max(0, parseTypedAmount(loanKnownMonthlyPIPaymentDraft)));
+                  setLoanKnownMonthlyPIPayment(clamped);
+                  setLoanKnownMonthlyPIPaymentDraft(formatCents(clamped));
+                }}
+                helperText="Only used when Remaining Amortization (Years) above is left blank, to estimate the remaining term mathematically from the balance, interest rate, and this payment. Principal and interest only -- never a PITI figure."
+              />
+              <div className="sm:col-span-2">
+                <AmortizationEstimateStatus term={subjectToEffectiveAmortization} />
+              </div>
             </div>
 
             <PropertyTaxSection
@@ -7992,13 +8119,18 @@ export default function SharedHousingCalculator() {
 
           {(financingMode === "subjectTo" || financingMode === "sellerFinancing") && (
             <AmortizationScheduleBlock
-              title={financingMode === "subjectTo" ? "Existing Mortgage Amortization Schedule" : "Seller Financing Amortization Schedule"}
+              title={
+                (financingMode === "subjectTo" ? "Existing Mortgage Amortization Schedule" : "Seller Financing Amortization Schedule") +
+                (subjectToEffectiveAmortization.isEstimated ? " (Estimated Remaining Term)" : "")
+              }
               schedule={existingMortgageAmortization.schedule}
               disclosure={financingMode === "subjectTo" ? SUBJECT_TO_AMORTIZATION_DISCLOSURE : undefined}
               note={
-                financingMode === "subjectTo"
-                  ? "Calculated from the Existing Mortgage Interest Rate and Remaining Amortization (Years) above -- never from the entered PITI payment, so taxes and insurance are never mistaken for principal or interest here."
-                  : "Calculated from the Seller Financing Interest Rate and Remaining Amortization (Years) above."
+                subjectToEffectiveAmortization.isEstimated
+                  ? "Remaining term estimated mathematically from the entered balance, interest rate, and known monthly principal and interest payment, since Remaining Amortization (Years) was left blank."
+                  : financingMode === "subjectTo"
+                    ? "Calculated from the Existing Mortgage Interest Rate and Remaining Amortization (Years) above -- never from the entered PITI payment, so taxes and insurance are never mistaken for principal or interest here."
+                    : "Calculated from the Seller Financing Interest Rate and Remaining Amortization (Years) above."
               }
               csvFilename={
                 financingMode === "subjectTo"
@@ -8390,19 +8522,53 @@ export default function SharedHousingCalculator() {
                   />
                   <IntegerField
                     id="hybridExistingMortgageAmortizationYears"
-                    label="Remaining Amortization (Years)"
+                    label="Remaining Amortization (Years) -- Optional"
                     draft={hybridExistingMortgageAmortizationYearsDraft}
                     onChange={(raw) => {
                       setHybridExistingMortgageAmortizationYearsDraft(raw);
-                      setHybridExistingMortgageAmortizationYears(Math.max(1, parseTypedInt(raw)));
+                      setHybridExistingMortgageAmortizationYears(
+                        raw.trim() === "" ? null : Math.max(1, parseTypedInt(raw))
+                      );
                     }}
-                    onBlur={() =>
+                    onBlur={() => {
+                      if (hybridExistingMortgageAmortizationYearsDraft.trim() === "") {
+                        setHybridExistingMortgageAmortizationYears(null);
+                        setHybridExistingMortgageAmortizationYearsDraft("");
+                        return;
+                      }
                       setHybridExistingMortgageAmortizationYearsDraft(
-                        String(Math.max(1, hybridExistingMortgageAmortizationYears))
-                      )
-                    }
-                    info="How many years remain on the existing mortgage's amortization schedule, starting today. Drives this loan's own amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export."
+                        String(Math.max(1, hybridExistingMortgageAmortizationYears ?? 1))
+                      );
+                    }}
+                    info="Optional -- leave blank if you don't know exactly how many years remain on the existing mortgage. Drives this loan's own amortization schedule, ROI projection, Balloon Refinance Analysis, and Excel export. If left blank and the loan's actual monthly principal and interest payment is entered below, the remaining term is estimated mathematically instead."
                   />
+                  <CurrencyField
+                    id="hybridExistingMortgageKnownMonthlyPIPayment"
+                    label="Known Monthly Principal & Interest Payment -- Optional"
+                    draft={hybridExistingMortgageKnownMonthlyPIPaymentDraft}
+                    onChange={(raw) => {
+                      setHybridExistingMortgageKnownMonthlyPIPaymentDraft(raw);
+                      setHybridExistingMortgageKnownMonthlyPIPayment(
+                        raw.trim() === "" ? null : parseTypedAmount(raw)
+                      );
+                    }}
+                    onBlur={() => {
+                      if (hybridExistingMortgageKnownMonthlyPIPaymentDraft.trim() === "") {
+                        setHybridExistingMortgageKnownMonthlyPIPayment(null);
+                        setHybridExistingMortgageKnownMonthlyPIPaymentDraft("");
+                        return;
+                      }
+                      const clamped = round2(
+                        Math.max(0, parseTypedAmount(hybridExistingMortgageKnownMonthlyPIPaymentDraft))
+                      );
+                      setHybridExistingMortgageKnownMonthlyPIPayment(clamped);
+                      setHybridExistingMortgageKnownMonthlyPIPaymentDraft(formatCents(clamped));
+                    }}
+                    helperText="Only used when Remaining Amortization (Years) above is left blank, to estimate the remaining term mathematically from the balance, interest rate, and this payment. Principal and interest only -- never the Monthly Subject-To PITI Payment above."
+                  />
+                  <div className="sm:col-span-2">
+                    <AmortizationEstimateStatus term={hybridExistingMortgageEffectiveAmortization} />
+                  </div>
                 </div>
               </div>
 
@@ -8550,11 +8716,20 @@ export default function SharedHousingCalculator() {
                   Interest Rate and Remaining Amortization (Years), never
                   the seller-finance rate or term. */}
               <AmortizationScheduleBlock
-                title="Existing Subject-To Mortgage Amortization Schedule"
+                title={
+                  "Existing Subject-To Mortgage Amortization Schedule" +
+                  (hybridExistingMortgageEffectiveAmortization.isEstimated ? " (Estimated Remaining Term)" : "")
+                }
                 schedule={hybridExistingMortgageAmortization.schedule}
                 disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+                note={
+                  hybridExistingMortgageEffectiveAmortization.isEstimated
+                    ? "Remaining term estimated mathematically from the entered balance, interest rate, and known monthly principal and interest payment, since Remaining Amortization (Years) was left blank."
+                    : undefined
+                }
                 csvFilename="hybrid-existing-mortgage-amortization-schedule.csv"
               />
+              <AmortizationEstimateStatus term={hybridExistingMortgageEffectiveAmortization} />
 
               <BalloonRefinanceAnalysisPanel
                 balloonExists={hybridBalloonExists}
@@ -10711,11 +10886,18 @@ export default function SharedHousingCalculator() {
           )}
 
           {financingMode === "subjectTo" && (
-            <AmortizationPrintCard
-              title="Existing Mortgage Amortization Schedule"
-              schedule={existingMortgageAmortization.schedule}
-              disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
-            />
+            <>
+              <AmortizationPrintCard
+                title={
+                  subjectToEffectiveAmortization.isEstimated
+                    ? "Existing Mortgage Amortization Schedule (Estimated Remaining Term)"
+                    : "Existing Mortgage Amortization Schedule"
+                }
+                schedule={existingMortgageAmortization.schedule}
+                disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+              />
+              <AmortizationEstimateStatus term={subjectToEffectiveAmortization} />
+            </>
           )}
 
           {financingMode === "subjectTo" && subjectToBalloonAnalysis && (
@@ -10731,10 +10913,17 @@ export default function SharedHousingCalculator() {
           )}
 
           {financingMode === "sellerFinancing" && (
-            <AmortizationPrintCard
-              title="Seller Financing Amortization Schedule"
-              schedule={existingMortgageAmortization.schedule}
-            />
+            <>
+              <AmortizationPrintCard
+                title={
+                  subjectToEffectiveAmortization.isEstimated
+                    ? "Seller Financing Amortization Schedule (Estimated Remaining Term)"
+                    : "Seller Financing Amortization Schedule"
+                }
+                schedule={existingMortgageAmortization.schedule}
+              />
+              <AmortizationEstimateStatus term={subjectToEffectiveAmortization} />
+            </>
           )}
 
           {financingMode === "sellerFinancing" && sellerFinancingBalloonAnalysis && (
@@ -10750,11 +10939,18 @@ export default function SharedHousingCalculator() {
           )}
 
           {financingMode === "hybrid" && (
-            <AmortizationPrintCard
-              title="Existing Subject-To Mortgage Amortization Schedule"
-              schedule={hybridExistingMortgageAmortization.schedule}
-              disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
-            />
+            <>
+              <AmortizationPrintCard
+                title={
+                  hybridExistingMortgageEffectiveAmortization.isEstimated
+                    ? "Existing Subject-To Mortgage Amortization Schedule (Estimated Remaining Term)"
+                    : "Existing Subject-To Mortgage Amortization Schedule"
+                }
+                schedule={hybridExistingMortgageAmortization.schedule}
+                disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
+              />
+              <AmortizationEstimateStatus term={hybridExistingMortgageEffectiveAmortization} />
+            </>
           )}
 
           {financingMode === "hybrid" && hybridSellerFinancePaymentsRequired && (

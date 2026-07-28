@@ -187,6 +187,93 @@ export function remainingBalanceAfterMonths(
   return Number.isFinite(balance) ? Math.max(0, balance) : 0;
 }
 
+/**
+ * Solves for the number of months remaining to fully amortize `principal`
+ * at `annualRatePct`, given the loan's actual monthly principal-and-
+ * interest payment, using the closed-form formula
+ * n = -ln(1 - (r*P)/M) / ln(1+r) (the algebraic inverse of
+ * calculateMonthlyPaymentForTerm). At a 0% rate this reduces to simple
+ * division (P/M), matching how a 0% note actually pays down.
+ *
+ * `insufficientPayment` is true when the payment does not even cover one
+ * month's interest at the entered rate (M <= r*P) -- the loan
+ * mathematically never amortizes at that payment, so `months` is always
+ * null in that case rather than a nonsensical negative or infinite
+ * result. `months` is also null (with `insufficientPayment: false`) for
+ * any other invalid/non-finite input (e.g. zero or negative principal,
+ * payment, or rate producing no real solution).
+ */
+export function estimateAmortizationMonthsFromPayment(
+  principal: number,
+  annualRatePct: number,
+  monthlyPayment: number
+): { months: number | null; insufficientPayment: boolean } {
+  if (!Number.isFinite(principal) || principal <= 0 || !Number.isFinite(monthlyPayment) || monthlyPayment <= 0) {
+    return { months: null, insufficientPayment: false };
+  }
+  const monthlyRate = annualRatePct / 100 / 12;
+  if (!Number.isFinite(monthlyRate) || monthlyRate <= 0) {
+    const months = principal / monthlyPayment;
+    return Number.isFinite(months) && months > 0
+      ? { months: Math.ceil(months), insufficientPayment: false }
+      : { months: null, insufficientPayment: false };
+  }
+  const interestOnlyPayment = principal * monthlyRate;
+  if (monthlyPayment <= interestOnlyPayment) {
+    return { months: null, insufficientPayment: true };
+  }
+  const ratio = 1 - (monthlyRate * principal) / monthlyPayment;
+  if (!(ratio > 0)) {
+    return { months: null, insufficientPayment: true };
+  }
+  const months = -Math.log(ratio) / Math.log(1 + monthlyRate);
+  return Number.isFinite(months) && months > 0
+    ? { months: Math.ceil(months), insufficientPayment: false }
+    : { months: null, insufficientPayment: false };
+}
+
+/** The resolved "how many months are left on this loan" answer that
+ * every Subject-To / Hybrid-existing-mortgage consumer (on-page
+ * schedule, balloon analysis, ROI projection, print report, Excel
+ * export) should use, so they always agree with each other and none of
+ * them silently invents its own fallback term:
+ *   1. An explicitly entered remaining term (in years) always wins,
+ *      exactly as entered -- never labeled as an estimate.
+ *   2. Otherwise, if the loan's actual monthly principal-and-interest
+ *      payment is known, the term is solved for mathematically from
+ *      balance + rate + payment and labeled `isEstimated: true`.
+ *   3. Otherwise (neither is known), `months` is null -- callers must
+ *      treat this as "cannot be calculated yet" rather than assuming
+ *      any particular term (e.g. 30 years). */
+export interface EffectiveAmortizationTerm {
+  months: number | null;
+  isEstimated: boolean;
+  // Only meaningful when months is null: true means a known payment WAS
+  // entered but it can't cover interest at the entered rate (a real
+  // problem worth a warning), as opposed to simply not having enough
+  // information yet.
+  insufficientPayment: boolean;
+}
+
+export function resolveEffectiveAmortizationTerm(
+  principal: number,
+  annualRatePct: number,
+  remainingYears: number | null,
+  knownMonthlyPIPayment: number | null
+): EffectiveAmortizationTerm {
+  if (remainingYears !== null && Number.isFinite(remainingYears) && remainingYears > 0) {
+    return { months: Math.max(1, Math.round(remainingYears * 12)), isEstimated: false, insufficientPayment: false };
+  }
+  if (knownMonthlyPIPayment !== null && Number.isFinite(knownMonthlyPIPayment) && knownMonthlyPIPayment > 0) {
+    const estimate = estimateAmortizationMonthsFromPayment(principal, annualRatePct, knownMonthlyPIPayment);
+    if (estimate.months !== null) {
+      return { months: estimate.months, isEstimated: true, insufficientPayment: false };
+    }
+    return { months: null, isEstimated: false, insufficientPayment: estimate.insufficientPayment };
+  }
+  return { months: null, isEstimated: false, insufficientPayment: false };
+}
+
 // Shown near every Subject-To and Hybrid-existing-mortgage amortization
 // schedule (on-page, print report, and the Excel amortization
 // worksheet) -- these loans originated before the acquisition date, so
