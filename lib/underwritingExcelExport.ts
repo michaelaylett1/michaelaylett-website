@@ -301,7 +301,9 @@ const FMT_WHOLE = "0";
 const FMT_YEARS = '0 "years"';
 // The template's own accounting-style currency format, preserved as-is
 // on every cell that already used it in the original workbook.
-const TEMPLATE_CURRENCY_FMT = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)';
+// Negative values shown in red and parentheses, zero shown as "-" --
+// matches the professional underwriting template's accounting style.
+const TEMPLATE_CURRENCY_FMT = '_("$"* #,##0.00_);_("$"* [Red]\\(#,##0.00\\)_);_("$"* "-"??_);_(@_)';
 
 const COLOR_INK = "FF12181C";
 const COLOR_BRASS = "FFC08A3E";
@@ -311,11 +313,35 @@ const FILL_RESULT: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: 
 const FILL_HEADER: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR_INK } };
 const BORDER_THIN_BOTTOM: Partial<ExcelJS.Borders> = { bottom: { style: "thin" } };
 
+// Standard financial-model font-color convention, applied automatically
+// (never needs to be set at each call site): blue for a hardcoded,
+// directly-editable input; black (the default, no override) for a
+// formula that only references cells on its own sheet; green for a
+// formula that links to another worksheet (e.g. 'Inputs'!C4 or
+// 'Scope of Work'!C12) -- so at a glance, anyone opening the workbook
+// can tell what kind of cell they're looking at without checking the
+// formula bar.
+const COLOR_INPUT_BLUE = "FF0000FF";
+const COLOR_LINKED_GREEN = "FF008000";
+
 function fmtLabel(cell: ExcelJS.Cell, opts?: { bold?: boolean; size?: number }) {
   cell.font = { bold: opts?.bold ?? true, size: opts?.size ?? 11, name: "Calibri" };
 }
 function fmtValue(cell: ExcelJS.Cell, format?: string, opts?: { emphasis?: boolean; input?: boolean }) {
-  cell.font = { bold: !!opts?.emphasis, size: 11, name: "Calibri" };
+  let colorArgb: string | undefined;
+  const v = cell.value as unknown;
+  if (opts?.input) {
+    colorArgb = COLOR_INPUT_BLUE;
+  } else if (v && typeof v === "object" && "formula" in (v as Record<string, unknown>)) {
+    const formulaText = String((v as { formula: unknown }).formula ?? "");
+    if (formulaText.includes("!")) colorArgb = COLOR_LINKED_GREEN;
+  }
+  cell.font = {
+    bold: !!opts?.emphasis,
+    size: 11,
+    name: "Calibri",
+    ...(colorArgb ? { color: { argb: colorArgb } } : {}),
+  };
   cell.alignment = { horizontal: "right", vertical: "middle" };
   if (format) cell.numFmt = format;
   if (opts?.emphasis) {
@@ -1253,6 +1279,12 @@ function writeKVBlock(
 // all-in PITI figure with no separate P&I-only variant.
 function underwritingE3IsPiti(data: UnderwritingExportData): boolean {
   if (data.financingMode === "hybrid") return true;
+  // Traditional and Stack Method always put a Principal-and-Interest-only
+  // figure in E3 (traditionalMonthlyPI / stackBankMonthlyPI) and show
+  // Annual Insurance / Annual Property Taxes as their own separate rows
+  // instead -- never a blended PITI figure -- so taxes and insurance are
+  // added back in below rather than assumed already included.
+  if (data.financingMode === "traditional" || data.financingMode === "stackMethod") return false;
   return data.paymentType === "piti";
 }
 
@@ -1384,6 +1416,34 @@ function financingNotesText(data: UnderwritingExportData): string {
       `${fmtDollarsCents(money(data.sellerDownPayment))}. See the "Financing Details" worksheet for the complete breakdown.`
     );
   }
+  if (data.financingMode === "traditional") {
+    return (
+      `Traditional financing. Estimated loan balance ${fmtDollarsCents(money(data.traditionalLoanBalance))} at ` +
+      `${data.traditionalInterestRatePct.toFixed(2)}% interest, 30-year amortization (360 monthly payments). ` +
+      `Monthly Principal and Interest: ${fmtDollarsCents(money(data.traditionalMonthlyPI))} (taxes and insurance ` +
+      `are shown as separate line items above and added to arrive at Total Monthly Housing Payment, never ` +
+      `blended into this payment). Estimated down payment: ${fmtDollarsCents(money(data.traditionalDownPaymentAmount))} ` +
+      `(${data.traditionalDownPaymentPct.toFixed(2)}% of purchase price). See the "Financing Details" worksheet ` +
+      `for the complete breakdown.`
+    );
+  }
+  if (data.financingMode === "stackMethod") {
+    const secondPart = data.stackSellerFinancePaymentsRequired
+      ? `Seller-carried second: balance ${fmtDollarsCents(money(data.stackSellerFinancedBalance))} at ` +
+        `${data.stackSellerFinanceRatePct.toFixed(2)}% interest, monthly payment ` +
+        `${fmtDollarsCents(money(data.stackMonthlySellerFinancePayment))}, ${data.stackSellerFinanceAmortizationYears}-year amortization.`
+      : `Seller-carried second: balance ${fmtDollarsCents(money(data.stackSellerFinancedBalance))}, with no ` +
+        `monthly payments required.`;
+    return (
+      `Stack Method: two separate, never-blended loans. Primary Bank/DSCR loan: balance ` +
+      `${fmtDollarsCents(money(data.stackBankLoanAmount))} at ${data.stackBankInterestRatePct.toFixed(2)}% interest, ` +
+      `monthly Principal and Interest ${fmtDollarsCents(money(data.stackBankMonthlyPI))}, ${data.stackBankAmortizationYears}-year ` +
+      `amortization (taxes and insurance are shown as separate line items above, never blended into this payment). ` +
+      `${secondPart} Combined financing: ${fmtDollarsCents(money(data.stackTotalDebtAtAcquisition))}. Down payment to seller: ` +
+      `${fmtDollarsCents(money(data.stackDownPaymentToSeller))}. See the "Financing Details" worksheet for the complete ` +
+      `per-loan breakdown, including balloon term and refinance contingency status.`
+    );
+  }
   // Hybrid
   const sellerFinancePart = data.hybridSellerFinancePaymentsRequired
     ? `Seller-financed balance ${fmtDollarsCents(money(data.hybridSellerFinancedBalanceUsed))} at ` +
@@ -1421,6 +1481,8 @@ function buildUnderwritingSheet(
   ws.getColumn(7).width = 3;
 
   const isHybrid = data.financingMode === "hybrid";
+  const isTraditional = data.financingMode === "traditional";
+  const isStack = data.financingMode === "stackMethod";
   const e3IsPiti = underwritingE3IsPiti(data);
   const leftBorder = (addr: string) => {
     ws.getCell(addr).border = { ...ws.getCell(addr).border, left: { style: "thin" } };
@@ -1437,14 +1499,32 @@ function buildUnderwritingSheet(
   });
 
   // ---- Row 3: Purchase Price / Primary Monthly Payment ----
+  // Traditional and Stack Method both always put a Principal-and-Interest
+  // -only figure here (never a blended PITI figure -- see
+  // underwritingE3IsPiti above), so Annual Insurance and Annual Property
+  // Taxes below are never double-counted for those two structures.
+  const primaryPaymentValue = isHybrid
+    ? data.hybridSubjectToPITI
+    : isTraditional
+      ? data.traditionalMonthlyPI
+      : isStack
+        ? data.stackBankMonthlyPI
+        : data.monthlyPayment;
+  const primaryPaymentLabel = isHybrid
+    ? "Primary Monthly Payment (PITI)"
+    : isTraditional
+      ? "Primary Monthly Payment (P&I)"
+      : isStack
+        ? "Primary Loan Monthly Payment (P&I)"
+        : "Primary Monthly Payment (P&I / PITI)";
   ws.getCell("B3").value = "Purchase Price";
   fmtLabel(ws.getCell("B3"));
   leftBorder("B3");
   fmtValue(ws.getCell("C3"), TEMPLATE_CURRENCY_FMT, { input: true });
   ws.getCell("C3").value = money(data.purchasePrice);
   fmtValue(ws.getCell("E3"), TEMPLATE_CURRENCY_FMT, { input: true });
-  ws.getCell("E3").value = money(isHybrid ? data.hybridSubjectToPITI : data.monthlyPayment);
-  ws.getCell("F3").value = "Primary Monthly Payment (P&I / PITI)";
+  ws.getCell("E3").value = money(primaryPaymentValue);
+  ws.getCell("F3").value = primaryPaymentLabel;
   ws.getCell("F3").font = { size: 10, name: "Calibri" };
   ws.getCell("F3").border = { right: { style: "thin" } };
 
@@ -1462,16 +1542,26 @@ function buildUnderwritingSheet(
   ws.getCell("D4").value = pct(data.vacancyPct);
   fmtValue(ws.getCell("D4"), FMT_PERCENT, { input: true });
   fmtValue(ws.getCell("E4"), TEMPLATE_CURRENCY_FMT, { input: true });
-  ws.getCell("E4").value = isHybrid ? money(data.hybridMonthlySellerFinancePayment) : 0;
-  // F4: only Hybrid actually has a second, seller-finance payment, so
-  // only Hybrid gets a label here at all -- for Subject To and Seller
-  // Financing this cell is left completely empty (no label, no dash, no
-  // 0, nothing), even though E4 to its left still holds 0 for internal
-  // formula consistency (E4 is never displayed on its own; it only ever
-  // feeds into C17/Annual Debt Payments and C23/Total Monthly Housing
-  // Payment below).
-  if (isHybrid) {
-    ws.getCell("F4").value = "Hybrid Seller-Finance Payment";
+  // Only Hybrid and Stack Method actually have a second loan payment
+  // (Hybrid's seller-financed balance / Stack's seller-carried second) --
+  // for Subject To, Seller Financing, and Traditional this cell is left
+  // completely empty (no label, no dash, no 0, nothing), even though E4
+  // to its left still holds 0 for internal formula consistency (E4 is
+  // never displayed on its own; it only ever feeds into C17/Annual Debt
+  // Payments and C23/Total Monthly Housing Payment below).
+  const secondaryPaymentValue = isHybrid
+    ? data.hybridMonthlySellerFinancePayment
+    : isStack
+      ? data.stackMonthlySellerFinancePayment
+      : 0;
+  ws.getCell("E4").value = money(secondaryPaymentValue);
+  const secondaryPaymentLabel = isHybrid
+    ? "Hybrid Seller-Finance Payment"
+    : isStack
+      ? "Seller-Carried Second Payment"
+      : null;
+  if (secondaryPaymentLabel) {
+    ws.getCell("F4").value = secondaryPaymentLabel;
     ws.getCell("F4").font = { size: 10, name: "Calibri" };
   } else {
     ws.getCell("F4").value = null;
@@ -1490,11 +1580,19 @@ function buildUnderwritingSheet(
   leftBorder("B6");
   ws.getCell("C6").value = { formula: `'Inputs'!${inputs.monthlyMaintenance}*12` } as ExcelJS.CellFormulaValue;
   fmtValue(ws.getCell("C6"), TEMPLATE_CURRENCY_FMT);
-  ws.getCell("E6").value = "Loan Balance";
+  ws.getCell("E6").value = isStack ? "Total Loan Balance" : "Loan Balance";
   ws.getCell("E6").font = { size: 11, name: "Calibri" };
+  // Stack Method's per-loan balances (Primary Bank/DSCR vs Seller-Carried
+  // Second) are never blended into one rate or one schedule -- this cell
+  // is only the combined total for the compact model; the Financing
+  // Details worksheet keeps the two balances fully separate.
   const loanBalance = isHybrid
     ? money(data.hybridExistingMortgageBalance + data.hybridSellerFinancedBalanceUsed)
-    : money(data.loanBalance);
+    : isTraditional
+      ? money(data.traditionalLoanBalance)
+      : isStack
+        ? money(data.stackTotalDebtAtAcquisition)
+        : money(data.loanBalance);
   ws.getCell("F6").value = loanBalance;
   fmtValue(ws.getCell("F6"), TEMPLATE_CURRENCY_FMT, { input: true });
   ws.getCell("F6").border = { right: { style: "thin" } };
@@ -1574,10 +1672,21 @@ function buildUnderwritingSheet(
   fmtValue(ws.getCell("C14"), TEMPLATE_CURRENCY_FMT);
 
   // ---- Row 15: Interest Rate (B/C left blank) ----
+  // Stack Method shows only its Primary Loan's rate here (to avoid
+  // overcrowding the compact model with two rates); the Seller-Carried
+  // Second's own rate, amortization, and balloon term are called out in
+  // Financing Notes below and fully detailed on the Financing Details
+  // worksheet -- never blended into one rate.
   leftBorder("B15");
-  ws.getCell("E15").value = "Interest Rate";
+  ws.getCell("E15").value = isStack ? "Primary Loan Interest Rate" : "Interest Rate";
   ws.getCell("E15").font = { size: 11, name: "Calibri" };
-  const rate = isHybrid ? pct(data.hybridExistingMortgageRatePct) : pct(data.loanInterestRatePct);
+  const rate = isHybrid
+    ? pct(data.hybridExistingMortgageRatePct)
+    : isTraditional
+      ? pct(data.traditionalInterestRatePct)
+      : isStack
+        ? pct(data.stackBankInterestRatePct)
+        : pct(data.loanInterestRatePct);
   ws.getCell("F15").value = rate;
   fmtValue(ws.getCell("F15"), FMT_PERCENT, { input: true });
 
@@ -1666,13 +1775,42 @@ function buildUnderwritingSheet(
   // ---- Row 24: blank spacer ----
   leftBorder("B24");
 
-  // ---- Rows 25-39: Capital Required ----
-  // Arrears applies to Subject To and Hybrid; Seller Financing never
-  // includes it in Total Capital Required on the website (matching
-  // SharedHousingCalculator.tsx's totalCapitalRequired computation), so
-  // it is always written as 0 here for that structure regardless of any
-  // stale Arrears value left over from switching financing modes.
-  const arrearsForExport = data.financingMode === "sellerFinancing" ? 0 : data.arrears;
+  // ---- Rows 25+: Capital Required ----
+  // Arrears applies only to Subject To and Hybrid on the website (matching
+  // SharedHousingCalculator.tsx's totalCapitalRequired computation) -- it
+  // is always written as 0 here for every other structure, regardless of
+  // any stale Arrears value left over from switching financing modes.
+  const arrearsForExport = data.financingMode === "subjectTo" || isHybrid ? data.arrears : 0;
+  // Down Payment: the generic downPaymentLabel/downPaymentForCapital pair
+  // (already correctly resolved per structure by the website -- e.g. the
+  // calculated Traditional down payment) covers every structure except
+  // Stack Method, which never uses this line item on the website (its
+  // capital math instead nets a signed Estimated Cash to Buyer at Closing
+  // adjustment, added as its own row below) -- Down Payment to Seller is
+  // shown here instead, a real Stack Method cash outlay.
+  const downPaymentRowLabel = isStack ? "Down Payment to Seller" : data.downPaymentLabel;
+  const downPaymentRowValue = isStack ? data.stackDownPaymentToSeller : data.downPaymentForCapital;
+  // Closing Costs: Subject To / Seller Financing / Hybrid use the general
+  // Purchase Price x Closing Cost Percentage calculation (unchanged).
+  // Traditional Financing uses its own Estimated Loan Balance x
+  // Traditional Closing Cost Percentage instead (matching
+  // traditionalClosingCosts in SharedHousingCalculator.tsx exactly --
+  // Loan Balance already sits at F6 above), and Stack Method uses its own
+  // Purchase Price x Stack Method Closing Cost Percentage (matching
+  // stackClosingCosts). Never the generic percentage for either.
+  const closingCostPctForRow = isTraditional
+    ? data.traditionalClosingCostPct
+    : isStack
+      ? data.stackClosingCostPct
+      : data.closingCostPct;
+  interface CapitalRowDef {
+    label: string;
+    value?: number;
+    formula?: string;
+    isClosingCosts?: boolean;
+  }
+  const capitalRowDefs: CapitalRowDef[] = [{ label: "Arrears", value: money(arrearsForExport) }];
+  capitalRowDefs.push({ label: downPaymentRowLabel, value: money(downPaymentRowValue) });
   // Renovations is a genuine cross-sheet formula linked to the "Scope of
   // Work" worksheet's grand total whenever that total is actually the
   // figure driving underwriting (data.useItemizedScopeOfWork) -- so
@@ -1685,66 +1823,94 @@ function buildUnderwritingSheet(
   // there is nothing to link to, so the resolved renovation cost is
   // written as a plain value instead, exactly matching what the website
   // itself used.
-  const renovationsRow: { row: number; label: string; value?: number; formula?: string } =
+  capitalRowDefs.push(
     data.useItemizedScopeOfWork && data.scopeOfWorkItems.length > 0
-      ? { row: 27, label: "Renovations", formula: `'Scope of Work'!C${data.scopeOfWorkItems.length + 4}` }
-      : { row: 27, label: "Renovations", value: money(data.renovationCost) };
-  const capitalRows: { row: number; label: string; value?: number; formula?: string }[] = [
-    { row: 25, label: "Arrears", value: money(arrearsForExport) },
-    { row: 26, label: data.downPaymentLabel, value: money(data.downPaymentForCapital) },
-    renovationsRow,
-    { row: 28, label: "Furniture", value: money(data.furniture) },
-    { row: 29, label: "Appliances", value: money(data.appliances) },
-    { row: 30, label: "Photos", value: money(data.photos) },
-    { row: 31, label: "Holding Costs", value: money(data.holdingCosts) },
-    { row: 32, label: "Reserves", value: money(data.reserves) },
-    { row: 33, label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) },
-    { row: 34, label: "Acquisition Cost", value: money(data.acquisitionFee) },
-    { row: 35, label: "TC Fee", value: money(data.tcFee) },
-    { row: 36, label: "LLC Entity Formation Cost", value: money(data.llcFee) },
-    { row: 37, label: "Closing Costs", formula: "C3*D37" },
-    { row: 38, label: "Agent Fee", value: money(data.agentFee) },
-    { row: 39, label: "Assignment Fee", value: money(data.assignmentFee) },
-  ];
-  for (const r of capitalRows) {
-    const labelCell = ws.getCell(r.row, 2);
-    labelCell.value = r.label;
+      ? { label: "Renovations", formula: `'Scope of Work'!C${data.scopeOfWorkItems.length + 4}` }
+      : { label: "Renovations", value: money(data.renovationCost) }
+  );
+  capitalRowDefs.push(
+    { label: "Furniture", value: money(data.furniture) },
+    { label: "Appliances", value: money(data.appliances) },
+    { label: "Photos", value: money(data.photos) },
+    { label: "Holding Costs", value: money(data.holdingCosts) },
+    { label: "Reserves", value: money(data.reserves) },
+    { label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) },
+    { label: "Acquisition Cost", value: money(data.acquisitionFee) },
+    { label: "TC Fee", value: money(data.tcFee) },
+    { label: "LLC Entity Formation Cost", value: money(data.llcFee) },
+    { label: "Closing Costs", isClosingCosts: true },
+    { label: "Agent Fee", value: money(data.agentFee) },
+    { label: "Assignment Fee", value: money(data.assignmentFee) }
+  );
+  if (isStack) {
+    // Stack Method's actual buyer cash required nets the signed Estimated
+    // Cash to Buyer at Closing (positive = cash back to the buyer,
+    // reducing capital required; negative = additional cash required) --
+    // matches stackAdjustedTotalCapitalRequired in
+    // SharedHousingCalculator.tsx exactly. No other financing structure
+    // uses this line item.
+    capitalRowDefs.push({
+      label: "Signed Buyer Closing Adjustment",
+      value: money(-data.stackEstimatedBuyerCashAtClosing),
+    });
+  }
+
+  let row = 25;
+  const firstCapitalRow = row;
+  for (const def of capitalRowDefs) {
+    const labelCell = ws.getCell(row, 2);
+    labelCell.value = def.label;
     fmtLabel(labelCell);
-    leftBorder(`B${r.row}`);
-    const valueCell = ws.getCell(r.row, 3);
-    if (r.formula) {
-      valueCell.value = { formula: r.formula } as ExcelJS.CellFormulaValue;
+    leftBorder(`B${row}`);
+    const valueCell = ws.getCell(row, 3);
+    if (def.isClosingCosts) {
+      const closingCostFormula = isTraditional ? `F6*D${row}` : `C3*D${row}`;
+      valueCell.value = { formula: closingCostFormula } as ExcelJS.CellFormulaValue;
+      fmtValue(valueCell, TEMPLATE_CURRENCY_FMT);
+      const pctCell = ws.getCell(row, 4);
+      pctCell.value = pct(closingCostPctForRow);
+      fmtValue(pctCell, FMT_PERCENT, { input: true });
+    } else if (def.formula) {
+      valueCell.value = { formula: def.formula } as ExcelJS.CellFormulaValue;
       fmtValue(valueCell, TEMPLATE_CURRENCY_FMT);
     } else {
-      valueCell.value = r.value ?? 0;
+      valueCell.value = def.value ?? 0;
       fmtValue(valueCell, TEMPLATE_CURRENCY_FMT, { input: true });
     }
-    ws.getRow(r.row).height = 15.75;
+    ws.getRow(row).height = 15.75;
+    row++;
   }
-  ws.getCell("D37").value = pct(data.closingCostPct);
-  fmtValue(ws.getCell("D37"), FMT_PERCENT, { input: true });
+  const lastCapitalRow = row - 1;
 
-  // ---- Row 40: Total Capital Required ----
-  ws.getCell("B40").value = "Total Capital Required";
-  fmtLabel(ws.getCell("B40"), { bold: true });
-  ws.getCell("C40").value = { formula: "SUM(C25:C39)" } as ExcelJS.CellFormulaValue;
-  fmtValue(ws.getCell("C40"), TEMPLATE_CURRENCY_FMT);
-  ws.getRow(40).height = 15.75;
+  // ---- Total Capital Required ----
+  const totalCapitalRow = row;
+  ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
+  fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
+  ws.getCell(totalCapitalRow, 3).value = {
+    formula: `SUM(C${firstCapitalRow}:C${lastCapitalRow})`,
+  } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
+  ws.getRow(totalCapitalRow).height = 15.75;
+  row++;
 
-  // ---- Row 41: blank spacer ----
-  leftBorder("B41");
+  // ---- blank spacer ----
+  leftBorder(`B${row}`);
+  row++;
 
-  // ---- Row 42: Cash-on-Cash Return ----
+  // ---- Cash-on-Cash Return ----
   // Guarded against a $0 Total Capital Required (which the reference
   // workbook's original =(C18*12)/C36 would have turned into #DIV/0!)
   // -- shows "-" instead, matching the site's own zero-capital display.
-  ws.getCell("B42").value = "C on C Return";
-  fmtLabel(ws.getCell("B42"), { bold: true });
-  ws.getCell("C42").value = { formula: 'IF(C40=0,"-",(C21*12)/C40)' } as ExcelJS.CellFormulaValue;
-  fmtValue(ws.getCell("C42"), FMT_PERCENT, { emphasis: true });
-  ws.getRow(42).height = 15.75;
+  const cocRow = row;
+  ws.getCell(cocRow, 2).value = "C on C Return";
+  fmtLabel(ws.getCell(cocRow, 2), { bold: true });
+  ws.getCell(cocRow, 3).value = {
+    formula: `IF(C${totalCapitalRow}=0,"-",(C21*12)/C${totalCapitalRow})`,
+  } as ExcelJS.CellFormulaValue;
+  fmtValue(ws.getCell(cocRow, 3), FMT_PERCENT, { emphasis: true });
+  ws.getRow(cocRow).height = 15.75;
 
-  const lastRow = 42;
+  const lastRow = cocRow;
 
   // ---- Full borders across the entire populated table ----
   // Thin borders on every side of every populated cell (B through F,
@@ -2287,6 +2453,19 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
     sRow++;
   }
   wb.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 0, activeTab: 0, visibility: "visible" }];
+
+  // The same compact, one-page "Underwriting" sheet used by the
+  // template-style exports (Subject To / Seller Financing / Hybrid),
+  // built through the identical shared function so every financing
+  // structure gets a visually consistent professional layout while
+  // still using structure-specific labels and formulas (Traditional's
+  // P&I-only primary payment with taxes/insurance broken out, Stack
+  // Method's separate Primary Bank/DSCR and Seller-Carried Second
+  // payments, etc. -- see buildUnderwritingSheet above). "Underwriting
+  // Summary" (above) stays the workbook's first/active tab; this sheet
+  // is purely additive.
+  const inputs = addInputsSheet(wb, data);
+  buildUnderwritingSheet(wb, data, inputs);
 
   // Balloon Analysis (only when the active mode actually has one).
   const balloon = activeBalloon(data);
