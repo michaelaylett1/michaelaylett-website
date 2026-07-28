@@ -157,6 +157,23 @@ export interface UnderwritingExportData {
   loanKnownMonthlyPIPayment: number | null;
   subjectToEffectiveAmortization: EffectiveAmortizationTerm;
 
+  // Seller Financing (fully independent from Subject To's shared fields
+  // above -- Seller Financing always represents a brand-new loan, never
+  // an existing one, so it never uses paymentType, an optional remaining
+  // term, or a known-payment estimate). sellerFinancingLoanBalance is
+  // the actual balance in use (calculated or manually overridden);
+  // sellerFinancingLoanBalanceIsManual says which. sellerFinancingMonthlyPI
+  // is always Principal and Interest only, calculated on the website from
+  // balance/rate/term via the standard amortizing-loan formula -- never
+  // PITI, and never manually entered.
+  sellerFinancingDownPaymentPct: number;
+  sellerFinancingDownPaymentAmount: number;
+  sellerFinancingLoanBalance: number;
+  sellerFinancingLoanBalanceIsManual: boolean;
+  sellerFinancingInterestRatePct: number;
+  sellerFinancingAmortizationYears: number;
+  sellerFinancingMonthlyPI: number;
+
   // Traditional
   traditionalDownPaymentPct: number;
   traditionalDownPaymentAmount: number;
@@ -1285,6 +1302,10 @@ function underwritingE3IsPiti(data: UnderwritingExportData): boolean {
   // instead -- never a blended PITI figure -- so taxes and insurance are
   // added back in below rather than assumed already included.
   if (data.financingMode === "traditional" || data.financingMode === "stackMethod") return false;
+  // Seller Financing always uses Monthly Principal & Interest only --
+  // there is no PITI/Payment Type option for this structure, and its
+  // payment must never be treated as already including taxes/insurance.
+  if (data.financingMode === "sellerFinancing") return false;
   return data.paymentType === "piti";
 }
 
@@ -1410,10 +1431,15 @@ function financingNotesText(data: UnderwritingExportData): string {
   }
   if (data.financingMode === "sellerFinancing") {
     return (
-      `Seller-financed purchase. Loan balance ${fmtDollarsCents(money(data.loanBalance))} at ` +
-      `${data.loanInterestRatePct.toFixed(2)}% interest, ${amortizationTermPhrase(data.subjectToEffectiveAmortization)}. ` +
-      `Monthly payment type: ${paymentTypeNote}. Seller down payment: ` +
-      `${fmtDollarsCents(money(data.sellerDownPayment))}. See the "Financing Details" worksheet for the complete breakdown.`
+      `Seller-financed purchase. Loan balance ${fmtDollarsCents(money(data.sellerFinancingLoanBalance))} ` +
+      `(${data.sellerFinancingLoanBalanceIsManual ? "manually overridden" : "automatically calculated as Purchase Price minus Down Payment"}) at ` +
+      `${data.sellerFinancingInterestRatePct.toFixed(2)}% interest, ${data.sellerFinancingAmortizationYears}-year ` +
+      `amortization (${data.sellerFinancingAmortizationYears * 12} monthly payments). Monthly Principal & Interest: ` +
+      `${fmtDollarsCents(money(data.sellerFinancingMonthlyPI))} (principal and interest only -- taxes and insurance ` +
+      `are always shown and added separately, never blended into this payment, and this structure never uses PITI). ` +
+      `Down payment: ${fmtDollarsCents(money(data.sellerFinancingDownPaymentAmount))} ` +
+      `(${data.sellerFinancingDownPaymentPct.toFixed(2)}% of purchase price). See the "Financing Details" worksheet ` +
+      `for the complete breakdown.`
     );
   }
   if (data.financingMode === "traditional") {
@@ -1483,6 +1509,7 @@ function buildUnderwritingSheet(
   const isHybrid = data.financingMode === "hybrid";
   const isTraditional = data.financingMode === "traditional";
   const isStack = data.financingMode === "stackMethod";
+  const isSellerFinancing = data.financingMode === "sellerFinancing";
   const e3IsPiti = underwritingE3IsPiti(data);
   const leftBorder = (addr: string) => {
     ws.getCell(addr).border = { ...ws.getCell(addr).border, left: { style: "thin" } };
@@ -1509,14 +1536,18 @@ function buildUnderwritingSheet(
       ? data.traditionalMonthlyPI
       : isStack
         ? data.stackBankMonthlyPI
-        : data.monthlyPayment;
+        : isSellerFinancing
+          ? data.sellerFinancingMonthlyPI
+          : data.monthlyPayment;
   const primaryPaymentLabel = isHybrid
     ? "Primary Monthly Payment (PITI)"
     : isTraditional
       ? "Primary Monthly Payment (P&I)"
       : isStack
         ? "Primary Loan Monthly Payment (P&I)"
-        : "Primary Monthly Payment (P&I / PITI)";
+        : isSellerFinancing
+          ? "Monthly Principal & Interest"
+          : "Primary Monthly Payment (P&I / PITI)";
   ws.getCell("B3").value = "Purchase Price";
   fmtLabel(ws.getCell("B3"));
   leftBorder("B3");
@@ -1592,7 +1623,9 @@ function buildUnderwritingSheet(
       ? money(data.traditionalLoanBalance)
       : isStack
         ? money(data.stackTotalDebtAtAcquisition)
-        : money(data.loanBalance);
+        : isSellerFinancing
+          ? money(data.sellerFinancingLoanBalance)
+          : money(data.loanBalance);
   ws.getCell("F6").value = loanBalance;
   fmtValue(ws.getCell("F6"), TEMPLATE_CURRENCY_FMT, { input: true });
   ws.getCell("F6").border = { right: { style: "thin" } };
@@ -1686,7 +1719,9 @@ function buildUnderwritingSheet(
       ? pct(data.traditionalInterestRatePct)
       : isStack
         ? pct(data.stackBankInterestRatePct)
-        : pct(data.loanInterestRatePct);
+        : isSellerFinancing
+          ? pct(data.sellerFinancingInterestRatePct)
+          : pct(data.loanInterestRatePct);
   ws.getCell("F15").value = rate;
   fmtValue(ws.getCell("F15"), FMT_PERCENT, { input: true });
 
@@ -2136,20 +2171,29 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   if (data.financingMode === "sellerFinancing") {
     return [
       { label: "Purchase Price", formula: "Underwriting!C3", format: TEMPLATE_CURRENCY_FMT },
+      { label: "Down Payment Percentage", value: pct(data.sellerFinancingDownPaymentPct), format: FMT_PERCENT, input: true },
+      {
+        label: "Down Payment Dollar Amount",
+        value: money(data.sellerFinancingDownPaymentAmount),
+        format: FMT_CURRENCY,
+        input: true,
+      },
+      {
+        label: "Seller-Finance Loan Balance",
+        value: money(data.sellerFinancingLoanBalance),
+        format: FMT_CURRENCY,
+        input: true,
+      },
+      {
+        label: "Loan Balance Source",
+        value: data.sellerFinancingLoanBalanceIsManual ? "Manual Override" : "Automatically Calculated",
+      },
       ...propertyTaxDetailRows(data),
-      { label: "Loan Balance", value: money(data.loanBalance), format: FMT_CURRENCY, input: true },
-      { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
-      { label: "Monthly Payment Type", value: data.paymentType === "piti" ? "PITI" : "Principal and Interest Only" },
-      { label: data.housingPaymentLabel, value: money(data.monthlyPayment), format: FMT_CURRENCY, input: true },
       { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
-      { label: "Loan Interest Rate", value: pct(data.loanInterestRatePct), format: FMT_PERCENT, input: true },
-      ...amortizationYearsRows(
-        "Remaining Amortization",
-        data.subjectToEffectiveAmortization,
-        data.loanRemainingAmortizationYears,
-        data.loanKnownMonthlyPIPayment
-      ),
-      { label: "Estimated Closing Cost Percentage", value: pct(data.closingCostPct), format: FMT_PERCENT, input: true },
+      { label: "Seller-Finance Interest Rate", value: pct(data.sellerFinancingInterestRatePct), format: FMT_PERCENT, input: true },
+      { label: "Amortization Term", value: data.sellerFinancingAmortizationYears, format: FMT_YEARS, input: true },
+      { label: "Monthly Principal & Interest", value: money(data.sellerFinancingMonthlyPI), format: FMT_CURRENCY },
+      { label: "Total Monthly Housing Payment", formula: "Underwriting!C23", format: TEMPLATE_CURRENCY_FMT },
       { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
     ];
   }

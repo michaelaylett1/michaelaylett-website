@@ -2210,6 +2210,13 @@ type PercentKey =
   // the Balloon Refinance Analysis's projected-balance calculation,
   // never for the existing PITI/operating-expense math.
   | "loanInterestRatePct"
+  // Seller Financing's own interest rate -- fully independent from
+  // Subject To's loanInterestRatePct above (Seller Financing represents
+  // a brand-new loan, never an existing one), used for the automatically
+  // calculated Monthly Principal & Interest payment, the amortization
+  // schedule, principal paydown, Balloon Refinance Analysis, and ROI
+  // projection.
+  | "sellerFinancingInterestRatePct"
   // Hybrid's existing subject-to first mortgage rate, used the same way
   // -- only for its Balloon Refinance Analysis.
   | "hybridExistingMortgageRatePct"
@@ -2243,6 +2250,7 @@ const PERCENT_DEFAULTS: Record<PercentKey, number> = {
   stackBankInterestRatePct: 7,
   stackSellerFinanceRatePct: 0,
   loanInterestRatePct: 6,
+  sellerFinancingInterestRatePct: 5,
   hybridExistingMortgageRatePct: 6,
   stackBalloonAppreciationPct: 2,
   subjectToBalloonAppreciationPct: 2,
@@ -3708,11 +3716,11 @@ export default function SharedHousingCalculator() {
   // Suggested Replacement Interest Rate: each structure's own current
   // underlying first-position interest rate, per spec ("default the
   // refinance interest rate to the current underlying first-position
-  // interest rate where practical"). Subject To and Seller Financing
-  // share the same first-position loan fields, so they share the same
-  // suggested rate.
+  // interest rate where practical"). Seller Financing has its own fully
+  // independent Interest Rate field (percent.sellerFinancingInterestRatePct),
+  // separate from Subject To's percent.loanInterestRatePct.
   const subjectToSuggestedRefinanceRate = percent.loanInterestRatePct;
-  const sellerFinancingSuggestedRefinanceRate = percent.loanInterestRatePct;
+  const sellerFinancingSuggestedRefinanceRate = percent.sellerFinancingInterestRatePct;
   const hybridSuggestedRefinanceRate = percent.hybridExistingMortgageRatePct;
   const stackSuggestedRefinanceRate = percent.stackBankInterestRatePct;
 
@@ -3890,6 +3898,218 @@ export default function SharedHousingCalculator() {
       hybridExistingMortgageKnownMonthlyPIPayment,
     ]
   );
+
+  // ---------------------------------------------------------------------
+  // Seller Financing: fully independent from Subject To's shared loan
+  // fields above. Seller Financing always represents a brand-new loan
+  // (never an existing one), so it gets its own Down Payment Percentage /
+  // Dollar Amount pair (synchronized, with a "last edited" tracker so
+  // editing either field never fights the other or loops -- see the
+  // resolved memos below), its own Loan Balance (automatically
+  // calculated as Purchase Price - Down Payment, with a manual-override
+  // escape hatch identical in spirit to Property Taxes Used in
+  // Underwriting above), its own Interest Rate, a required Amortization
+  // Term (never optional, unlike Subject To's Remaining Amortization
+  // Years, since this is a brand-new loan, not an existing mortgage with
+  // an unknown remaining term), and an automatically calculated,
+  // read-only Monthly Principal & Interest -- never PITI, since Seller
+  // Financing never bundles taxes/insurance into the loan payment itself
+  // (Annual Property Taxes and Annual Property Insurance stay separate,
+  // shared fields, added to Total Monthly Housing Payment exactly once).
+  // ---------------------------------------------------------------------
+  const [sellerFinancingDownPaymentPct, setSellerFinancingDownPaymentPct] = useState(10);
+  const [sellerFinancingDownPaymentPctDraft, setSellerFinancingDownPaymentPctDraft] = useState("10.00");
+  const [sellerFinancingDownPaymentAmount, setSellerFinancingDownPaymentAmount] = useState(0);
+  const [sellerFinancingDownPaymentAmountDraft, setSellerFinancingDownPaymentAmountDraft] = useState(
+    formatCents(0)
+  );
+  // "pct" (the default) means Down Payment Percentage is the controlling
+  // input and Down Payment Dollar Amount follows it; "amount" means the
+  // opposite. Whichever field the visitor typed into most recently wins,
+  // and a Purchase Price change always recalculates whichever field is
+  // NOT the current source of truth -- never both, never a loop.
+  const [sellerFinancingDownPaymentLastEdited, setSellerFinancingDownPaymentLastEdited] = useState<
+    "pct" | "amount"
+  >("pct");
+
+  // null while Seller-Finance Loan Balance is following the automatic
+  // calculation (Purchase Price - Down Payment Dollar Amount); a number
+  // once the visitor types directly into that field, exactly like
+  // Holding Costs / Hybrid Seller-Financed Balance above.
+  const [sellerFinancingLoanBalanceOverride, setSellerFinancingLoanBalanceOverride] = useState<
+    number | null
+  >(null);
+  const [sellerFinancingLoanBalanceDraft, setSellerFinancingLoanBalanceDraft] = useState(formatCents(0));
+
+  const [sellerFinancingAmortizationYears, setSellerFinancingAmortizationYears] = useState(30);
+  const [sellerFinancingAmortizationYearsDraft, setSellerFinancingAmortizationYearsDraft] = useState("30");
+
+  // Down Payment Dollar Amount: derived from Purchase Price x Down
+  // Payment Percentage unless the dollar field itself is the currently
+  // controlling input (see sellerFinancingDownPaymentLastEdited above).
+  const sellerFinancingDownPaymentAmountResolved = useMemo(() => {
+    if (sellerFinancingDownPaymentLastEdited === "amount") return sellerFinancingDownPaymentAmount;
+    return round2(Math.max(0, financing.purchasePrice) * (sellerFinancingDownPaymentPct / 100));
+  }, [
+    sellerFinancingDownPaymentLastEdited,
+    sellerFinancingDownPaymentAmount,
+    sellerFinancingDownPaymentPct,
+    financing.purchasePrice,
+  ]);
+
+  // Down Payment Percentage: derived from Down Payment Dollar Amount /
+  // Purchase Price unless the percentage field itself is the currently
+  // controlling input. A blank/zero Purchase Price leaves the percentage
+  // at whatever was last entered rather than dividing by zero.
+  const sellerFinancingDownPaymentPctResolved = useMemo(() => {
+    if (sellerFinancingDownPaymentLastEdited === "pct") return sellerFinancingDownPaymentPct;
+    if (financing.purchasePrice <= 0) return sellerFinancingDownPaymentPct;
+    return (sellerFinancingDownPaymentAmount / financing.purchasePrice) * 100;
+  }, [
+    sellerFinancingDownPaymentLastEdited,
+    sellerFinancingDownPaymentAmount,
+    sellerFinancingDownPaymentPct,
+    financing.purchasePrice,
+  ]);
+
+  // Keeps each non-controlling field's displayed draft synced to its
+  // resolved value, exactly like every other "suggested unless
+  // overridden" field pattern in this calculator (e.g. Hybrid's
+  // Seller-Financed Balance above).
+  useEffect(() => {
+    if (sellerFinancingDownPaymentLastEdited !== "pct") {
+      setSellerFinancingDownPaymentPctDraft(sellerFinancingDownPaymentPctResolved.toFixed(2));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerFinancingDownPaymentPctResolved, sellerFinancingDownPaymentLastEdited]);
+  useEffect(() => {
+    if (sellerFinancingDownPaymentLastEdited !== "amount") {
+      setSellerFinancingDownPaymentAmountDraft(formatCents(sellerFinancingDownPaymentAmountResolved));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerFinancingDownPaymentAmountResolved, sellerFinancingDownPaymentLastEdited]);
+
+  // Seller-Finance Loan Balance = Purchase Price - Down Payment Dollar
+  // Amount, never negative.
+  const sellerFinancingCalculatedLoanBalance = useMemo(
+    () => Math.max(0, round2(financing.purchasePrice - sellerFinancingDownPaymentAmountResolved)),
+    [financing.purchasePrice, sellerFinancingDownPaymentAmountResolved]
+  );
+  const sellerFinancingLoanBalanceIsManual = sellerFinancingLoanBalanceOverride !== null;
+  const sellerFinancingLoanBalanceUsed = sellerFinancingLoanBalanceIsManual
+    ? sellerFinancingLoanBalanceOverride!
+    : sellerFinancingCalculatedLoanBalance;
+
+  // Keeps the Seller-Finance Loan Balance field showing (and using) the
+  // live automatic calculation as long as it hasn't been manually
+  // overridden, exactly like Holding Costs / Hybrid Seller-Financed
+  // Balance above.
+  useEffect(() => {
+    if (!sellerFinancingLoanBalanceIsManual) {
+      setSellerFinancingLoanBalanceDraft(formatCents(sellerFinancingCalculatedLoanBalance));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerFinancingCalculatedLoanBalance, sellerFinancingLoanBalanceIsManual]);
+
+  // Monthly Principal & Interest: the standard fixed-rate amortizing-loan
+  // payment (0% interest reduces to straight-line division -- see
+  // calculateMonthlyPaymentForTerm in lib/amortization.ts), calculated
+  // from the actual loan balance in use (calculated or manually
+  // overridden), the entered Seller Financing Interest Rate, and the
+  // required Amortization Term -- never manually entered, and never a
+  // PITI figure.
+  const sellerFinancingMonthlyPI = useMemo(
+    () =>
+      round2(
+        calculateMonthlyPaymentForTerm(
+          sellerFinancingLoanBalanceUsed,
+          percent.sellerFinancingInterestRatePct,
+          Math.max(1, Math.round(sellerFinancingAmortizationYears * 12))
+        )
+      ),
+    [sellerFinancingLoanBalanceUsed, percent.sellerFinancingInterestRatePct, sellerFinancingAmortizationYears]
+  );
+
+  // The full month-by-month amortization schedule for the seller-financed
+  // loan, using the actual loan balance in use, its interest rate, and
+  // its required amortization term -- principal and interest only, never
+  // taxes or insurance.
+  const sellerFinancingAmortization = useMemo(
+    () =>
+      buildAmortizationScheduleForTerm(
+        sellerFinancingLoanBalanceUsed,
+        percent.sellerFinancingInterestRatePct,
+        Math.max(1, Math.round(sellerFinancingAmortizationYears * 12))
+      ),
+    [sellerFinancingLoanBalanceUsed, percent.sellerFinancingInterestRatePct, sellerFinancingAmortizationYears]
+  );
+
+  // Seller Financing input validation: every message below is checked
+  // against the actual resolved/used values (never the raw draft
+  // strings), so it reflects exactly what the calculations downstream
+  // will use. Showing a clear message here -- rather than silently
+  // clamping or defaulting -- is what keeps the loan balance, amortization
+  // schedule, and Excel export from ever producing NaN, Infinity, a
+  // negative balance, or a broken schedule.
+  const sellerFinancingValidationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (financingMode !== "sellerFinancing") return errors;
+
+    const purchasePrice = financing.purchasePrice;
+    const downPaymentAmount = sellerFinancingDownPaymentAmountResolved;
+    const downPaymentPct = sellerFinancingDownPaymentPctResolved;
+
+    if (
+      sellerFinancingDownPaymentLastEdited === "amount" &&
+      purchasePrice <= 0 &&
+      sellerFinancingDownPaymentAmount > 0
+    ) {
+      errors.push("Enter a Purchase Price before Down Payment Percentage can be calculated from the dollar amount.");
+    }
+    if (downPaymentAmount < 0) {
+      errors.push("Down payment cannot be negative.");
+    }
+    if (downPaymentPct < 0) {
+      errors.push("Down payment percentage cannot be negative.");
+    }
+    if (downPaymentPct > 100) {
+      errors.push("Down payment percentage cannot exceed 100%.");
+    }
+    if (purchasePrice > 0 && downPaymentAmount > purchasePrice) {
+      errors.push("Down payment cannot exceed the purchase price.");
+    }
+    if (sellerFinancingLoanBalanceIsManual && (sellerFinancingLoanBalanceOverride as number) < 0) {
+      errors.push("Seller-Finance Loan Balance cannot be negative.");
+    }
+    if (percent.sellerFinancingInterestRatePct < 0) {
+      errors.push("Seller-Finance Interest Rate cannot be negative.");
+    }
+    if (!sellerFinancingAmortizationYears || sellerFinancingAmortizationYears <= 0) {
+      errors.push("Amortization Term is required and must be greater than 0 years.");
+    }
+    if (
+      errors.length === 0 &&
+      sellerFinancingLoanBalanceUsed > 0 &&
+      sellerFinancingAmortizationYears > 0 &&
+      !(sellerFinancingMonthlyPI > 0)
+    ) {
+      errors.push("Unable to calculate Monthly Principal & Interest with the current inputs.");
+    }
+    return errors;
+  }, [
+    financingMode,
+    financing.purchasePrice,
+    sellerFinancingDownPaymentAmountResolved,
+    sellerFinancingDownPaymentPctResolved,
+    sellerFinancingDownPaymentLastEdited,
+    sellerFinancingDownPaymentAmount,
+    sellerFinancingLoanBalanceIsManual,
+    sellerFinancingLoanBalanceOverride,
+    percent.sellerFinancingInterestRatePct,
+    sellerFinancingAmortizationYears,
+    sellerFinancingLoanBalanceUsed,
+    sellerFinancingMonthlyPI,
+  ]);
 
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
@@ -4383,6 +4603,76 @@ export default function SharedHousingCalculator() {
     setHybridSellerFinancedBalanceDraft(formatCents(hybridSuggestedSellerFinancedBalance));
   }
 
+  // Seller Financing Down Payment Percentage / Dollar Amount: typing
+  // into either field marks it as the controlling input immediately
+  // (see sellerFinancingDownPaymentLastEdited above) -- the other
+  // field's draft is kept in sync by the effects above, never both at
+  // once, and never in an infinite loop, since only the actually-edited
+  // field's raw number is ever written from these handlers.
+  function handleSellerFinancingDownPaymentPctChange(raw: string) {
+    setSellerFinancingDownPaymentPctDraft(raw);
+    setSellerFinancingDownPaymentPct(parseTypedPercent(raw));
+    setSellerFinancingDownPaymentLastEdited("pct");
+  }
+  function handleSellerFinancingDownPaymentPctBlur() {
+    setSellerFinancingDownPaymentPct((prev) => {
+      const clamped = Math.min(100, Math.max(0, prev));
+      setSellerFinancingDownPaymentPctDraft(clamped.toFixed(2));
+      return clamped;
+    });
+  }
+  function handleSellerFinancingDownPaymentAmountChange(raw: string) {
+    setSellerFinancingDownPaymentAmountDraft(raw);
+    setSellerFinancingDownPaymentAmount(Math.max(0, parseTypedAmount(raw)));
+    setSellerFinancingDownPaymentLastEdited("amount");
+  }
+  function handleSellerFinancingDownPaymentAmountBlur() {
+    setSellerFinancingDownPaymentAmount((prev) => {
+      const clamped = round2(Math.max(0, prev));
+      setSellerFinancingDownPaymentAmountDraft(formatCents(clamped));
+      return clamped;
+    });
+  }
+
+  // Seller-Finance Loan Balance: typing into the field marks it as a
+  // manual override immediately, exactly like Holding Costs above. The
+  // automatic calculation resumes only via
+  // resetSellerFinancingLoanBalanceToCalculated ("Use Calculated Loan
+  // Balance") or Reset to Defaults. Never allowed to go negative.
+  function handleSellerFinancingLoanBalanceChange(raw: string) {
+    setSellerFinancingLoanBalanceDraft(raw);
+    setSellerFinancingLoanBalanceOverride(Math.max(0, parseTypedAmount(raw)));
+  }
+  function handleSellerFinancingLoanBalanceBlur() {
+    setSellerFinancingLoanBalanceOverride((prev) => {
+      const clamped = round2(Math.max(0, prev ?? 0));
+      setSellerFinancingLoanBalanceDraft(formatCents(clamped));
+      return clamped;
+    });
+  }
+  function resetSellerFinancingLoanBalanceToCalculated() {
+    setSellerFinancingLoanBalanceOverride(null);
+    setSellerFinancingLoanBalanceDraft(formatCents(sellerFinancingCalculatedLoanBalance));
+  }
+
+  // Amortization Term (Years): required, never blank -- unlike Subject
+  // To's optional Remaining Amortization (Years), a blank entry here
+  // simply resets back to the 30-year default rather than being allowed
+  // to represent "unknown", since Seller Financing is always a brand-new
+  // loan whose full term is always known/selected by the parties.
+  function handleSellerFinancingAmortizationYearsChange(raw: string) {
+    setSellerFinancingAmortizationYearsDraft(raw);
+    setSellerFinancingAmortizationYears(Math.max(1, parseTypedInt(raw)));
+  }
+  function handleSellerFinancingAmortizationYearsBlur() {
+    if (sellerFinancingAmortizationYearsDraft.trim() === "") {
+      setSellerFinancingAmortizationYears(30);
+      setSellerFinancingAmortizationYearsDraft("30");
+      return;
+    }
+    setSellerFinancingAmortizationYearsDraft(String(Math.max(1, sellerFinancingAmortizationYears)));
+  }
+
   // Property Files handlers: adding, removing, and replacing all run
   // entirely client-side (see processMediaFile above). Unsupported file
   // types are rejected with a clear error message instead of breaking
@@ -4748,7 +5038,20 @@ export default function SharedHousingCalculator() {
     setSubjectToRefinanceRateDraft(PERCENT_DEFAULTS.loanInterestRatePct.toFixed(2));
     setSellerFinancingRefinanceAtBalloon(true);
     setSellerFinancingRefinanceRateOverride(null);
-    setSellerFinancingRefinanceRateDraft(PERCENT_DEFAULTS.loanInterestRatePct.toFixed(2));
+    setSellerFinancingRefinanceRateDraft(PERCENT_DEFAULTS.sellerFinancingInterestRatePct.toFixed(2));
+    // Seller Financing: Down Payment Percentage/Amount go back to the
+    // 10% default with Percentage as the controlling field, the Loan
+    // Balance override clears so it follows the calculated value again,
+    // and Amortization Term resets to 30 years.
+    setSellerFinancingDownPaymentPct(10);
+    setSellerFinancingDownPaymentPctDraft("10.00");
+    setSellerFinancingDownPaymentAmount(0);
+    setSellerFinancingDownPaymentAmountDraft(formatCents(0));
+    setSellerFinancingDownPaymentLastEdited("pct");
+    setSellerFinancingLoanBalanceOverride(null);
+    setSellerFinancingLoanBalanceDraft(formatCents(0));
+    setSellerFinancingAmortizationYears(30);
+    setSellerFinancingAmortizationYearsDraft("30");
     setHybridRefinanceAtBalloon(true);
     setHybridRefinanceRateOverride(null);
     setHybridRefinanceRateDraft(PERCENT_DEFAULTS.hybridExistingMortgageRatePct.toFixed(2));
@@ -5474,20 +5777,27 @@ export default function SharedHousingCalculator() {
   // loan-balance/rate/amortization fields), computed completely
   // independently since each mode's balloon Yes/No, years, appreciation,
   // and 70% LTV contingency are all separate state.
+  // Seller Financing's amortization term is always known (a required
+  // field, never optional like Subject To's Remaining Amortization
+  // Years), so this analysis is never blocked by a missing term -- only
+  // by the balloon feature itself being off. Uses Seller Financing's own
+  // dedicated loan balance (calculated or manually overridden), interest
+  // rate, and amortization term, fully independent from Subject To's
+  // shared fields.
   const sellerFinancingBalloonAnalysis = useMemo(() => {
-    if (!sellerFinancingBalloonExists || subjectToEffectiveAmortization.months === null) return null;
-    const totalMonths = subjectToEffectiveAmortization.months;
+    if (!sellerFinancingBalloonExists) return null;
+    const totalMonths = Math.max(1, Math.round(sellerFinancingAmortizationYears * 12));
     const balloonMonths = Math.max(0, Math.round(sellerFinancingBalloonYears * 12));
     const sellerFinanceBalanceAtBalloon = remainingBalanceAfterMonths(
-      financing.loanBalance,
-      percent.loanInterestRatePct,
+      sellerFinancingLoanBalanceUsed,
+      percent.sellerFinancingInterestRatePct,
       totalMonths,
       balloonMonths
     );
     const debtAtYear = (year: number) =>
       remainingBalanceAfterMonths(
-        financing.loanBalance,
-        percent.loanInterestRatePct,
+        sellerFinancingLoanBalanceUsed,
+        percent.sellerFinancingInterestRatePct,
         totalMonths,
         Math.max(0, Math.round(year * 12))
       );
@@ -5505,12 +5815,12 @@ export default function SharedHousingCalculator() {
     };
   }, [
     sellerFinancingBalloonExists,
-    subjectToEffectiveAmortization.months,
+    sellerFinancingAmortizationYears,
     sellerFinancingBalloonYears,
     sellerFinancingBalloonHas70LtvContingency,
     percent.sellerFinancingBalloonAppreciationPct,
-    financing.loanBalance,
-    percent.loanInterestRatePct,
+    sellerFinancingLoanBalanceUsed,
+    percent.sellerFinancingInterestRatePct,
     financing.purchasePrice,
   ]);
 
@@ -5633,6 +5943,15 @@ export default function SharedHousingCalculator() {
     if (financingMode === "stackMethod") {
       return stackTotalMonthlyHousingPayment;
     }
+    // Seller Financing: always Monthly Principal & Interest plus Annual
+    // Property Taxes / 12 plus Annual Property Insurance / 12, added
+    // separately and exactly once -- Seller Financing never has a PITI
+    // option, so this branch never consults paymentType.
+    if (financingMode === "sellerFinancing") {
+      return round2(
+        sellerFinancingMonthlyPI + financing.annualPropertyTaxes / 12 + financing.annualPropertyInsurance / 12
+      );
+    }
     // Prevents taxes/insurance from ever being counted twice: PITI
     // already includes them, so only Principal-and-Interest-Only adds
     // them separately.
@@ -5648,6 +5967,7 @@ export default function SharedHousingCalculator() {
     traditionalMonthlyPI,
     hybridTotalMonthlyHousingPayment,
     stackTotalMonthlyHousingPayment,
+    sellerFinancingMonthlyPI,
     paymentType,
     financing.monthlyPayment,
     financing.annualPropertyTaxes,
@@ -5765,7 +6085,9 @@ export default function SharedHousingCalculator() {
           ? hybridEquityRaw
           : financingMode === "stackMethod"
             ? financing.purchasePrice - stackTotalDebtAtAcquisition
-            : financing.purchasePrice - financing.loanBalance;
+            : financingMode === "sellerFinancing"
+              ? financing.purchasePrice - sellerFinancingLoanBalanceUsed
+              : financing.purchasePrice - financing.loanBalance;
     // Hybrid's Estimated Equity is never floored at $0 -- a negative
     // result is a real, meaningful outcome (the existing mortgage plus
     // the seller-financed balance exceed the purchase price) and must be
@@ -5806,7 +6128,11 @@ export default function SharedHousingCalculator() {
     // signed adjustment against the Estimated Cash to Buyer at Closing
     // result. Only one of these is ever included, never more than one.
     const downPaymentForCapital =
-      financingMode === "traditional" ? traditionalDownPaymentAmount : financing.sellerDownPayment;
+      financingMode === "traditional"
+        ? traditionalDownPaymentAmount
+        : financingMode === "sellerFinancing"
+          ? sellerFinancingDownPaymentAmountResolved
+          : financing.sellerDownPayment;
 
     // Stack Method: Base Capital Required is every applicable capital
     // item EXCEPT the ones already fully accounted for inside Cash to
@@ -5940,6 +6266,8 @@ export default function SharedHousingCalculator() {
     stackTotalDebtAtAcquisition,
     stackClosingCosts,
     stackEstimatedBuyerCashAtClosing,
+    sellerFinancingLoanBalanceUsed,
+    sellerFinancingDownPaymentAmountResolved,
   ]);
 
   // ---------------------------------------------------------------------
@@ -5963,7 +6291,7 @@ export default function SharedHousingCalculator() {
         },
       ];
     }
-    if (financingMode === "subjectTo" || financingMode === "sellerFinancing") {
+    if (financingMode === "subjectTo") {
       return [
         {
           label: "Existing Mortgage",
@@ -5975,6 +6303,20 @@ export default function SharedHousingCalculator() {
           // simply held flat in the projection -- never silently
           // assumed to amortize over an invented term such as 30 years.
           active: subjectToEffectiveAmortization.months !== null,
+        },
+      ];
+    }
+    // Seller Financing: its own dedicated loan balance, interest rate,
+    // and required (never optional) amortization term -- always active,
+    // since the term is always known.
+    if (financingMode === "sellerFinancing") {
+      return [
+        {
+          label: "Seller-Financed Loan",
+          balance: sellerFinancingLoanBalanceUsed,
+          ratePct: percent.sellerFinancingInterestRatePct,
+          amortMonths: Math.max(1, Math.round(sellerFinancingAmortizationYears * 12)),
+          active: true,
         },
       ];
     }
@@ -6026,6 +6368,9 @@ export default function SharedHousingCalculator() {
     financing.loanBalance,
     percent.loanInterestRatePct,
     subjectToEffectiveAmortization.months,
+    sellerFinancingLoanBalanceUsed,
+    percent.sellerFinancingInterestRatePct,
+    sellerFinancingAmortizationYears,
     financing.hybridExistingMortgageBalance,
     percent.hybridExistingMortgageRatePct,
     hybridExistingMortgageEffectiveAmortization.months,
@@ -6142,9 +6487,11 @@ export default function SharedHousingCalculator() {
   const monthlyPaymentLabel =
     financingMode === "traditional"
       ? "Estimated Monthly Principal and Interest Payment"
-      : paymentType === "piti"
-        ? "Monthly PITI Payment"
-        : "Monthly Principal and Interest Payment";
+      : financingMode === "sellerFinancing"
+        ? "Monthly Principal & Interest"
+        : paymentType === "piti"
+          ? "Monthly PITI Payment"
+          : "Monthly Principal and Interest Payment";
 
   // The complete monthly housing cost (loan payment, plus taxes and
   // insurance when the payment type is Principal and Interest Only, or
@@ -6167,7 +6514,7 @@ export default function SharedHousingCalculator() {
   const housingPaymentLabel =
     financingMode === "traditional"
       ? "Estimated Monthly PITI"
-      : financingMode === "hybrid" || financingMode === "stackMethod"
+      : financingMode === "hybrid" || financingMode === "stackMethod" || financingMode === "sellerFinancing"
         ? "Total Monthly Housing Payment"
         : paymentType === "piti"
           ? "Monthly PITI Payment"
@@ -6175,13 +6522,19 @@ export default function SharedHousingCalculator() {
 
   // Print-only label: the printable report shows "Total PITI" wherever
   // the on-page/CSV label would read "Total Monthly Housing Payment"
-  // (Hybrid and Stack Method). Every other mode's label (e.g. "Estimated
-  // Monthly PITI", "Monthly Housing Payment") is unchanged in print. This
-  // is deliberately separate from housingPaymentLabel, which continues to
+  // (Hybrid and Stack Method). Seller Financing is deliberately excluded
+  // from this PITI relabeling -- its loan payment is always principal
+  // and interest only, taxes and insurance are always shown and added
+  // separately, and it must never be described as PITI anywhere,
+  // including print. Every other mode's label (e.g. "Estimated Monthly
+  // PITI", "Monthly Housing Payment") is unchanged in print. This is
+  // deliberately separate from housingPaymentLabel, which continues to
   // drive the on-page Monthly Expense Summary and the CSV/on-page Full
   // Underwriting Breakdown unchanged.
   const printHousingPaymentLabel =
-    housingPaymentLabel === "Total Monthly Housing Payment" ? "Total PITI" : housingPaymentLabel;
+    financingMode !== "sellerFinancing" && housingPaymentLabel === "Total Monthly Housing Payment"
+      ? "Total PITI"
+      : housingPaymentLabel;
 
   // Financing Structure is a single-select mode (see getFinancingStructureLabel
   // above), computed once here so the breakdown, CSV, and print report
@@ -6351,15 +6704,46 @@ export default function SharedHousingCalculator() {
                       value: formatCents(results.totalCapitalRequired),
                     },
                   ]
-                : [
-                    { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
-                    { label: "Financing Structure", value: financingStructureLabel },
-                    { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
-                    { label: "Loan Balance", value: formatCents(financing.loanBalance) },
-                    { label: "Estimated Equity", value: formatCents(results.equity) },
-                    { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
-                    { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
-                  ],
+                : financingMode === "sellerFinancing"
+                  ? [
+                      { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                      { label: "Financing Structure", value: financingStructureLabel },
+                      { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                      {
+                        label: "Down Payment Percentage",
+                        value: formatPercent(sellerFinancingDownPaymentPctResolved),
+                      },
+                      {
+                        label: "Down Payment Dollar Amount",
+                        value: formatCents(sellerFinancingDownPaymentAmountResolved),
+                      },
+                      { label: "Seller-Finance Loan Balance", value: formatCents(sellerFinancingLoanBalanceUsed) },
+                      {
+                        label: "Loan Balance Source",
+                        value: sellerFinancingLoanBalanceIsManual
+                          ? "Manual Override"
+                          : "Automatically Calculated",
+                      },
+                      { label: "Estimated Equity", value: formatCents(results.equity) },
+                      {
+                        label: "Seller Financing Interest Rate",
+                        value: formatPercent(percent.sellerFinancingInterestRatePct),
+                      },
+                      { label: "Amortization Term", value: `${sellerFinancingAmortizationYears} Years` },
+                      { label: "Monthly Principal & Interest", value: formatCents(sellerFinancingMonthlyPI) },
+                      { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
+                      { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
+                      { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
+                    ]
+                  : [
+                      { label: "Property Address", value: propertyAddress.trim() || "Not entered" },
+                      { label: "Financing Structure", value: financingStructureLabel },
+                      { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
+                      { label: "Loan Balance", value: formatCents(financing.loanBalance) },
+                      { label: "Estimated Equity", value: formatCents(results.equity) },
+                      { label: "Seller Down Payment", value: formatCents(financing.sellerDownPayment) },
+                      { label: housingPaymentLabel, value: formatCents(results.monthlyHousingPayment) },
+                    ],
       },
       {
         title: "Income",
@@ -6540,6 +6924,12 @@ export default function SharedHousingCalculator() {
       stackZeroOutOfPocket,
       stackEffectiveBankLtvPct,
       traditionalEffectiveDownPaymentPct,
+      sellerFinancingDownPaymentPctResolved,
+      sellerFinancingDownPaymentAmountResolved,
+      sellerFinancingLoanBalanceUsed,
+      sellerFinancingLoanBalanceIsManual,
+      sellerFinancingAmortizationYears,
+      sellerFinancingMonthlyPI,
     ]
   );
 
@@ -7062,7 +7452,7 @@ export default function SharedHousingCalculator() {
               balloonAtPaymentNumber: sellerFinancingBalloonExists
                 ? Math.round(sellerFinancingBalloonYears * 12)
                 : null,
-              rows: existingMortgageAmortization.schedule,
+              rows: sellerFinancingAmortization.schedule,
             },
           ];
         }
@@ -7153,6 +7543,14 @@ export default function SharedHousingCalculator() {
         loanRemainingAmortizationYears,
         loanKnownMonthlyPIPayment,
         subjectToEffectiveAmortization,
+
+        sellerFinancingDownPaymentPct: sellerFinancingDownPaymentPctResolved,
+        sellerFinancingDownPaymentAmount: sellerFinancingDownPaymentAmountResolved,
+        sellerFinancingLoanBalance: sellerFinancingLoanBalanceUsed,
+        sellerFinancingLoanBalanceIsManual,
+        sellerFinancingInterestRatePct: percent.sellerFinancingInterestRatePct,
+        sellerFinancingAmortizationYears,
+        sellerFinancingMonthlyPI,
 
         traditionalDownPaymentPct: traditionalEffectiveDownPaymentPct,
         traditionalDownPaymentAmount,
@@ -7958,7 +8356,7 @@ export default function SharedHousingCalculator() {
               or Stack Method is selected it moves into that structure's
               dedicated section below instead -- it is still the exact
               same field either way. */}
-          {(financingMode === "sellerFinancing" || financingMode === "subjectTo" || financingMode === "") && (
+          {(financingMode === "subjectTo" || financingMode === "") && (
             <>
             <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
               <CurrencyField
@@ -8040,9 +8438,7 @@ export default function SharedHousingCalculator() {
 
               <PercentField
                 id="loanInterestRatePct"
-                label={
-                  financingMode === "subjectTo" ? "Existing Mortgage Interest Rate" : "Seller Financing Interest Rate"
-                }
+                label="Existing Mortgage Interest Rate"
                 draft={percentDraft.loanInterestRatePct}
                 onChange={(raw) => handlePercentChange("loanInterestRatePct", raw)}
                 onBlur={() => handlePercentBlur("loanInterestRatePct")}
@@ -8117,26 +8513,154 @@ export default function SharedHousingCalculator() {
             </>
           )}
 
-          {(financingMode === "subjectTo" || financingMode === "sellerFinancing") && (
+          {/* Seller Financing: a brand-new loan, so this section is
+              entirely independent from Subject To's shared fields above
+              -- its own Down Payment Percentage / Dollar Amount pair
+              (synchronized, see the handlers above), its own
+              automatically-calculated-or-overridden Loan Balance, its
+              own Interest Rate, a required (never optional) Amortization
+              Term, and an automatically calculated, read-only Monthly
+              Principal & Interest. No PITI/Payment Type selector, no
+              Known Monthly Principal & Interest Payment, and no
+              Remaining Amortization (Years) -- Seller Financing always
+              calculates its own payment from balance, rate, and term. */}
+          {financingMode === "sellerFinancing" && (
+            <>
+            {sellerFinancingValidationErrors.length > 0 && (
+              <div className="mt-8 rounded border border-red-700 bg-red-50 p-4">
+                <ul className="space-y-1.5">
+                  {sellerFinancingValidationErrors.map((message) => (
+                    <li key={message} className="text-sm text-red-800 leading-relaxed inline-flex items-start gap-2">
+                      <XCircle size={16} className="mt-0.5 flex-shrink-0" aria-hidden="true" />
+                      <span>{message}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="mt-8 pt-6 border-t border-line-dark grid sm:grid-cols-2 gap-5">
+              <CurrencyField
+                id="sellerFinancingPurchasePrice"
+                label="Purchase Price"
+                draft={financingDraft.purchasePrice}
+                onChange={(raw) => handleFinancingChange("purchasePrice", raw)}
+                onBlur={() => handleFinancingBlur("purchasePrice")}
+              />
+              <div />
+              <PercentField
+                id="sellerFinancingDownPaymentPct"
+                label="Down Payment Percentage"
+                draft={sellerFinancingDownPaymentPctDraft}
+                onChange={handleSellerFinancingDownPaymentPctChange}
+                onBlur={handleSellerFinancingDownPaymentPctBlur}
+                info="Enter as a percentage, e.g. 10 for 10%, never 0.10. Automatically calculates Down Payment Dollar Amount as Purchase Price x this percentage. Editing the dollar amount instead automatically updates this percentage -- whichever field was most recently edited stays in control."
+              />
+              <CurrencyField
+                id="sellerFinancingDownPaymentAmount"
+                label="Down Payment Dollar Amount"
+                draft={sellerFinancingDownPaymentAmountDraft}
+                onChange={handleSellerFinancingDownPaymentAmountChange}
+                onBlur={handleSellerFinancingDownPaymentAmountBlur}
+                helperText="Cash paid to the seller at closing. Kept in sync with Down Payment Percentage above."
+              />
+              <CurrencyField
+                id="sellerFinancingLoanBalance"
+                label="Seller-Finance Loan Balance"
+                draft={sellerFinancingLoanBalanceDraft}
+                onChange={handleSellerFinancingLoanBalanceChange}
+                onBlur={handleSellerFinancingLoanBalanceBlur}
+                helperText="Automatically calculated as Purchase Price minus Down Payment. Editing this field directly overrides the calculated amount until “Use Calculated Loan Balance” is pressed."
+              />
+              <div>
+                <div className="mb-2">
+                  <FieldLabel>Loan Balance Source</FieldLabel>
+                </div>
+                <div className="w-full bg-paper-2 border border-line-dark px-3 py-2.5 text-ink/70">
+                  {sellerFinancingLoanBalanceIsManual ? "Manual Override" : "Automatically Calculated"}
+                </div>
+                {sellerFinancingLoanBalanceIsManual && (
+                  <button
+                    type="button"
+                    onClick={resetSellerFinancingLoanBalanceToCalculated}
+                    className="mt-2 inline-flex items-center gap-2 border border-line-dark px-4 py-2 text-sm text-ink/70 hover:border-brass hover:text-ink transition-colors"
+                  >
+                    Use Calculated Loan Balance
+                  </button>
+                )}
+              </div>
+              <PercentField
+                id="sellerFinancingInterestRatePct"
+                label="Seller-Finance Interest Rate"
+                draft={percentDraft.sellerFinancingInterestRatePct}
+                onChange={(raw) => handlePercentChange("sellerFinancingInterestRatePct", raw)}
+                onBlur={() => handlePercentBlur("sellerFinancingInterestRatePct")}
+                info="Decimals and 0% are both allowed. Drives the automatically calculated Monthly Principal & Interest below, the amortization schedule, principal paydown, Balloon Refinance Analysis, and 30-Year ROI Projection."
+              />
+              <IntegerField
+                id="sellerFinancingAmortizationYears"
+                label="Amortization Term (Years)"
+                draft={sellerFinancingAmortizationYearsDraft}
+                onChange={handleSellerFinancingAmortizationYearsChange}
+                onBlur={handleSellerFinancingAmortizationYearsBlur}
+                info="Required -- Seller Financing represents a brand-new loan, so its full amortization term is always selected by the parties. Drives the automatically calculated Monthly Principal & Interest below, the amortization schedule, principal paydown, Balloon Refinance Analysis, and 30-Year ROI Projection."
+              />
+              <ReadOnlyStat
+                label="Monthly Principal & Interest"
+                value={formatCents(sellerFinancingMonthlyPI)}
+                helperText="Calculated automatically from the Seller-Finance Loan Balance, Interest Rate, and Amortization Term above using the standard amortizing-loan formula. Principal and interest only -- never PITI, and never manually entered."
+              />
+              <CurrencyField
+                id="sellerFinancingAnnualPropertyInsurance"
+                label="Annual Property Insurance"
+                draft={financingDraft.annualPropertyInsurance}
+                onChange={(raw) => handleFinancingChange("annualPropertyInsurance", raw)}
+                onBlur={() => handleFinancingBlur("annualPropertyInsurance")}
+                helperText="Added to Total Monthly Housing Payment separately from Monthly Principal & Interest -- never bundled into the loan payment."
+              />
+            </div>
+
+            <PropertyTaxSection
+              idPrefix="sellerFinancing"
+              county={propertyTaxCounty}
+              onCountyChange={handlePropertyTaxCountyChange}
+              rateDraft={propertyTaxRateDraft}
+              onRateChange={handlePropertyTaxRateChange}
+              onRateBlur={handlePropertyTaxRateBlur}
+              rateSource={propertyTaxRateSource}
+              calculatedTax={calculatedAnnualPropertyTaxes}
+              usedTaxDraft={financingDraft.annualPropertyTaxes}
+              onUsedTaxChange={handlePropertyTaxUsedChange}
+              onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
+              taxSource={propertyTaxSource}
+              onUseCalculated={useCalculatedPropertyTax}
+              usedTaxHelperText="Added to the monthly housing payment separately from Monthly Principal & Interest."
+            />
+            </>
+          )}
+
+          {financingMode === "subjectTo" && (
             <AmortizationScheduleBlock
               title={
-                (financingMode === "subjectTo" ? "Existing Mortgage Amortization Schedule" : "Seller Financing Amortization Schedule") +
+                "Existing Mortgage Amortization Schedule" +
                 (subjectToEffectiveAmortization.isEstimated ? " (Estimated Remaining Term)" : "")
               }
               schedule={existingMortgageAmortization.schedule}
-              disclosure={financingMode === "subjectTo" ? SUBJECT_TO_AMORTIZATION_DISCLOSURE : undefined}
+              disclosure={SUBJECT_TO_AMORTIZATION_DISCLOSURE}
               note={
                 subjectToEffectiveAmortization.isEstimated
                   ? "Remaining term estimated mathematically from the entered balance, interest rate, and known monthly principal and interest payment, since Remaining Amortization (Years) was left blank."
-                  : financingMode === "subjectTo"
-                    ? "Calculated from the Existing Mortgage Interest Rate and Remaining Amortization (Years) above -- never from the entered PITI payment, so taxes and insurance are never mistaken for principal or interest here."
-                    : "Calculated from the Seller Financing Interest Rate and Remaining Amortization (Years) above."
+                  : "Calculated from the Existing Mortgage Interest Rate and Remaining Amortization (Years) above -- never from the entered PITI payment, so taxes and insurance are never mistaken for principal or interest here."
               }
-              csvFilename={
-                financingMode === "subjectTo"
-                  ? "subject-to-existing-mortgage-amortization-schedule.csv"
-                  : "seller-financing-amortization-schedule.csv"
-              }
+              csvFilename="subject-to-existing-mortgage-amortization-schedule.csv"
+            />
+          )}
+
+          {financingMode === "sellerFinancing" && (
+            <AmortizationScheduleBlock
+              title="Seller Financing Amortization Schedule"
+              schedule={sellerFinancingAmortization.schedule}
+              note="Calculated from the Seller-Finance Loan Balance, Seller-Finance Interest Rate, and Amortization Term above. Principal and interest only -- taxes and insurance never appear in this schedule."
+              csvFilename="seller-financing-amortization-schedule.csv"
             />
           )}
 
@@ -10631,6 +11155,11 @@ export default function SharedHousingCalculator() {
                     <span className="text-ink/60">First-Position Bank Loan</span>
                     <span className="font-medium text-ink">{formatCents(stackBankLoanAmount)}</span>
                   </div>
+                ) : financingMode === "sellerFinancing" ? (
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Seller-Finance Loan Balance</span>
+                    <span className="font-medium text-ink">{formatCents(sellerFinancingLoanBalanceUsed)}</span>
+                  </div>
                 ) : (
                   financingMode !== "traditional" && (
                     <div className="flex justify-between">
@@ -10818,6 +11347,63 @@ export default function SharedHousingCalculator() {
                       </span>
                     </div>
                   </>
+                ) : financingMode === "sellerFinancing" ? (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Down Payment Percentage</span>
+                      <span className="font-medium text-ink">
+                        {formatPercent(sellerFinancingDownPaymentPctResolved)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Down Payment Amount</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(sellerFinancingDownPaymentAmountResolved)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Loan Balance Source</span>
+                      <span className="font-medium text-ink">
+                        {sellerFinancingLoanBalanceIsManual ? "Manual Override" : "Automatically Calculated"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Interest Rate</span>
+                      <span className="font-medium text-ink">
+                        {formatPercent(percent.sellerFinancingInterestRatePct)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Amortization Term</span>
+                      <span className="font-medium text-ink">
+                        {sellerFinancingAmortizationYears} Years
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Monthly Principal &amp; Interest</span>
+                      <span className="font-medium text-ink">{formatCents(sellerFinancingMonthlyPI)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Annual Property Insurance</span>
+                      <span className="font-medium text-ink">
+                        {formatCents(financing.annualPropertyInsurance)}
+                      </span>
+                    </div>
+                    <PropertyTaxPrintRows
+                      county={propertyTaxCounty}
+                      ratePct={propertyTaxRatePct}
+                      rateSource={propertyTaxRateSource}
+                      calculatedTax={calculatedAnnualPropertyTaxes}
+                      usedTax={financing.annualPropertyTaxes}
+                      taxSource={propertyTaxSource}
+                    />
+                    <div className="flex justify-between pt-1.5 border-t border-ink/10">
+                      <span className="font-semibold text-ink">Total Monthly Housing Payment</span>
+                      <span className="font-semibold text-ink">
+                        {formatCents(results.monthlyHousingPayment)}
+                      </span>
+                    </div>
+                  </>
                 ) : (
                   <>
                     <div className="flex justify-between">
@@ -10913,17 +11499,10 @@ export default function SharedHousingCalculator() {
           )}
 
           {financingMode === "sellerFinancing" && (
-            <>
-              <AmortizationPrintCard
-                title={
-                  subjectToEffectiveAmortization.isEstimated
-                    ? "Seller Financing Amortization Schedule (Estimated Remaining Term)"
-                    : "Seller Financing Amortization Schedule"
-                }
-                schedule={existingMortgageAmortization.schedule}
-              />
-              <AmortizationEstimateStatus term={subjectToEffectiveAmortization} />
-            </>
+            <AmortizationPrintCard
+              title="Seller Financing Amortization Schedule"
+              schedule={sellerFinancingAmortization.schedule}
+            />
           )}
 
           {financingMode === "sellerFinancing" && sellerFinancingBalloonAnalysis && (
