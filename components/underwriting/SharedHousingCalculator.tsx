@@ -4044,73 +4044,6 @@ export default function SharedHousingCalculator() {
     [sellerFinancingLoanBalanceUsed, percent.sellerFinancingInterestRatePct, sellerFinancingAmortizationYears]
   );
 
-  // Seller Financing input validation: every message below is checked
-  // against the actual resolved/used values (never the raw draft
-  // strings), so it reflects exactly what the calculations downstream
-  // will use. Showing a clear message here -- rather than silently
-  // clamping or defaulting -- is what keeps the loan balance, amortization
-  // schedule, and Excel export from ever producing NaN, Infinity, a
-  // negative balance, or a broken schedule.
-  const sellerFinancingValidationErrors = useMemo(() => {
-    const errors: string[] = [];
-    if (financingMode !== "sellerFinancing") return errors;
-
-    const purchasePrice = financing.purchasePrice;
-    const downPaymentAmount = sellerFinancingDownPaymentAmountResolved;
-    const downPaymentPct = sellerFinancingDownPaymentPctResolved;
-
-    if (
-      sellerFinancingDownPaymentLastEdited === "amount" &&
-      purchasePrice <= 0 &&
-      sellerFinancingDownPaymentAmount > 0
-    ) {
-      errors.push("Enter a Purchase Price before Down Payment Percentage can be calculated from the dollar amount.");
-    }
-    if (downPaymentAmount < 0) {
-      errors.push("Down payment cannot be negative.");
-    }
-    if (downPaymentPct < 0) {
-      errors.push("Down payment percentage cannot be negative.");
-    }
-    if (downPaymentPct > 100) {
-      errors.push("Down payment percentage cannot exceed 100%.");
-    }
-    if (purchasePrice > 0 && downPaymentAmount > purchasePrice) {
-      errors.push("Down payment cannot exceed the purchase price.");
-    }
-    if (sellerFinancingLoanBalanceIsManual && (sellerFinancingLoanBalanceOverride as number) < 0) {
-      errors.push("Seller-Finance Loan Balance cannot be negative.");
-    }
-    if (percent.sellerFinancingInterestRatePct < 0) {
-      errors.push("Seller-Finance Interest Rate cannot be negative.");
-    }
-    if (!sellerFinancingAmortizationYears || sellerFinancingAmortizationYears <= 0) {
-      errors.push("Amortization Term is required and must be greater than 0 years.");
-    }
-    if (
-      errors.length === 0 &&
-      sellerFinancingLoanBalanceUsed > 0 &&
-      sellerFinancingAmortizationYears > 0 &&
-      !(sellerFinancingMonthlyPI > 0)
-    ) {
-      errors.push("Unable to calculate Monthly Principal & Interest with the current inputs.");
-    }
-    return errors;
-  }, [
-    financingMode,
-    financing.purchasePrice,
-    sellerFinancingDownPaymentAmountResolved,
-    sellerFinancingDownPaymentPctResolved,
-    sellerFinancingDownPaymentLastEdited,
-    sellerFinancingDownPaymentAmount,
-    sellerFinancingLoanBalanceIsManual,
-    sellerFinancingLoanBalanceOverride,
-    percent.sellerFinancingInterestRatePct,
-    sellerFinancingAmortizationYears,
-    sellerFinancingLoanBalanceUsed,
-    sellerFinancingMonthlyPI,
-  ]);
-
   const [sharedBathBedrooms, setSharedBathBedrooms] = useState(BEDROOM_DEFAULTS.sharedBathBedrooms);
   const [sharedBathBedroomsDraft, setSharedBathBedroomsDraft] = useState(
     String(BEDROOM_DEFAULTS.sharedBathBedrooms)
@@ -4338,6 +4271,73 @@ export default function SharedHousingCalculator() {
   // combines both uses the dedicated Hybrid option instead, which has
   // its own dedicated inputs (see the Hybrid section further down).
   const [financingMode, setFinancingMode] = useState<FinancingMode>("");
+
+  // Seller Financing input validation: every message below is checked
+  // against the actual resolved/used values (never the raw draft
+  // strings), so it reflects exactly what the calculations downstream
+  // will use. Showing a clear message here -- rather than silently
+  // clamping or defaulting -- is what keeps the loan balance, amortization
+  // schedule, and Excel export from ever producing NaN, Infinity, a
+  // negative balance, or a broken schedule.
+  const sellerFinancingValidationErrors = useMemo(() => {
+    const errors: string[] = [];
+    if (financingMode !== "sellerFinancing") return errors;
+
+    const purchasePrice = financing.purchasePrice;
+    const downPaymentAmount = sellerFinancingDownPaymentAmountResolved;
+    const downPaymentPct = sellerFinancingDownPaymentPctResolved;
+
+    if (
+      sellerFinancingDownPaymentLastEdited === "amount" &&
+      purchasePrice <= 0 &&
+      sellerFinancingDownPaymentAmount > 0
+    ) {
+      errors.push("Enter a Purchase Price before Down Payment Percentage can be calculated from the dollar amount.");
+    }
+    if (downPaymentAmount < 0) {
+      errors.push("Down payment cannot be negative.");
+    }
+    if (downPaymentPct < 0) {
+      errors.push("Down payment percentage cannot be negative.");
+    }
+    if (downPaymentPct > 100) {
+      errors.push("Down payment percentage cannot exceed 100%.");
+    }
+    if (purchasePrice > 0 && downPaymentAmount > purchasePrice) {
+      errors.push("Down payment cannot exceed the purchase price.");
+    }
+    if (sellerFinancingLoanBalanceIsManual && (sellerFinancingLoanBalanceOverride as number) < 0) {
+      errors.push("Seller-Finance Loan Balance cannot be negative.");
+    }
+    if (percent.sellerFinancingInterestRatePct < 0) {
+      errors.push("Seller-Finance Interest Rate cannot be negative.");
+    }
+    if (!sellerFinancingAmortizationYears || sellerFinancingAmortizationYears <= 0) {
+      errors.push("Amortization Term is required and must be greater than 0 years.");
+    }
+    if (
+      errors.length === 0 &&
+      sellerFinancingLoanBalanceUsed > 0 &&
+      sellerFinancingAmortizationYears > 0 &&
+      !(sellerFinancingMonthlyPI > 0)
+    ) {
+      errors.push("Unable to calculate Monthly Principal & Interest with the current inputs.");
+    }
+    return errors;
+  }, [
+    financingMode,
+    financing.purchasePrice,
+    sellerFinancingDownPaymentAmountResolved,
+    sellerFinancingDownPaymentPctResolved,
+    sellerFinancingDownPaymentLastEdited,
+    sellerFinancingDownPaymentAmount,
+    sellerFinancingLoanBalanceIsManual,
+    sellerFinancingLoanBalanceOverride,
+    percent.sellerFinancingInterestRatePct,
+    sellerFinancingAmortizationYears,
+    sellerFinancingLoanBalanceUsed,
+    sellerFinancingMonthlyPI,
+  ]);
 
   // Selecting a financing structure option deselects whichever one was
   // previously active; clicking the already-active option deselects it
