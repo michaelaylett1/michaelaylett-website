@@ -436,7 +436,11 @@ degrades gracefully if either (or both) are missing:
   start blank for hand entry -- there is no error banner and no
   automatic "no bus stops were found" failure result. This same key
   also powers the printable report's static transit map image (Static
-  Maps API) -- see below.
+  Maps API) -- see below -- and the Property Tax section's automatic
+  County suggestion (Geocoding API only). Without it, the County
+  suggestion is skipped entirely and the field is left for manual
+  selection, with the same neutral "could not be identified
+  automatically" message the transit fields show.
 
 The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
 (pure functions plus the actual Google API calls) and is only ever

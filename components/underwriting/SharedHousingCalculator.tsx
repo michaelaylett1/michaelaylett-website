@@ -88,6 +88,12 @@ import type { TransitResult } from "@/lib/transit/manual";
 // but its response shapes are useful here to type the fetch() call
 // below without redeclaring them.
 import type { AutoTransitLookupResult } from "@/lib/transit/googleLookup";
+// Type-only import -- the actual county lookup logic in
+// lib/propertyTax/countyLookup.ts only ever runs server-side (from
+// app/api/property-tax/county-lookup/route.ts), but its response shapes
+// are useful here to type the fetch() call below without redeclaring
+// them.
+import type { CountyLookupResult } from "@/lib/propertyTax/countyLookup";
 import { loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
 import {
@@ -2604,6 +2610,13 @@ function PropertyTaxSection({
   onUseCalculated,
   usedTaxDisabled,
   usedTaxHelperText,
+  countyIsAutoIdentified,
+  countyAutoStatus,
+  countySuggestion,
+  countySuggestionInTable,
+  countySuggestionDiffersFromCurrent,
+  onUseSuggestedCounty,
+  onRetryCountyLookup,
 }: {
   idPrefix: string;
   county: string;
@@ -2620,6 +2633,16 @@ function PropertyTaxSection({
   onUseCalculated: () => void;
   usedTaxDisabled?: boolean;
   usedTaxHelperText?: string;
+  // Automatic county suggestion (spec: "Automatically identify and
+  // suggest the property's county"). All optional so this component
+  // still works if a future call site never wires the feature in.
+  countyIsAutoIdentified?: boolean;
+  countyAutoStatus?: "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error";
+  countySuggestion?: string | null;
+  countySuggestionInTable?: boolean;
+  countySuggestionDiffersFromCurrent?: boolean;
+  onUseSuggestedCounty?: () => void;
+  onRetryCountyLookup?: () => void;
 }) {
   return (
     <div className="mt-6 pt-5 border-t border-line-dark">
@@ -2654,6 +2677,62 @@ function PropertyTaxSection({
             ))}
             <option value="Custom">Custom</option>
           </select>
+          {/* Automatic county suggestion (spec: "Automatically identify
+              and suggest the property's county"). Purely advisory --
+              the select above is the only thing the rest of this form
+              ever reads, and this block never writes to it except
+              through the explicit "Use Suggested County" click. */}
+          {countyAutoStatus === "loading" && (
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-ink/50">
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+              Looking up county from property address...
+            </p>
+          )}
+          {countyAutoStatus === "found" && countySuggestion && countySuggestionDiffersFromCurrent && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              <span className="text-ink/50">
+                Suggested from property address:{" "}
+                <span className="font-medium text-ink/80">{countySuggestion}</span>
+              </span>
+              {countySuggestionInTable ? (
+                <button
+                  type="button"
+                  onClick={onUseSuggestedCounty}
+                  className="inline-flex items-center gap-1 text-brass hover:text-ink underline underline-offset-2"
+                >
+                  Use Suggested County
+                </button>
+              ) : (
+                <span className="text-ink/40">(not in the supported county-rate list -- select manually or choose Custom)</span>
+              )}
+            </div>
+          )}
+          {(countyAutoStatus === "notFound" || countyAutoStatus === "error") && county === "" && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/50">
+              <span className="flex items-center gap-1.5">
+                <HelpCircle size={12} aria-hidden="true" />
+                County could not be identified automatically. Please select it manually.
+              </span>
+              <button
+                type="button"
+                onClick={onRetryCountyLookup}
+                className="inline-flex items-center gap-1 text-brass hover:text-ink underline underline-offset-2"
+              >
+                <RefreshCw size={11} aria-hidden="true" />
+                Retry
+              </button>
+            </div>
+          )}
+          {/* Always-visible status of the field's own value: never
+              re-derived from the live lookup, so it stays accurate even
+              after the suggestion above has been dismissed or a new
+              (different) lookup has since run for an edited address. */}
+          {county !== "" && county !== "Custom" && countyAutoStatus !== "loading" && (
+            <p className="mt-2 flex items-center gap-1.5 text-xs text-ink/40">
+              <CheckCircle2 size={12} className={countyIsAutoIdentified ? "text-brass" : ""} aria-hidden="true" />
+              {countyIsAutoIdentified ? "Automatically identified from the property address" : "Manually entered"}
+            </p>
+          )}
         </div>
         <PercentField
           id={`${idPrefix}EffectiveTaxRate`}
@@ -3569,6 +3648,12 @@ export default function SharedHousingCalculator() {
   const [propertyTaxCounty, setPropertyTaxCounty] = useState<string>("");
   const [propertyTaxRatePct, setPropertyTaxRatePct] = useState<number>(0);
   const [propertyTaxRateDraft, setPropertyTaxRateDraft] = useState<string>("");
+  // Whether the current County value was populated by accepting the
+  // automatic "Suggested from property address" result (true) or chosen
+  // directly from the dropdown / left unset (false). Purely a display
+  // concern -- "Automatically Identified" vs "Manually Entered" next to
+  // the County field -- and never affects which rate is actually used.
+  const [countyIsAutoIdentified, setCountyIsAutoIdentified] = useState<boolean>(false);
   // Property Taxes Used in Underwriting (financing.annualPropertyTaxes,
   // the same pre-existing field every downstream calculation already
   // reads) normally tracks the calculated amount automatically. Once the
@@ -4232,6 +4317,122 @@ export default function SharedHousingCalculator() {
     };
   }, [propertyAddress]);
 
+  // Automatic County suggestion (Geocoding API's administrative_area_
+  // level_2 component, server-side via app/api/property-tax/
+  // county-lookup -- see lib/propertyTax/countyLookup.ts). Runs on the
+  // same trigger as the transit auto-lookup above (a complete-looking
+  // Property Address, short-debounced, refiring whenever the address
+  // genuinely changes), but is intentionally a separate effect/ref pair
+  // so a county-lookup failure can never affect the transit lookup or
+  // vice versa. The result is only ever offered as a suggestion here --
+  // it never writes into propertyTaxCounty itself, so a manual
+  // selection (or a manual override of an earlier accepted suggestion)
+  // is never silently overwritten. See acceptSuggestedCounty() below for
+  // the one place that does write it, on explicit user action.
+  const [countyAutoStatus, setCountyAutoStatus] = useState<
+    "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error"
+  >("idle");
+  // Raw suggestion in "<County Name>, <ST>" form (matching
+  // COUNTY_EFFECTIVE_TAX_RATES' key format) so it can be looked up
+  // directly against the supported rate table; null whenever there is
+  // no current suggestion to show.
+  const [countySuggestion, setCountySuggestion] = useState<string | null>(null);
+  const countyAutoLookupAddressRef = useRef("");
+
+  function runCountyLookup(address: string) {
+    setCountyAutoStatus("loading");
+    return fetch("/api/property-tax/county-lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address }),
+    })
+      .then((res) => res.json() as Promise<CountyLookupResult>)
+      .then((data) => {
+        if (data.status === "found") {
+          const suggestion = data.stateAbbreviation ? `${data.county}, ${data.stateAbbreviation}` : data.county;
+          setCountySuggestion(suggestion);
+          setCountyAutoStatus("found");
+        } else if (data.status === "notFound") {
+          setCountySuggestion(null);
+          setCountyAutoStatus("notFound");
+        } else if (data.status === "error" && data.reason === "not_configured") {
+          setCountySuggestion(null);
+          setCountyAutoStatus("notConfigured");
+        } else {
+          setCountySuggestion(null);
+          setCountyAutoStatus("error");
+        }
+      })
+      .catch(() => {
+        setCountySuggestion(null);
+        setCountyAutoStatus("error");
+      });
+  }
+
+  useEffect(() => {
+    const trimmed = propertyAddress.trim();
+
+    if (!looksLikeCompleteAddress(trimmed)) {
+      countyAutoLookupAddressRef.current = "";
+      setCountySuggestion(null);
+      setCountyAutoStatus("idle");
+      return;
+    }
+
+    // Already ran (or attempted) a lookup for this exact address --
+    // avoid re-firing on every render/keystroke once it has settled.
+    // Unlike the transit lookup, a settled county suggestion is left on
+    // screen rather than cleared while a new one is in flight, since it
+    // is purely a passive suggestion (never auto-applied) and clearing
+    // it would just flicker the "Use Suggested County" control for no
+    // benefit.
+    if (countyAutoLookupAddressRef.current === trimmed) {
+      return;
+    }
+    countyAutoLookupAddressRef.current = trimmed;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) runCountyLookup(trimmed);
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyAddress]);
+
+  // Retry control for a failed/inconclusive lookup (spec: "a small retry
+  // or refresh control, if the initial lookup fails"). Re-runs
+  // immediately, bypassing the debounce and the already-attempted ref
+  // check, since this is an explicit user action, not an automatic
+  // re-fire.
+  function retryCountyLookup() {
+    const trimmed = propertyAddress.trim();
+    if (!looksLikeCompleteAddress(trimmed)) return;
+    countyAutoLookupAddressRef.current = trimmed;
+    void runCountyLookup(trimmed);
+  }
+
+  // Whether the current suggestion matches one of the counties this
+  // calculator actually has a stored tax rate for -- "Use Suggested
+  // County" only ever writes a value the County dropdown can display and
+  // that immediately populates a real rate; a suggestion outside the
+  // supported list is still shown (per spec: identify the county from
+  // geocoding, not a static list), just without a one-click apply.
+  const countySuggestionInTable = countySuggestion !== null && COUNTY_EFFECTIVE_TAX_RATES[countySuggestion] !== undefined;
+
+  // Only worth showing "Use Suggested County" when it would actually
+  // change something.
+  const countySuggestionDiffersFromCurrent = countySuggestion !== null && countySuggestion !== propertyTaxCounty;
+
+  function acceptSuggestedCounty() {
+    if (!countySuggestion || !countySuggestionInTable) return;
+    handlePropertyTaxCountyChange(countySuggestion);
+    setCountyIsAutoIdentified(true);
+  }
+
   const [propertyImages, setPropertyImages] = useState<PropertyImage[]>([]);
   const [imageError, setImageError] = useState("");
   const [processingImages, setProcessingImages] = useState(false);
@@ -4392,6 +4593,11 @@ export default function SharedHousingCalculator() {
   }
   function handlePropertyTaxCountyChange(county: string) {
     setPropertyTaxCounty(county);
+    // A direct dropdown selection is always a manual choice, even if it
+    // happens to match the current auto-suggestion -- only
+    // acceptSuggestedCounty() (below) marks the value as automatically
+    // identified.
+    setCountyIsAutoIdentified(false);
     // Selecting a real county populates the rate from the table and
     // recalculates immediately; selecting "Select County" or "Custom"
     // never auto-populates a rate (spec sections 3 and 6) -- whatever
@@ -4977,6 +5183,10 @@ export default function SharedHousingCalculator() {
     // annualPropertyTaxes is already restored to its existing default
     // (0) by setFinancing(FINANCING_DEFAULTS) above.
     setPropertyTaxCounty("");
+    setCountyIsAutoIdentified(false);
+    setCountyAutoStatus("idle");
+    setCountySuggestion(null);
+    countyAutoLookupAddressRef.current = "";
     setPropertyTaxRatePct(0);
     setPropertyTaxRateDraft("");
     setPropertyTaxManualOverride(false);
@@ -6168,10 +6378,25 @@ export default function SharedHousingCalculator() {
     // Positive when it adds to Base Capital Required (buyer cash
     // required at closing), negative when it reduces it (cash to buyer).
     const stackClosingCashAdjustment = round2(-stackEstimatedBuyerCashAtClosing);
-    const stackAdjustedTotalCapitalRequired = Math.max(
-      0,
-      round2(stackBaseCapitalRequired + stackClosingCashAdjustment)
-    );
+    // Signed net capital requirement -- Base Capital Required minus the
+    // cash the buyer actually receives at closing (equivalently, Base
+    // Capital Required plus the signed closing adjustment above).
+    // Positive means capital is still required from the buyer; negative
+    // means the closing cash more than covers every modeled project
+    // cost, and the buyer walks away with net cash left over. This one
+    // signed number is never discarded -- Total Capital Required and Net
+    // Cash to Buyer After Project Costs below are just its two
+    // non-negative halves, never both positive at once.
+    const stackNetCapitalRequirement = round2(stackBaseCapitalRequired + stackClosingCashAdjustment);
+    const stackAdjustedTotalCapitalRequired = Math.max(0, stackNetCapitalRequirement);
+    // The amount by which cash received at closing exceeds every
+    // modeled project cost, once Total Capital Required has already
+    // been floored at $0 above. Previously this excess was silently
+    // discarded by the Math.max(0, ...) floor; surfacing it here is
+    // what lets the UI, printable report, and Excel export show "Net
+    // Cash to Buyer After Project Costs" instead of just a flat $0 that
+    // hides how much cash the buyer is actually walking away with.
+    const stackNetCashToBuyerAfterProjectCosts = Math.max(0, round2(-stackNetCapitalRequirement));
 
     // TC Fee + LLC Entity Formation Cost: every financing structure uses
     // its own fully independent fee pair. Stack Method never reaches
@@ -6240,6 +6465,7 @@ export default function SharedHousingCalculator() {
       downPaymentForCapital,
       stackBaseCapitalRequired,
       stackClosingCashAdjustment,
+      stackNetCashToBuyerAfterProjectCosts,
       totalCapitalRequired,
       monthlyCashFlow,
       annualCashFlow,
@@ -6269,6 +6495,19 @@ export default function SharedHousingCalculator() {
     sellerFinancingLoanBalanceUsed,
     sellerFinancingDownPaymentAmountResolved,
   ]);
+
+  // Cash-on-Cash Return display label whenever results.cashOnCashReturn
+  // is null (Total Capital Required is $0, so the ratio is undefined,
+  // not infinite or zero). Distinguishes the Stack Method's "the buyer
+  // walks away with net cash after every modeled project cost" case --
+  // which gets its own explicit status text, per spec, rather than a
+  // bare "N/A" that could be misread as a missing/broken calculation --
+  // from every other zero-capital case (e.g. every cost input left at
+  // $0), which keeps the plain "N/A" it always showed.
+  const stackCocrLabel =
+    financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0
+      ? "N/A -- No Net Capital Invested"
+      : "N/A";
 
   // ---------------------------------------------------------------------
   // 30-Year ROI Projection: the debt legs and (if applicable) balloon
@@ -6808,6 +7047,14 @@ export default function SharedHousingCalculator() {
                   value: formatCents(results.totalCapitalRequired),
                   isTotal: true,
                 },
+                ...(results.stackNetCashToBuyerAfterProjectCosts > 0
+                  ? [
+                      {
+                        label: "Net Cash to Buyer After Project Costs",
+                        value: formatCents(results.stackNetCashToBuyerAfterProjectCosts),
+                      },
+                    ]
+                  : []),
               ]
             : [
                 { label: downPaymentLabel, value: formatCents(results.downPaymentForCapital) },
@@ -6882,7 +7129,7 @@ export default function SharedHousingCalculator() {
           { label: "Annual Cash Flow", value: formatCents(results.annualCashFlow) },
           {
             label: "Cash-on-Cash Return",
-            value: results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn),
+            value: results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn),
             isTotal: true,
           },
         ],
@@ -7605,6 +7852,7 @@ export default function SharedHousingCalculator() {
         stackZeroOutOfPocket,
         stackBaseCapitalRequired: results.stackBaseCapitalRequired,
         stackAdjustedTotalCapitalRequired: results.totalCapitalRequired,
+        stackNetCashToBuyerAfterProjectCosts: results.stackNetCashToBuyerAfterProjectCosts,
 
         subjectToBalloon: subjectToBalloonAnalysis,
         sellerFinancingBalloon: sellerFinancingBalloonAnalysis,
@@ -7791,12 +8039,13 @@ export default function SharedHousingCalculator() {
               <InfoTip text="Cash-on-cash return is the estimated annual cash flow divided by the total cash invested in the project." />
             </p>
             <p className="font-display text-3xl text-brass-light">
-              {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+              {results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)}
             </p>
             {results.cashOnCashReturn === null && financingMode === "stackMethod" && (
               <p className="mt-2 text-xs text-bone/50 leading-relaxed">
-                This structure models no net buyer capital contribution after the closing
-                adjustment, so a traditional cash-on-cash percentage is not applicable.
+                {results.stackNetCashToBuyerAfterProjectCosts > 0
+                  ? `Cash received at closing more than covers every modeled project cost, so there is no net capital invested and a traditional cash-on-cash percentage is not applicable. Net Cash to Buyer After Project Costs: ${formatCents(results.stackNetCashToBuyerAfterProjectCosts)}.`
+                  : "This structure models no net buyer capital contribution after the closing adjustment, so a traditional cash-on-cash percentage is not applicable."}
               </p>
             )}
           </div>
@@ -7810,13 +8059,36 @@ export default function SharedHousingCalculator() {
             </p>
           </div>
           <div className="border border-brass bg-ink-2 p-6">
-            <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
-              Total Capital Required
-              <InfoTip text="Every cash cost paid at or around closing: down payment, holding costs, reserves, renovation, and the other upfront items below. Does not include the loan balance, equity, or purchase price." />
-            </p>
-            <p className="font-display text-3xl text-brass-light">
-              {formatCents(results.totalCapitalRequired)}
-            </p>
+            {/* Stack Method: once cash received at closing covers every
+                modeled project cost, Total Capital Required is always
+                $0 -- so the headline card switches to showing the net
+                cash the buyer actually walks away with instead of a
+                flat, uninformative $0. Every other structure (and Stack
+                Method whenever capital is still required) keeps showing
+                Total Capital Required exactly as before. */}
+            {financingMode === "stackMethod" &&
+            results.totalCapitalRequired === 0 &&
+            results.stackNetCashToBuyerAfterProjectCosts > 0 ? (
+              <>
+                <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
+                  Net Cash to Buyer After Project Costs
+                  <InfoTip text="Cash received at closing minus every modeled project cost (Base Project Capital Required). Shown in place of Total Capital Required once cash received at closing covers every modeled cost." />
+                </p>
+                <p className="font-display text-3xl text-brass-light">
+                  {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow text-brass-light mb-1.5 inline-flex items-center">
+                  Total Capital Required
+                  <InfoTip text="Every cash cost paid at or around closing: down payment, holding costs, reserves, renovation, and the other upfront items below. Does not include the loan balance, equity, or purchase price." />
+                </p>
+                <p className="font-display text-3xl text-brass-light">
+                  {formatCents(results.totalCapitalRequired)}
+                </p>
+              </>
+            )}
           </div>
         </div>
 
@@ -8503,6 +8775,13 @@ export default function SharedHousingCalculator() {
               onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
               taxSource={propertyTaxSource}
               onUseCalculated={useCalculatedPropertyTax}
+              countyIsAutoIdentified={countyIsAutoIdentified}
+              countyAutoStatus={countyAutoStatus}
+              countySuggestion={countySuggestion}
+              countySuggestionInTable={countySuggestionInTable}
+              countySuggestionDiffersFromCurrent={countySuggestionDiffersFromCurrent}
+              onUseSuggestedCounty={acceptSuggestedCounty}
+              onRetryCountyLookup={retryCountyLookup}
               usedTaxDisabled={paymentType === "piti"}
               usedTaxHelperText={
                 paymentType === "piti"
@@ -8633,6 +8912,13 @@ export default function SharedHousingCalculator() {
               onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
               taxSource={propertyTaxSource}
               onUseCalculated={useCalculatedPropertyTax}
+              countyIsAutoIdentified={countyIsAutoIdentified}
+              countyAutoStatus={countyAutoStatus}
+              countySuggestion={countySuggestion}
+              countySuggestionInTable={countySuggestionInTable}
+              countySuggestionDiffersFromCurrent={countySuggestionDiffersFromCurrent}
+              onUseSuggestedCounty={acceptSuggestedCounty}
+              onRetryCountyLookup={retryCountyLookup}
               usedTaxHelperText="Added to the monthly housing payment separately from Monthly Principal & Interest."
             />
             </>
@@ -8827,6 +9113,13 @@ export default function SharedHousingCalculator() {
                 onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
                 taxSource={propertyTaxSource}
                 onUseCalculated={useCalculatedPropertyTax}
+              countyIsAutoIdentified={countyIsAutoIdentified}
+              countyAutoStatus={countyAutoStatus}
+              countySuggestion={countySuggestion}
+              countySuggestionInTable={countySuggestionInTable}
+              countySuggestionDiffersFromCurrent={countySuggestionDiffersFromCurrent}
+              onUseSuggestedCounty={acceptSuggestedCounty}
+              onRetryCountyLookup={retryCountyLookup}
                 usedTaxHelperText="Added to the monthly principal and interest payment below."
               />
 
@@ -9012,6 +9305,13 @@ export default function SharedHousingCalculator() {
                 onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
                 taxSource={propertyTaxSource}
                 onUseCalculated={useCalculatedPropertyTax}
+              countyIsAutoIdentified={countyIsAutoIdentified}
+              countyAutoStatus={countyAutoStatus}
+              countySuggestion={countySuggestion}
+              countySuggestionInTable={countySuggestionInTable}
+              countySuggestionDiffersFromCurrent={countySuggestionDiffersFromCurrent}
+              onUseSuggestedCounty={acceptSuggestedCounty}
+              onRetryCountyLookup={retryCountyLookup}
                 usedTaxHelperText="Reference only -- the Total Monthly Housing Payment above already uses the existing mortgage's full PITI payment entered directly, which already includes property taxes."
               />
 
@@ -9652,6 +9952,13 @@ export default function SharedHousingCalculator() {
                   onUsedTaxBlur={() => handleFinancingBlur("annualPropertyTaxes")}
                   taxSource={propertyTaxSource}
                   onUseCalculated={useCalculatedPropertyTax}
+              countyIsAutoIdentified={countyIsAutoIdentified}
+              countyAutoStatus={countyAutoStatus}
+              countySuggestion={countySuggestion}
+              countySuggestionInTable={countySuggestionInTable}
+              countySuggestionDiffersFromCurrent={countySuggestionDiffersFromCurrent}
+              onUseSuggestedCounty={acceptSuggestedCounty}
+              onRetryCountyLookup={retryCountyLookup}
                 />
 
                 <div className="mt-6 grid sm:grid-cols-2 gap-5">
@@ -9810,10 +10117,26 @@ export default function SharedHousingCalculator() {
                     {formatCents(results.totalCapitalRequired)}
                   </span>
                 </div>
-                <p className="mt-2 text-xs text-ink/40 leading-relaxed">
-                  Never falls below $0, even if Base Capital Required is fully offset by the cash to
-                  buyer.
-                </p>
+                {results.stackNetCashToBuyerAfterProjectCosts > 0 ? (
+                  <>
+                    <div className="mt-3 flex items-center justify-between rounded bg-brass/5 border border-brass/40 px-4 py-4">
+                      <span className="eyebrow text-brass">Net Cash to Buyer After Project Costs</span>
+                      <span className="font-display text-2xl text-ink">
+                        {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-ink/40 leading-relaxed">
+                      Adjusted Total Capital Required never falls below $0. When cash received at
+                      closing exceeds Base Capital Required, the excess is shown here instead of
+                      being discarded.
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs text-ink/40 leading-relaxed">
+                    Never falls below $0, even if Base Capital Required is fully offset by the cash to
+                    buyer.
+                  </p>
+                )}
               </div>
 
               <BalloonRefinanceAnalysisPanel
@@ -9882,9 +10205,10 @@ export default function SharedHousingCalculator() {
               {results.totalCapitalRequired === 0 && (
                 <div className="mt-8 pt-6 border-t border-line-dark">
                   <p className="text-sm text-ink/60 leading-relaxed">
-                    Cash-on-Cash Return: N/A. This structure models no net buyer capital contribution
-                    after the closing adjustment, so a traditional cash-on-cash percentage is not
-                    applicable.
+                    Cash-on-Cash Return: {stackCocrLabel}.{" "}
+                    {results.stackNetCashToBuyerAfterProjectCosts > 0
+                      ? `Cash received at closing more than covers every modeled project cost, so there is no net capital invested and a traditional cash-on-cash percentage is not applicable. Net Cash to Buyer After Project Costs: ${formatCents(results.stackNetCashToBuyerAfterProjectCosts)}.`
+                      : "This structure models no net buyer capital contribution after the closing adjustment, so a traditional cash-on-cash percentage is not applicable."}
                   </p>
                 </div>
               )}
@@ -10706,7 +11030,7 @@ export default function SharedHousingCalculator() {
                 <InfoTip text="Cash-on-cash return is the estimated annual cash flow divided by the total cash invested in the project." />
               </p>
               <p className="font-display text-3xl md:text-4xl text-brass-light">
-                {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+                {results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)}
               </p>
             </div>
           </div>
@@ -10985,8 +11309,20 @@ export default function SharedHousingCalculator() {
             />
             <PrintKpiCard
               icon={<Wallet size={16} />}
-              label="Total Capital Required"
-              value={formatCents(results.totalCapitalRequired)}
+              label={
+                financingMode === "stackMethod" &&
+                results.totalCapitalRequired === 0 &&
+                results.stackNetCashToBuyerAfterProjectCosts > 0
+                  ? "Net Cash to Buyer After Project Costs"
+                  : "Total Capital Required"
+              }
+              value={
+                financingMode === "stackMethod" &&
+                results.totalCapitalRequired === 0 &&
+                results.stackNetCashToBuyerAfterProjectCosts > 0
+                  ? formatCents(results.stackNetCashToBuyerAfterProjectCosts)
+                  : formatCents(results.totalCapitalRequired)
+              }
             />
             <PrintKpiCard
               icon={<TrendingUp size={16} />}
@@ -11001,7 +11337,7 @@ export default function SharedHousingCalculator() {
             <PrintKpiCard
               icon={<Percent size={16} />}
               label="Est. Cash-on-Cash Return"
-              value={results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+              value={results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)}
               highlight
               rateLines={
                 financingMode === "traditional"
@@ -11090,7 +11426,7 @@ export default function SharedHousingCalculator() {
               <HighlightBullet
                 icon={<Percent size={13} />}
                 label={`${
-                  results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)
+                  results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)
                 } Estimated Cash-on-Cash Return`}
                 detail="Annual cash flow relative to total capital invested."
                 accent="green"
@@ -11709,6 +12045,16 @@ export default function SharedHousingCalculator() {
                 </span>
                 <span className="text-[13pt] font-bold">{formatCents(results.totalCapitalRequired)}</span>
               </div>
+              {results.stackNetCashToBuyerAfterProjectCosts > 0 && (
+                <div className="mt-2 flex justify-between items-center rounded-lg bg-brass/10 border border-brass px-3 py-2.5">
+                  <span className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">
+                    Net Cash to Buyer After Project Costs
+                  </span>
+                  <span className="text-[13pt] font-bold text-ink">
+                    {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+                  </span>
+                </div>
+              )}
               <div className="mt-2 flex justify-between items-center rounded-lg bg-ink text-white px-3 py-2.5">
                 <span className="text-[9.5pt] font-semibold uppercase tracking-wide">
                   Total PITI
@@ -12090,6 +12436,18 @@ export default function SharedHousingCalculator() {
                 {formatCents(results.totalCapitalRequired)}
               </span>
             </div>
+            {financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0 && (
+              <div
+                className="mt-2 flex justify-between items-center rounded-lg px-3 py-3 border border-ink/15"
+              >
+                <span className="text-[10pt] font-bold uppercase tracking-wide text-ink">
+                  Net Cash to Buyer After Project Costs
+                </span>
+                <span className="text-[16pt] font-bold text-ink">
+                  {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Scope of Work: rendered only when at least one line item was
@@ -12162,7 +12520,7 @@ export default function SharedHousingCalculator() {
                   Estimated Cash-on-Cash Return
                 </p>
                 <p className="mt-1 text-[22pt] font-bold text-ink">
-                  {results.cashOnCashReturn === null ? "N/A" : formatPercent(results.cashOnCashReturn)}
+                  {results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)}
                 </p>
               </div>
             </div>

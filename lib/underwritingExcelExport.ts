@@ -232,6 +232,12 @@ export interface UnderwritingExportData {
   stackZeroOutOfPocket: "Yes" | "No" | "TBD";
   stackBaseCapitalRequired: number;
   stackAdjustedTotalCapitalRequired: number;
+  // The amount by which cash received at closing exceeds Base Capital
+  // Required, once Total Capital Required has already been floored at
+  // $0 -- always 0 unless stackAdjustedTotalCapitalRequired is itself
+  // exactly 0. See stackNetCashToBuyerAfterProjectCosts in
+  // SharedHousingCalculator.tsx for the identical calculation.
+  stackNetCashToBuyerAfterProjectCosts: number;
 
   // Balloon analyses (only the one matching financingMode is ever non-null)
   subjectToBalloon: (ExportBalloonAnalysis & { mortgageBalanceAtBalloon: number }) | null;
@@ -1993,11 +1999,37 @@ function buildUnderwritingSheet(
     totalCapitalRow = row;
     ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
     fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
+    // Floored at $0 with MAX() -- never a negative number, even when
+    // Estimated Cash to Buyer at Closing exceeds Base Capital Required.
+    // Previously this was a plain Base-minus-Adjustment subtraction with
+    // no floor, so a large enough cash-to-buyer result could (and did)
+    // compute a negative Total Capital Required here. Net Cash to Buyer
+    // After Project Costs below is what now shows whatever this MAX()
+    // floor would otherwise have discarded, rather than that excess
+    // simply vanishing.
     ws.getCell(totalCapitalRow, 3).value = {
-      formula: `C${baseRow}-C${adjustmentRow}`,
+      formula: `MAX(C${baseRow}-C${adjustmentRow},0)`,
     } as ExcelJS.CellFormulaValue;
     fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
     ws.getRow(totalCapitalRow).height = 15.75;
+    row++;
+
+    // Net Cash to Buyer After Project Costs: the mirror image of the
+    // MAX() floor above -- MAX(Adjustment-Base, 0) is exactly the amount
+    // by which cash received at closing exceeds every modeled project
+    // cost, once Total Capital Required has already been floored at $0.
+    // Always shown (not hidden at $0) so the row's presence and formula
+    // are consistent regardless of this particular deal's numbers; a
+    // reader can see at a glance that it is genuinely $0, not omitted.
+    const netCashRow = row;
+    ws.getCell(netCashRow, 2).value = "Net Cash to Buyer After Project Costs";
+    fmtLabel(ws.getCell(netCashRow, 2));
+    leftBorder(`B${netCashRow}`);
+    ws.getCell(netCashRow, 3).value = {
+      formula: `MAX(C${adjustmentRow}-C${baseRow},0)`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(ws.getCell(netCashRow, 3), TEMPLATE_CURRENCY_FMT);
+    ws.getRow(netCashRow).height = 15.75;
     row++;
   } else {
     totalCapitalRow = row;
@@ -2017,18 +2049,23 @@ function buildUnderwritingSheet(
 
   // ---- Cash-on-Cash Return ----
   // Guarded against a $0 (or, for Stack Method's linked cell, blank)
-  // Total Capital Required -- never produces #DIV/0!. Every non-Stack
-  // structure keeps its original "-" display (unchanged by this fix);
-  // Stack Method's linked total can momentarily read as a blank string
-  // if the "Capital Required" sheet's own cell is ever blank, so its
-  // guard also treats "" as the zero case, matching the OR() guard the
-  // reconciliation fix calls for.
+  // Total Capital Required -- never produces #DIV/0!, Infinity, or an
+  // arbitrarily large percentage. Every non-Stack structure keeps its
+  // original "-" display (unchanged by this fix); Stack Method shows an
+  // explicit status string instead of a blank cell once Total Capital
+  // Required is $0, so a reader never mistakes a blank cell for a
+  // missing/broken calculation -- the same "N/A -- No Net Capital
+  // Invested" wording used on the website itself. Stack Method's linked
+  // total can momentarily read as a blank string if the "Capital
+  // Required" sheet's own cell is ever blank, so its guard also treats
+  // "" as the zero case, matching the OR() guard the reconciliation fix
+  // calls for.
   const cocRow = row;
   ws.getCell(cocRow, 2).value = "C on C Return";
   fmtLabel(ws.getCell(cocRow, 2), { bold: true });
   ws.getCell(cocRow, 3).value = {
     formula: isStack
-      ? `IF(OR(C${totalCapitalRow}="",C${totalCapitalRow}=0),"",(C21*12)/C${totalCapitalRow})`
+      ? `IF(OR(C${totalCapitalRow}="",C${totalCapitalRow}=0),"N/A -- No Net Capital Invested",(C21*12)/C${totalCapitalRow})`
       : `IF(C${totalCapitalRow}=0,"-",(C21*12)/C${totalCapitalRow})`,
   } as ExcelJS.CellFormulaValue;
   fmtValue(ws.getCell(cocRow, 3), FMT_PERCENT, { emphasis: true });
@@ -2464,16 +2501,49 @@ function capitalRequiredRows(data: UnderwritingExportData): { rows: KVRow[]; tot
   rows.push({ label: "Agent Fee", value: money(data.agentFee), format: FMT_CURRENCY });
   rows.push({ label: "Assignment Fee", value: money(data.assignmentFee), format: FMT_CURRENCY });
   if (data.financingMode === "stackMethod") {
+    // Row numbers on this single-section sheet are fully deterministic
+    // (writeKeyValueSheet always starts data rows at row 3, one row per
+    // pushed KVRow, no gaps within a section) -- so these two rows'
+    // eventual cell addresses are computed here, before the sheet is
+    // ever written, purely from how many rows have already been pushed.
+    // That is what lets Adjusted Total Capital Required and Net Cash to
+    // Buyer After Project Costs below be genuine same-sheet MAX()
+    // formulas (never silently discarding the excess the way a plain
+    // Math.max(...,0) static value would) instead of separately
+    // pre-computed static numbers that could drift out of sync with
+    // these two rows if either one were ever edited by hand in Excel.
+    const baseCapitalRow = 3 + rows.length;
     rows.push({ label: "Base Capital Required", value: money(data.stackBaseCapitalRequired), format: FMT_CURRENCY });
+    const signedAdjustmentRow = 3 + rows.length;
     rows.push({
       label: "Signed Buyer Closing Adjustment",
       value: money(-data.stackEstimatedBuyerCashAtClosing),
       format: FMT_CURRENCY,
     });
+    const totalRowIndex = rows.length;
+    rows.push({
+      label: "Adjusted Total Capital Required",
+      formula: `MAX(C${baseCapitalRow}+C${signedAdjustmentRow},0)`,
+      format: FMT_CURRENCY,
+      emphasis: true,
+    });
+    // Surfaces the excess separately rather than letting the MAX(...,0)
+    // floor above silently discard it -- see stackNetCashToBuyerAfter
+    // ProjectCosts in SharedHousingCalculator.tsx for the identical
+    // signed-value split on the website side. Base Capital Required
+    // plus a negative Signed Buyer Closing Adjustment is exactly
+    // -(CashReceivedAtClosing - BaseCapitalRequired), so this formula is
+    // MAX(CashReceivedAtClosing - BaseCapitalRequired, 0) as requested.
+    rows.push({
+      label: "Net Cash to Buyer After Project Costs",
+      formula: `MAX(-(C${baseCapitalRow}+C${signedAdjustmentRow}),0)`,
+      format: FMT_CURRENCY,
+    });
+    return { rows, totalRowIndex };
   }
   const totalRowIndex = rows.length;
   rows.push({
-    label: data.financingMode === "stackMethod" ? "Adjusted Total Capital Required" : "Total Capital Required",
+    label: "Total Capital Required",
     value: money(data.totalCapitalRequired),
     format: FMT_CURRENCY,
     emphasis: true,
@@ -2512,6 +2582,9 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
   const totalCapitalAddr = capAddr.get(
     `Capital Required|${data.financingMode === "stackMethod" ? "Adjusted Total Capital Required" : "Total Capital Required"}`
   );
+  // Only ever set for Stack Method -- see capitalRequiredRows above,
+  // which only pushes this row when data.financingMode === "stackMethod".
+  const netCashToBuyerAddr = capAddr.get("Capital Required|Net Cash to Buyer After Project Costs");
   const monthlyCashFlowAddr = opAddr.get("Operating Assumptions|Monthly Cash Flow");
   const annualCashFlowAddr = opAddr.get("Operating Assumptions|Annual Cash Flow");
   const equityAddr = finAddr.get("Financing Details|Estimated Equity");
@@ -2550,11 +2623,30 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
       format: FMT_CURRENCY,
       emphasis: true,
     },
+    // Only appears for Stack Method, and only once the underlying figure
+    // is actually positive -- mirrors the on-page/print behavior of
+    // showing this row only when there is a genuine excess to report,
+    // rather than a row that always reads $0.00 for every other
+    // financing structure and most Stack Method deals.
+    ...(netCashToBuyerAddr && data.stackNetCashToBuyerAfterProjectCosts > 0
+      ? [
+          {
+            label: "Net Cash to Buyer After Project Costs",
+            formula: `'Capital Required'!${netCashToBuyerAddr}`,
+            format: FMT_CURRENCY,
+          } as KVRow,
+        ]
+      : []),
     {
       label: "Cash-on-Cash Return",
+      // Guarded with IF() against a $0 Total Capital Required -- never
+      // produces #DIV/0!, Infinity, or an arbitrarily large percentage.
+      // Shows the same "N/A -- No Net Capital Invested" status text used
+      // elsewhere in this workbook and on the website once there is no
+      // net capital to divide by.
       formula:
         monthlyCashFlowAddr && totalCapitalAddr
-          ? `('Operating Assumptions'!${monthlyCashFlowAddr}*12)/'Capital Required'!${totalCapitalAddr}`
+          ? `IF('Capital Required'!${totalCapitalAddr}>0,('Operating Assumptions'!${monthlyCashFlowAddr}*12)/'Capital Required'!${totalCapitalAddr},"N/A -- No Net Capital Invested")`
           : undefined,
       value: monthlyCashFlowAddr && totalCapitalAddr ? undefined : data.cashOnCashReturn === null ? "N/A" : pct(data.cashOnCashReturn),
       format: data.cashOnCashReturn === null && !(monthlyCashFlowAddr && totalCapitalAddr) ? undefined : FMT_PERCENT,
