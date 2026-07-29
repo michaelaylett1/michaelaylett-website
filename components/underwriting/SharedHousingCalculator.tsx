@@ -11003,6 +11003,31 @@ export default function SharedHousingCalculator() {
               {formatCents(results.totalCapitalRequired)}
             </span>
           </div>
+          {/* Stack Method only: once cash received at closing covers
+              every modeled project cost, Total Capital Required above
+              is always $0 -- this row shows the excess instead of
+              letting it silently disappear. Same prominent gold styling
+              as Total Capital Required, directly beneath it, always
+              visible on this page (never only in the printable report,
+              the Excel export, or the collapsed Full Underwriting
+              Breakdown below). */}
+          {financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0 && (
+            <div className="mt-3 pt-6 border-t border-brass flex items-center justify-between">
+              <span className="eyebrow text-brass inline-flex items-center">
+                Net Cash to Buyer After Project Costs
+                <InfoTip text="Cash received at closing minus Base Project Capital Required. Shown once cash received at closing covers every modeled project cost, so Total Capital Required is $0." />
+              </span>
+              <span className="font-display text-3xl text-brass">
+                {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+              </span>
+            </div>
+          )}
+          {financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0 && (
+            <p className="mt-2 text-xs text-ink/50 leading-relaxed">
+              Cash remaining after all modeled acquisition, renovation, furnishing, holding, reserve, and
+              stabilization costs.
+            </p>
+          )}
         </div>
 
         {/* ---------------------------------------------------------- */}
@@ -11011,7 +11036,13 @@ export default function SharedHousingCalculator() {
         {/* ---------------------------------------------------------- */}
         <div className="print:hidden mt-6 bg-ink-2 border border-line p-6 sm:p-8 md:p-10">
           <p className="eyebrow text-brass-light mb-5">Returns</p>
-          <div className="grid sm:grid-cols-3 gap-6">
+          <div
+            className={`grid sm:grid-cols-3 gap-6${
+              financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0
+                ? " lg:grid-cols-4"
+                : ""
+            }`}
+          >
             <div>
               <p className="eyebrow text-bone/50 mb-1.5">Estimated Monthly Cash Flow</p>
               <p className="font-display text-3xl md:text-4xl text-brass-light">
@@ -11033,6 +11064,17 @@ export default function SharedHousingCalculator() {
                 {results.cashOnCashReturn === null ? stackCocrLabel : formatPercent(results.cashOnCashReturn)}
               </p>
             </div>
+            {financingMode === "stackMethod" && results.stackNetCashToBuyerAfterProjectCosts > 0 && (
+              <div>
+                <p className="eyebrow text-bone/50 mb-1.5 inline-flex items-center">
+                  Net Cash to Buyer After Project Costs
+                  <InfoTip text="Cash received at closing minus Base Project Capital Required, once Total Capital Required is $0." />
+                </p>
+                <p className="font-display text-3xl md:text-4xl text-brass-light">
+                  {formatCents(results.stackNetCashToBuyerAfterProjectCosts)}
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
