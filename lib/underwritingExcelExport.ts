@@ -1946,21 +1946,16 @@ function buildUnderwritingSheet(
   // ---- Total Capital Required ----
   let totalCapitalRow: number;
   if (isStack) {
-    // Genuine cross-sheet links to the "Capital Required" worksheet's own
-    // reconciliation rows (built earlier in buildGeneratedWorkbook, so
-    // their addresses are already known here) -- never a second,
-    // independently summed total that could drift out of agreement with
-    // it. fmtValue automatically colors any formula containing "!" green
-    // (the cross-sheet-link convention), so no extra styling is needed.
-    // The literal "C14"/"C15"/"C16" fallback only applies if this sheet
+    // Base Capital Required is a genuine cross-sheet link to the
+    // "Capital Required" worksheet's own Base Capital Required row (built
+    // earlier in buildGeneratedWorkbook, so its address is already known
+    // here). fmtValue automatically colors any formula containing "!"
+    // green (the cross-sheet-link convention), so no extra styling is
+    // needed. The literal "C14"/"C15" fallback only applies if this sheet
     // is ever built without a Capital Required worksheet present (should
-    // never happen for Stack Method in practice), and still reproduces
-    // the exact row layout capitalRequiredRows() always produces for
-    // Stack Method (11 fixed base rows + Base Capital Required + Signed
-    // Buyer Closing Adjustment + Adjusted Total Capital Required).
+    // never happen for Stack Method in practice).
     const baseAddr = capitalAddr?.get("Capital Required|Base Capital Required") ?? "C14";
     const adjustmentAddr = capitalAddr?.get("Capital Required|Signed Buyer Closing Adjustment") ?? "C15";
-    const adjustedTotalAddr = capitalAddr?.get("Capital Required|Adjusted Total Capital Required") ?? "C16";
 
     const baseRow = row;
     ws.getCell(baseRow, 2).value = "Base Capital Required";
@@ -1970,12 +1965,26 @@ function buildUnderwritingSheet(
     ws.getRow(baseRow).height = 15.75;
     row++;
 
+    // Estimated Cash to Buyer at Closing is displayed here as a positive
+    // amount -- the Capital Required sheet's own "Signed Buyer Closing
+    // Adjustment" cell stores this negative (money(-stackEstimatedBuyer
+    // CashAtClosing), so it reduces Base Capital Required by simple
+    // addition there), but showing that same negative number here under a
+    // label that says "to Buyer" reads as if the buyer were paying it
+    // out, not receiving it. The sign is flipped for display only
+    // (still a genuine, live cross-sheet link -- never a hardcoded
+    // value), and Total Capital Required below is calculated as Base
+    // Capital Required minus this positive figure, which is
+    // mathematically identical to Capital Required!C16 (Base + the
+    // negative Signed Buyer Closing Adjustment) -- so the two sheets can
+    // never disagree with each other even though this row's sign is
+    // flipped for readability.
     const adjustmentRow = row;
     ws.getCell(adjustmentRow, 2).value = "Estimated Cash to Buyer at Closing";
     fmtLabel(ws.getCell(adjustmentRow, 2));
     leftBorder(`B${adjustmentRow}`);
     ws.getCell(adjustmentRow, 3).value = {
-      formula: `'Capital Required'!${adjustmentAddr}`,
+      formula: `-'Capital Required'!${adjustmentAddr}`,
     } as ExcelJS.CellFormulaValue;
     fmtValue(ws.getCell(adjustmentRow, 3), TEMPLATE_CURRENCY_FMT);
     ws.getRow(adjustmentRow).height = 15.75;
@@ -1985,7 +1994,7 @@ function buildUnderwritingSheet(
     ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
     fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
     ws.getCell(totalCapitalRow, 3).value = {
-      formula: `'Capital Required'!${adjustedTotalAddr}`,
+      formula: `C${baseRow}-C${adjustmentRow}`,
     } as ExcelJS.CellFormulaValue;
     fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
     ws.getRow(totalCapitalRow).height = 15.75;
