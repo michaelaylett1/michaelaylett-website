@@ -1495,7 +1495,15 @@ function financingNotesText(data: UnderwritingExportData): string {
 function buildUnderwritingSheet(
   wb: ExcelJS.Workbook,
   data: UnderwritingExportData,
-  inputs: InputsSheetAddresses
+  inputs: InputsSheetAddresses,
+  // Cell-address lookup for the "Capital Required" worksheet (built by
+  // capitalRequiredRows/writeKeyValueSheet in buildGeneratedWorkbook,
+  // before this function runs) -- only ever passed for Stack Method, the
+  // only structure whose Total Capital Required must reconcile through a
+  // separate signed closing adjustment rather than a simple sum of the
+  // capital rows below. Undefined for every other structure (and for the
+  // template-workbook path, which has no "Capital Required" sheet at all).
+  capitalAddr?: Map<string, string>
 ): ExcelJS.Worksheet {
   const ws = wb.addWorksheet("Underwriting", { views: [{ showGridLines: false }] });
   ws.getColumn(1).width = 2.16;
@@ -1844,8 +1852,30 @@ function buildUnderwritingSheet(
     formula?: string;
     isClosingCosts?: boolean;
   }
-  const capitalRowDefs: CapitalRowDef[] = [{ label: "Arrears", value: money(arrearsForExport) }];
-  capitalRowDefs.push({ label: downPaymentRowLabel, value: money(downPaymentRowValue) });
+  // Stack Method's capital section is structurally different from every
+  // other financing structure: its actual buyer cash required is a
+  // reconciliation (Base Capital Required, netted against a signed
+  // Estimated Cash to Buyer at Closing adjustment), not a flat sum of
+  // every displayed row. Closing Costs, Upfront Insurance, Agent Fee, and
+  // Assignment Fee are all already fully embedded inside Cash to Close,
+  // Leg 1 (which drives the Estimated Cash to Buyer at Closing result --
+  // see stackCashToCloseLeg1/stackEstimatedBuyerCashAtClosing in
+  // SharedHousingCalculator.tsx), so none of those may be summed again as
+  // separate capital line items here without double-counting them.
+  // Arrears and Down Payment to Seller likewise never contribute to Base
+  // Capital Required on the website (Down Payment to Seller instead flows
+  // into the Seller-Financed Balance that feeds the same reconciliation),
+  // so Stack Method's Underwriting-sheet capital section shows only the
+  // eleven items that actually make up Base Capital Required, followed by
+  // three linked reconciliation rows -- matching the "Capital Required"
+  // worksheet's own Base Capital Required / Signed Buyer Closing
+  // Adjustment / Adjusted Total Capital Required rows exactly, so the two
+  // sheets can never disagree with each other.
+  const capitalRowDefs: CapitalRowDef[] = [];
+  if (!isStack) {
+    capitalRowDefs.push({ label: "Arrears", value: money(arrearsForExport) });
+    capitalRowDefs.push({ label: downPaymentRowLabel, value: money(downPaymentRowValue) });
+  }
   // Renovations is a genuine cross-sheet formula linked to the "Scope of
   // Work" worksheet's grand total whenever that total is actually the
   // figure driving underwriting (data.useItemizedScopeOfWork) -- so
@@ -1868,27 +1898,23 @@ function buildUnderwritingSheet(
     { label: "Appliances", value: money(data.appliances) },
     { label: "Photos", value: money(data.photos) },
     { label: "Holding Costs", value: money(data.holdingCosts) },
-    { label: "Reserves", value: money(data.reserves) },
-    { label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) },
+    { label: "Reserves", value: money(data.reserves) }
+  );
+  if (!isStack) {
+    capitalRowDefs.push({ label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) });
+  }
+  capitalRowDefs.push(
     { label: "Acquisition Cost", value: money(data.acquisitionFee) },
     { label: "TC Fee", value: money(data.tcFee) },
-    { label: "LLC Entity Formation Cost", value: money(data.llcFee) },
-    { label: "Closing Costs", isClosingCosts: true },
+    { label: "LLC Entity Formation Cost", value: money(data.llcFee) }
+  );
+  if (!isStack) {
+    capitalRowDefs.push({ label: "Closing Costs", isClosingCosts: true });
+  }
+  capitalRowDefs.push(
     { label: "Agent Fee", value: money(data.agentFee) },
     { label: "Assignment Fee", value: money(data.assignmentFee) }
   );
-  if (isStack) {
-    // Stack Method's actual buyer cash required nets the signed Estimated
-    // Cash to Buyer at Closing (positive = cash back to the buyer,
-    // reducing capital required; negative = additional cash required) --
-    // matches stackAdjustedTotalCapitalRequired in
-    // SharedHousingCalculator.tsx exactly. No other financing structure
-    // uses this line item.
-    capitalRowDefs.push({
-      label: "Signed Buyer Closing Adjustment",
-      value: money(-data.stackEstimatedBuyerCashAtClosing),
-    });
-  }
 
   let row = 25;
   const firstCapitalRow = row;
@@ -1918,29 +1944,83 @@ function buildUnderwritingSheet(
   const lastCapitalRow = row - 1;
 
   // ---- Total Capital Required ----
-  const totalCapitalRow = row;
-  ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
-  fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
-  ws.getCell(totalCapitalRow, 3).value = {
-    formula: `SUM(C${firstCapitalRow}:C${lastCapitalRow})`,
-  } as ExcelJS.CellFormulaValue;
-  fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
-  ws.getRow(totalCapitalRow).height = 15.75;
-  row++;
+  let totalCapitalRow: number;
+  if (isStack) {
+    // Genuine cross-sheet links to the "Capital Required" worksheet's own
+    // reconciliation rows (built earlier in buildGeneratedWorkbook, so
+    // their addresses are already known here) -- never a second,
+    // independently summed total that could drift out of agreement with
+    // it. fmtValue automatically colors any formula containing "!" green
+    // (the cross-sheet-link convention), so no extra styling is needed.
+    // The literal "C14"/"C15"/"C16" fallback only applies if this sheet
+    // is ever built without a Capital Required worksheet present (should
+    // never happen for Stack Method in practice), and still reproduces
+    // the exact row layout capitalRequiredRows() always produces for
+    // Stack Method (11 fixed base rows + Base Capital Required + Signed
+    // Buyer Closing Adjustment + Adjusted Total Capital Required).
+    const baseAddr = capitalAddr?.get("Capital Required|Base Capital Required") ?? "C14";
+    const adjustmentAddr = capitalAddr?.get("Capital Required|Signed Buyer Closing Adjustment") ?? "C15";
+    const adjustedTotalAddr = capitalAddr?.get("Capital Required|Adjusted Total Capital Required") ?? "C16";
+
+    const baseRow = row;
+    ws.getCell(baseRow, 2).value = "Base Capital Required";
+    fmtLabel(ws.getCell(baseRow, 2), { bold: true });
+    ws.getCell(baseRow, 3).value = { formula: `'Capital Required'!${baseAddr}` } as ExcelJS.CellFormulaValue;
+    fmtValue(ws.getCell(baseRow, 3), TEMPLATE_CURRENCY_FMT);
+    ws.getRow(baseRow).height = 15.75;
+    row++;
+
+    const adjustmentRow = row;
+    ws.getCell(adjustmentRow, 2).value = "Estimated Cash to Buyer at Closing";
+    fmtLabel(ws.getCell(adjustmentRow, 2));
+    leftBorder(`B${adjustmentRow}`);
+    ws.getCell(adjustmentRow, 3).value = {
+      formula: `'Capital Required'!${adjustmentAddr}`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(ws.getCell(adjustmentRow, 3), TEMPLATE_CURRENCY_FMT);
+    ws.getRow(adjustmentRow).height = 15.75;
+    row++;
+
+    totalCapitalRow = row;
+    ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
+    fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
+    ws.getCell(totalCapitalRow, 3).value = {
+      formula: `'Capital Required'!${adjustedTotalAddr}`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
+    ws.getRow(totalCapitalRow).height = 15.75;
+    row++;
+  } else {
+    totalCapitalRow = row;
+    ws.getCell(totalCapitalRow, 2).value = "Total Capital Required";
+    fmtLabel(ws.getCell(totalCapitalRow, 2), { bold: true });
+    ws.getCell(totalCapitalRow, 3).value = {
+      formula: `SUM(C${firstCapitalRow}:C${lastCapitalRow})`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(ws.getCell(totalCapitalRow, 3), TEMPLATE_CURRENCY_FMT);
+    ws.getRow(totalCapitalRow).height = 15.75;
+    row++;
+  }
 
   // ---- blank spacer ----
   leftBorder(`B${row}`);
   row++;
 
   // ---- Cash-on-Cash Return ----
-  // Guarded against a $0 Total Capital Required (which the reference
-  // workbook's original =(C18*12)/C36 would have turned into #DIV/0!)
-  // -- shows "-" instead, matching the site's own zero-capital display.
+  // Guarded against a $0 (or, for Stack Method's linked cell, blank)
+  // Total Capital Required -- never produces #DIV/0!. Every non-Stack
+  // structure keeps its original "-" display (unchanged by this fix);
+  // Stack Method's linked total can momentarily read as a blank string
+  // if the "Capital Required" sheet's own cell is ever blank, so its
+  // guard also treats "" as the zero case, matching the OR() guard the
+  // reconciliation fix calls for.
   const cocRow = row;
   ws.getCell(cocRow, 2).value = "C on C Return";
   fmtLabel(ws.getCell(cocRow, 2), { bold: true });
   ws.getCell(cocRow, 3).value = {
-    formula: `IF(C${totalCapitalRow}=0,"-",(C21*12)/C${totalCapitalRow})`,
+    formula: isStack
+      ? `IF(OR(C${totalCapitalRow}="",C${totalCapitalRow}=0),"",(C21*12)/C${totalCapitalRow})`
+      : `IF(C${totalCapitalRow}=0,"-",(C21*12)/C${totalCapitalRow})`,
   } as ExcelJS.CellFormulaValue;
   fmtValue(ws.getCell(cocRow, 3), FMT_PERCENT, { emphasis: true });
   ws.getRow(cocRow).height = 15.75;
@@ -2509,7 +2589,7 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
   // Summary" (above) stays the workbook's first/active tab; this sheet
   // is purely additive.
   const inputs = addInputsSheet(wb, data);
-  buildUnderwritingSheet(wb, data, inputs);
+  buildUnderwritingSheet(wb, data, inputs, capAddr);
 
   // Balloon Analysis (only when the active mode actually has one).
   const balloon = activeBalloon(data);
