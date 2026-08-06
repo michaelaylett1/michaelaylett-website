@@ -94,6 +94,15 @@ import type { AutoTransitLookupResult } from "@/lib/transit/googleLookup";
 // are useful here to type the fetch() call below without redeclaring
 // them.
 import type { CountyLookupResult } from "@/lib/propertyTax/countyLookup";
+// The one authoritative state-to-default mapping for the Cleaning/Lawn
+// Care/Pest Control operating expense fields, shared with
+// lib/underwritingExcelExport.ts so the website and the Excel export
+// always agree.
+import {
+  getOperatingDefaultsForState,
+  operatingDefaultsSourceLabel,
+  type OperatingExpenseKey,
+} from "@/lib/operatingExpenseDefaults";
 import { loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
 import {
@@ -2351,14 +2360,18 @@ const APPRECIATION_PERCENT_KEYS = new Set<PercentKey>([
 
 // Cleaning, Lawn Care, and Pest Control replace the old combined
 // "Cleaning and Lawn Care" field: three separate, fully editable
-// monthly expenses, each with its own default.
-type MaintenanceExpenseKey = "cleaning" | "lawnCare" | "pestControl";
+// monthly expenses. Each one's default automatically follows the state
+// identified from the property address (see
+// lib/operatingExpenseDefaults.ts, the single authoritative
+// state-to-default mapping shared with the Excel export) until the
+// user edits that specific field by hand.
+type MaintenanceExpenseKey = OperatingExpenseKey;
 
-const MAINTENANCE_EXPENSE_DEFAULTS: Record<MaintenanceExpenseKey, number> = {
-  cleaning: 80,
-  lawnCare: 125,
-  pestControl: 0,
-};
+// Before any address has been entered/geocoded, no state is known yet,
+// so this uses the same "all other states" fallback the shared
+// function returns for an unrecognized/blank state code -- one source
+// of truth, no separately hand-maintained default object.
+const MAINTENANCE_EXPENSE_DEFAULTS: Record<MaintenanceExpenseKey, number> = getOperatingDefaultsForState(undefined);
 
 const BEDROOM_DEFAULTS = {
   sharedBathBedrooms: 0,
@@ -4158,6 +4171,18 @@ export default function SharedHousingCalculator() {
   const [maintenanceExpensesDraft, setMaintenanceExpensesDraft] = useState<
     Record<MaintenanceExpenseKey, string>
   >(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
+  // Whether each of the three fields is still following the automatic
+  // state-based default (true) or has been hand-edited by the user
+  // (false). All three start out auto-defaulted; editing a specific
+  // field flips only that field's flag to false (handleMaintenance
+  // ExpenseChange below), so the other two keep auto-updating. The
+  // effect a few hundred lines down (keyed on addressStateAbbreviation)
+  // only ever touches fields where this is still true, and
+  // applyStateDefaultsToMaintenanceExpenses() (the "Use State Defaults"
+  // button) sets all three back to true at once.
+  const [maintenanceExpenseIsAutoDefaulted, setMaintenanceExpenseIsAutoDefaulted] = useState<
+    Record<MaintenanceExpenseKey, boolean>
+  >({ cleaning: true, lawnCare: true, pestControl: true });
 
   // Holding Costs: initially and automatically calculated (3 months of
   // the complete monthly housing payment), but the field stays editable.
@@ -4339,6 +4364,18 @@ export default function SharedHousingCalculator() {
   const [countySuggestion, setCountySuggestion] = useState<string | null>(null);
   const countyAutoLookupAddressRef = useRef("");
 
+  // The state abbreviation (administrative_area_level_1 short_name)
+  // from the same geocoding lookup used for the County suggestion above
+  // -- reused here rather than geocoding a second time -- drives the
+  // state-based Cleaning/Lawn Care/Pest Control defaults below. Set
+  // whenever the lookup returns a state, even on an otherwise
+  // "notFound" county outcome (some addresses only resolve to
+  // state-level accuracy); cleared on every other outcome (no result,
+  // not configured, or a request/geocode failure) so the fields fall
+  // back to the "all other states" defaults rather than keeping a stale
+  // state from a previous address.
+  const [addressStateAbbreviation, setAddressStateAbbreviation] = useState<string | null>(null);
+
   function runCountyLookup(address: string) {
     setCountyAutoStatus("loading");
     return fetch("/api/property-tax/county-lookup", {
@@ -4352,20 +4389,25 @@ export default function SharedHousingCalculator() {
           const suggestion = data.stateAbbreviation ? `${data.county}, ${data.stateAbbreviation}` : data.county;
           setCountySuggestion(suggestion);
           setCountyAutoStatus("found");
+          setAddressStateAbbreviation(data.stateAbbreviation || null);
         } else if (data.status === "notFound") {
           setCountySuggestion(null);
           setCountyAutoStatus("notFound");
+          setAddressStateAbbreviation(data.stateAbbreviation || null);
         } else if (data.status === "error" && data.reason === "not_configured") {
           setCountySuggestion(null);
           setCountyAutoStatus("notConfigured");
+          setAddressStateAbbreviation(null);
         } else {
           setCountySuggestion(null);
           setCountyAutoStatus("error");
+          setAddressStateAbbreviation(null);
         }
       })
       .catch(() => {
         setCountySuggestion(null);
         setCountyAutoStatus("error");
+        setAddressStateAbbreviation(null);
       });
   }
 
@@ -4414,6 +4456,47 @@ export default function SharedHousingCalculator() {
     countyAutoLookupAddressRef.current = trimmed;
     void runCountyLookup(trimmed);
   }
+
+  // Keeps Cleaning/Lawn Care/Pest Control in sync with the state
+  // identified from the property address (lib/operatingExpenseDefaults.
+  // ts), for every field that is still following its automatic default.
+  // Fires whenever addressStateAbbreviation changes -- i.e. whenever a
+  // new address is selected from autocomplete, a valid address is
+  // geocoded, or the detected state otherwise changes (all of which
+  // already update addressStateAbbreviation via the county lookup
+  // above, so no separate address-change wiring is needed here). A
+  // manually edited field is left untouched: only keys where
+  // maintenanceExpenseIsAutoDefaulted[key] is still true are updated.
+  useEffect(() => {
+    const defaults = getOperatingDefaultsForState(addressStateAbbreviation);
+    const keys = Object.keys(defaults) as MaintenanceExpenseKey[];
+
+    setMaintenanceExpenses((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const key of keys) {
+        if (maintenanceExpenseIsAutoDefaulted[key] && next[key] !== defaults[key]) {
+          next[key] = defaults[key];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setMaintenanceExpensesDraft((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const key of keys) {
+        if (maintenanceExpenseIsAutoDefaulted[key]) {
+          const formatted = formatCents(defaults[key]);
+          if (next[key] !== formatted) {
+            next[key] = formatted;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [addressStateAbbreviation, maintenanceExpenseIsAutoDefaulted]);
 
   // Whether the current suggestion matches one of the counties this
   // calculator actually has a stored tax rate for -- "Use Suggested
@@ -4758,6 +4841,21 @@ export default function SharedHousingCalculator() {
   function handleMaintenanceExpenseChange(key: MaintenanceExpenseKey, raw: string) {
     setMaintenanceExpensesDraft((prev) => ({ ...prev, [key]: raw }));
     setMaintenanceExpenses((prev) => ({ ...prev, [key]: parseTypedAmount(raw) }));
+    // A direct edit is always a manual choice -- only
+    // applyStateDefaultsToMaintenanceExpenses() (the "Use State
+    // Defaults" button) marks a field as automatically defaulted again.
+    setMaintenanceExpenseIsAutoDefaulted((prev) => ({ ...prev, [key]: false }));
+  }
+  // Resets all three fields to the recommended defaults for the
+  // currently detected state (or the "all other states" fallback when
+  // no state has been identified yet) and marks all three as
+  // auto-defaulted again, so they resume following future address/state
+  // changes -- the "Use State Defaults" button's handler.
+  function applyStateDefaultsToMaintenanceExpenses() {
+    const defaults = getOperatingDefaultsForState(addressStateAbbreviation);
+    setMaintenanceExpenses(defaults);
+    setMaintenanceExpensesDraft(makeDraft(defaults));
+    setMaintenanceExpenseIsAutoDefaulted({ cleaning: true, lawnCare: true, pestControl: true });
   }
   function handleMaintenanceExpenseBlur(key: MaintenanceExpenseKey) {
     setMaintenanceExpenses((prev) => {
@@ -5279,6 +5377,8 @@ export default function SharedHousingCalculator() {
     setHybridExistingMortgageKnownMonthlyPIPaymentDraft("");
     setMaintenanceExpenses(MAINTENANCE_EXPENSE_DEFAULTS);
     setMaintenanceExpensesDraft(makeDraft(MAINTENANCE_EXPENSE_DEFAULTS));
+    setMaintenanceExpenseIsAutoDefaulted({ cleaning: true, lawnCare: true, pestControl: true });
+    setAddressStateAbbreviation(null);
     setSharedBathBedrooms(BEDROOM_DEFAULTS.sharedBathBedrooms);
     setSharedBathBedroomsDraft(String(BEDROOM_DEFAULTS.sharedBathBedrooms));
     setWeeklySharedBathRent(BEDROOM_DEFAULTS.weeklySharedBathRent);
@@ -7768,6 +7868,12 @@ export default function SharedHousingCalculator() {
         cleaningMonthly: results.cleaningMonthly,
         lawnCareMonthly: results.lawnCareMonthly,
         pestControlMonthly: results.pestControlMonthly,
+        operatingExpenseDefaultsSource: operatingDefaultsSourceLabel(
+          addressStateAbbreviation,
+          maintenanceExpenseIsAutoDefaulted.cleaning &&
+            maintenanceExpenseIsAutoDefaulted.lawnCare &&
+            maintenanceExpenseIsAutoDefaulted.pestControl
+        ),
         totalMonthlyOperatingExpenses: results.totalMonthlyOperatingExpenses,
         monthlyHousingPayment: results.monthlyHousingPayment,
         housingPaymentLabel,
@@ -10508,6 +10614,23 @@ export default function SharedHousingCalculator() {
               onBlur={() => handleMaintenanceExpenseBlur("pestControl")}
               helperText="Estimated monthly pest control expense."
             />
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            <span className="text-ink/40">
+              {operatingDefaultsSourceLabel(
+                addressStateAbbreviation,
+                maintenanceExpenseIsAutoDefaulted.cleaning &&
+                  maintenanceExpenseIsAutoDefaulted.lawnCare &&
+                  maintenanceExpenseIsAutoDefaulted.pestControl
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={applyStateDefaultsToMaintenanceExpenses}
+              className="inline-flex items-center gap-1 text-brass hover:text-ink underline underline-offset-2"
+            >
+              Use State Defaults
+            </button>
           </div>
 
           <div className="mt-8 pt-6 border-t border-line-dark">

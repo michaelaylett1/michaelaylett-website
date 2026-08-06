@@ -41,6 +41,13 @@ export interface CountyLookupNotFound {
    * does happen for some addresses (e.g. independent cities, some
    * non-US addresses) and is a normal, expected outcome, not an error. */
   matchedAddress: string | null;
+  /** The state component (administrative_area_level_1 short_name) is
+   * read independently of whether a county component was present, so
+   * callers that only need the state (e.g. state-based operating
+   * expense defaults) still get it even on an otherwise "notFound"
+   * county outcome. Null when Google returned no state component either
+   * (e.g. ZERO_RESULTS, or a non-US address with no equivalent level). */
+  stateAbbreviation: string | null;
 }
 
 export interface CountyLookupError {
@@ -62,7 +69,10 @@ interface AddressComponent {
  * caller only ever returns CountyLookupError for the latter. */
 export function parseCountyFromGeocodeResponse(
   body: unknown
-): { status: "found"; county: string; stateAbbreviation: string; matchedAddress: string } | { status: "notFound"; matchedAddress: string | null } | null {
+):
+  | { status: "found"; county: string; stateAbbreviation: string; matchedAddress: string }
+  | { status: "notFound"; matchedAddress: string | null; stateAbbreviation: string | null }
+  | null {
   if (!body || typeof body !== "object") return null;
   const b = body as {
     status?: string;
@@ -70,7 +80,7 @@ export function parseCountyFromGeocodeResponse(
   };
 
   // ZERO_RESULTS is a normal "notFound" outcome, not a request failure.
-  if (b.status === "ZERO_RESULTS") return { status: "notFound", matchedAddress: null };
+  if (b.status === "ZERO_RESULTS") return { status: "notFound", matchedAddress: null, stateAbbreviation: null };
   if (b.status !== "OK" || !Array.isArray(b.results) || b.results.length === 0) return null;
 
   const first = b.results[0];
@@ -81,7 +91,15 @@ export function parseCountyFromGeocodeResponse(
   const stateComponent = components.find((c) => c.types?.includes("administrative_area_level_1"));
 
   if (!countyComponent?.long_name) {
-    return { status: "notFound", matchedAddress: matchedAddress || null };
+    // The state component is read independently of the county component,
+    // so a "notFound" county outcome (e.g. an independent city, or an
+    // address Google can only resolve to state-level accuracy) can still
+    // carry a usable state abbreviation for callers that only need that.
+    return {
+      status: "notFound",
+      matchedAddress: matchedAddress || null,
+      stateAbbreviation: stateComponent?.short_name || null,
+    };
   }
 
   return {

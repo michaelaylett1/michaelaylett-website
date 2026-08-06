@@ -122,6 +122,12 @@ export interface UnderwritingExportData {
   cleaningMonthly: number;
   lawnCareMonthly: number;
   pestControlMonthly: number;
+  // State-based operating expense defaults (Cleaning/Lawn Care/Pest
+  // Control): a short provenance note, e.g. "Recommended monthly
+  // defaults for Texas" or "Custom values entered" -- computed by
+  // lib/operatingExpenseDefaults.ts, the same shared module the website
+  // uses, so this always matches what was shown on-page.
+  operatingExpenseDefaultsSource: string;
   totalMonthlyOperatingExpenses: number;
   monthlyHousingPayment: number;
   housingPaymentLabel: string;
@@ -2151,6 +2157,19 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
     { label: "Monthly Property Management Fee", value: money(data.propertyManagementFee), format: FMT_CURRENCY },
     { label: "Monthly Maintenance", value: money(data.maintenanceMonthly), format: FMT_CURRENCY },
     { label: "Monthly Utilities", value: money(data.utilitiesMonthly), format: FMT_CURRENCY },
+    // Monthly Cleaning/Lawn Care/Pest Control land on rows 19/20/21
+    // respectively (row 3 is the first data row in this fixed-position
+    // array, +1 per entry, no gaps) -- the three "Annual ..." formula
+    // rows appended after Annual Cash Flow below reference them
+    // directly (C19*12 / C20*12 / C21*12) rather than hardcoding a
+    // precomputed annual total, so they stay genuine, visible,
+    // recalculating formulas exactly like the template path's
+    // (buildUnderwritingSheet) equivalent rows. Appended at the end,
+    // after every other formula in this array, so none of the existing
+    // hardcoded row references above (Annual Vacancy's C9*12*C10,
+    // Monthly Cash Flow's C9-C23, Annual Cash Flow's C24*12, and any
+    // cross-sheet reference elsewhere in this file into "Operating
+    // Assumptions"!C24) shift.
     { label: "Monthly Cleaning", value: money(data.cleaningMonthly), format: FMT_CURRENCY },
     { label: "Monthly Lawn Care", value: money(data.lawnCareMonthly), format: FMT_CURRENCY },
     { label: "Monthly Pest Control", value: money(data.pestControlMonthly), format: FMT_CURRENCY },
@@ -2164,6 +2183,10 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
       emphasis: true,
     },
     { label: "Annual Cash Flow", formula: "C24*12", format: FMT_CURRENCY },
+    { label: "Annual Cleaning", formula: "C19*12", format: FMT_CURRENCY },
+    { label: "Annual Lawn Care", formula: "C20*12", format: FMT_CURRENCY },
+    { label: "Annual Pest Control", formula: "C21*12", format: FMT_CURRENCY },
+    { label: "Operating Expense Defaults Source", value: data.operatingExpenseDefaultsSource },
   ];
 }
 
@@ -2321,6 +2344,7 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
       { label: "Monthly Principal & Interest", value: money(data.sellerFinancingMonthlyPI), format: FMT_CURRENCY },
       { label: "Total Monthly Housing Payment", formula: "Underwriting!C23", format: TEMPLATE_CURRENCY_FMT },
       { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
+      { label: "Operating Expense Defaults Source", value: data.operatingExpenseDefaultsSource },
     ];
   }
   if (data.financingMode === "subjectTo") {
@@ -2340,6 +2364,7 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
       { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
       { label: "Arrears", formula: "Underwriting!C25", format: TEMPLATE_CURRENCY_FMT },
       { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
+      { label: "Operating Expense Defaults Source", value: data.operatingExpenseDefaultsSource },
     ];
   }
   if (data.financingMode === "hybrid") {
@@ -2400,6 +2425,7 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
       { label: "Seller Down Payment", value: money(data.sellerDownPayment), format: FMT_CURRENCY, input: true },
       { label: "Arrears", formula: "Underwriting!C25", format: TEMPLATE_CURRENCY_FMT },
       { label: "Estimated Equity", formula: "Underwriting!F7", format: FMT_CURRENCY, emphasis: true },
+      { label: "Operating Expense Defaults Source", value: data.operatingExpenseDefaultsSource },
     ];
   }
   // Stack Method
