@@ -1,10 +1,12 @@
 /**
- * Client-side loader for the Google Maps JavaScript API's "places"
- * library, used only for the Property Address autocomplete dropdown
- * (see PropertyAddressAutocomplete in
- * components/underwriting/SharedHousingCalculator.tsx). This is a
- * different Google Maps product from the other two already in this
- * project:
+ * Client-side loader for two Google Maps JavaScript API libraries used
+ * by components/underwriting/SharedHousingCalculator.tsx: "places" (the
+ * Property Address autocomplete dropdown, PropertyAddressAutocomplete)
+ * and "streetView" (the interactive Property Street View panorama,
+ * PropertyStreetView). Both share the exact same underlying bootstrap
+ * script/key/singleton below -- only the specific library name passed
+ * to importLibrary() differs. This is a different Google Maps product
+ * from the other two already in this project:
  *   - NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY drives the Maps Embed API
  *     iframe on the Transit section (a static embed URL, no JavaScript
  *     SDK involved).
@@ -35,7 +37,7 @@
  */
 
 import type { GooglePlacesLibrary } from "./googlePlacesTypes";
-import type { GoogleMapsCoreLibrary } from "./googleStreetViewTypes";
+import type { GoogleStreetViewLibrary } from "./googleStreetViewTypes";
 
 declare global {
   interface Window {
@@ -44,6 +46,17 @@ declare global {
         importLibrary: (name: string) => Promise<unknown>;
       };
     };
+    // Google's documented global auth-failure hook: fires for
+    // RefererNotAllowedMapError, InvalidKeyMapError, and similar key/
+    // billing/API-restriction problems that the Maps JavaScript API
+    // cannot report through a normal Promise rejection (the bootstrap
+    // script itself calls this, outside of any importLibrary() call) --
+    // see https://developers.google.com/maps/documentation/javascript/events#auth-errors.
+    // Defined once here purely for diagnostics (item 7 in the Street
+    // View debugging request): logs a clear, non-sensitive console
+    // message pointing at the actual cause instead of leaving these
+    // errors to only ever show as Google's own generic overlay text.
+    gm_authFailure?: () => void;
   }
 }
 
@@ -58,7 +71,22 @@ const STREET_VIEW_LOG_PREFIX = "[PropertyStreetView]";
 // replaced at injection time with the real API key + version.
 const BOOTSTRAP_SNIPPET_TEMPLATE = `(g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src="https://maps."+c+"apis.com/maps/api/js?"+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})(GMAPS_BOOTSTRAP_OPTIONS);`;
 
+function installAuthFailureDiagnostics() {
+  if (window.gm_authFailure) return; // don't clobber a handler the host page already defined
+  window.gm_authFailure = () => {
+    console.error(
+      "[GoogleMaps] gm_authFailure fired -- the Maps JavaScript API rejected this page's API key/domain " +
+        "combination. Common causes: the key's HTTP referrer restrictions do not include this exact hostname " +
+        "(check for http vs https, and www vs non-www), the Maps JavaScript API is not enabled for this key's " +
+        "Google Cloud project, billing is not enabled on that project, or the key itself is invalid/deleted. " +
+        "Look for a more specific error name in the console just above this message, e.g. " +
+        "RefererNotAllowedMapError, ApiNotActivatedMapError, InvalidKeyMapError, or BillingNotEnabledMapError."
+    );
+  };
+}
+
 function injectBootstrapLoader(apiKey: string) {
+  installAuthFailureDiagnostics();
   if (window.google?.maps?.importLibrary) return;
   if (document.querySelector("script[data-google-maps-bootstrap]")) return;
 
@@ -73,19 +101,29 @@ function injectBootstrapLoader(apiKey: string) {
 }
 
 let placesLoadPromise: Promise<GooglePlacesLibrary> | null = null;
-let coreLoadPromise: Promise<GoogleMapsCoreLibrary> | null = null;
+let streetViewLoadPromise: Promise<GoogleStreetViewLibrary> | null = null;
 
 /**
  * Shared implementation behind both loadGooglePlacesLibrary (below) and
- * loadGoogleMapsCoreLibrary (also below, added for the interactive
+ * loadGoogleStreetViewLibrary (also below, used by the interactive
  * Property Street View panorama). Both load the same underlying Maps
  * JavaScript API bootstrap (injected at most once per page load no
  * matter how many times either caller runs) and only differ in which
  * named library they import from it and which in-flight/resolved
- * promise they cache -- StreetViewService/StreetViewPanorama live in
- * the core "maps" library, not "places", so they need their own
- * importLibrary() call and their own cache, but must not inject a
- * second competing bootstrap script.
+ * promise they cache.
+ *
+ * IMPORTANT: StreetViewService/StreetViewPanorama live in their own
+ * dedicated "streetView" library, not the core "maps" library (an
+ * earlier version of this file called importLibrary("maps") for Street
+ * View, which resolves fine but the returned object has no
+ * StreetViewService/StreetViewPanorama on it at all -- `new
+ * lib.StreetViewPanorama(...)` then throws "not a constructor",
+ * surfacing on-page as a generic "Street View could not be loaded right
+ * now" with no further explanation. See Google's library table:
+ * https://developers.google.com/maps/documentation/javascript/libraries
+ * -- "maps" contains Map/InfoWindow/etc.; "streetView" contains
+ * StreetViewPanorama, StreetViewService, StreetViewPreference,
+ * StreetViewSource, StreetViewStatus, and StreetViewCoverageLayer).
  */
 function loadGoogleMapsLibrary<T>(
   apiKey: string,
@@ -177,22 +215,22 @@ export function loadGooglePlacesLibrary(apiKey: string): Promise<GooglePlacesLib
 }
 
 /**
- * Loads the Maps JavaScript API's core "maps" library, which is where
- * StreetViewService and StreetViewPanorama live -- used by the
+ * Loads the Maps JavaScript API's dedicated "streetView" library, where
+ * StreetViewService and StreetViewPanorama actually live -- used by the
  * interactive Property Street View panorama on the Transit and Bus
  * Stop Access section. Shares the same bootstrap-injection singleton
  * as loadGooglePlacesLibrary above (both ultimately load the same
  * underlying script), but is cached separately since it resolves a
  * different library object.
  */
-export function loadGoogleMapsCoreLibrary(apiKey: string): Promise<GoogleMapsCoreLibrary> {
+export function loadGoogleStreetViewLibrary(apiKey: string): Promise<GoogleStreetViewLibrary> {
   return loadGoogleMapsLibrary(
     apiKey,
-    "maps",
+    "streetView",
     STREET_VIEW_LOG_PREFIX,
-    () => coreLoadPromise,
+    () => streetViewLoadPromise,
     (value) => {
-      coreLoadPromise = value;
+      streetViewLoadPromise = value;
     }
   );
 }

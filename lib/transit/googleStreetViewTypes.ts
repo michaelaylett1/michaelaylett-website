@@ -1,11 +1,15 @@
 /**
  * Minimal ambient shapes for the pieces of the Google Maps JavaScript
- * core "maps" library that the interactive Property Street View
+ * API's dedicated "streetView" library (NOT the core "maps" library --
+ * see the long comment in lib/transit/googleMapsLoader.ts explaining
+ * why that distinction is exactly what was broken before) that the
+ * interactive Property Street View
  * (components/underwriting/SharedHousingCalculator.tsx's
  * PropertyStreetView component) actually uses: StreetViewService (to
  * find the nearest available panorama to the property's geocoded
- * coordinates) and StreetViewPanorama (to render it, interactively,
- * inside the page).
+ * coordinates), StreetViewPanorama (to render it, interactively, inside
+ * the page), and the StreetViewPreference/StreetViewSource enum-like
+ * objects passed into a getPanorama() request.
  *
  * Deliberately not the full @types/google.maps package -- same
  * rationale as lib/transit/googlePlacesTypes.ts: this feature only
@@ -44,20 +48,48 @@ export interface StreetViewResponse {
   data: StreetViewPanoramaData;
 }
 
+/** The shape google.maps.importLibrary("streetView")'s getPanorama()
+ * Promise rejects with on a non-OK outcome -- Google does not document
+ * this as a formal type, so this is intentionally loose (every field
+ * optional) and every read of it in PropertyStreetView tolerates any of
+ * them being absent. `code`/`status` cover the two different property
+ * names different Maps JS API versions have used for the same idea. */
+export interface StreetViewServiceError {
+  code?: string;
+  status?: string;
+  message?: string;
+}
+
 export interface StreetViewPanoRequest {
   location: GoogleLatLngLiteral;
   /** Search radius in meters for the nearest available panorama. */
   radius?: number;
-  /** "outdoor" restricts results to outdoor imagery (never an indoor
-   * business photo), which is what a property-frontage/parking check
-   * needs -- the string value matches google.maps.StreetViewSource.
-   * OUTDOOR exactly, so passing it directly (rather than importing the
-   * enum object) is equivalent. */
-  source?: "default" | "outdoor";
+  /** Restricts results to outdoor imagery (never an indoor business
+   * photo), which is what a property-frontage/parking check needs. */
+  source?: string;
+  /** Prefer the nearest panorama over Google's "best" (most photographically
+   * complete) one -- for this feature, physically closest to the
+   * property matters more than photo quality. */
+  preference?: string;
 }
 
 export interface StreetViewService {
   getPanorama(request: StreetViewPanoRequest): Promise<StreetViewResponse>;
+}
+
+/** Enum-like objects the "streetView" library itself exports (actual
+ * values are lowercase strings, e.g. StreetViewSource.OUTDOOR ===
+ * "outdoor") -- read from the loaded library object rather than
+ * hardcoded here, so this file never has to be kept in sync with
+ * Google's actual values by hand. */
+export interface StreetViewSourceEnum {
+  DEFAULT: string;
+  OUTDOOR: string;
+}
+
+export interface StreetViewPreferenceEnum {
+  BEST: string;
+  NEAREST: string;
 }
 
 export interface StreetViewPov {
@@ -89,7 +121,9 @@ export interface StreetViewPanorama {
   setVisible(visible: boolean): void;
 }
 
-export interface GoogleMapsCoreLibrary {
+export interface GoogleStreetViewLibrary {
   StreetViewService: new () => StreetViewService;
   StreetViewPanorama: new (container: HTMLElement, opts?: StreetViewPanoramaOptions) => StreetViewPanorama;
+  StreetViewSource: StreetViewSourceEnum;
+  StreetViewPreference: StreetViewPreferenceEnum;
 }

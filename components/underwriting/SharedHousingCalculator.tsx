@@ -104,9 +104,9 @@ import {
   operatingDefaultsSourceLabel,
   type OperatingExpenseKey,
 } from "@/lib/operatingExpenseDefaults";
-import { loadGoogleMapsCoreLibrary, loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
+import { loadGoogleStreetViewLibrary, loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
-import type { StreetViewPanorama } from "@/lib/transit/googleStreetViewTypes";
+import type { StreetViewPanorama, StreetViewServiceError } from "@/lib/transit/googleStreetViewTypes";
 import { computeHeadingDegrees, haversineMetersLatLng } from "@/lib/transit/streetViewGeo";
 import {
   AUTOCOMPLETE_DEBOUNCE_MS,
@@ -3154,13 +3154,54 @@ interface StreetViewResolvedData {
 // coordinates is described as "the nearest available" imagery rather
 // than presented as if it were taken right in front of the property.
 const STREET_VIEW_APPROXIMATE_THRESHOLD_METERS = 30;
-// Search radii tried in order -- a tight first pass (imagery actually
-// close to the property), widened once if nothing turns up within it,
-// so a property on a street Google hasn't driven still has a decent
-// chance of showing *something* nearby rather than immediately giving
-// up (spec section 5: "If imagery exists nearby ... use the closest
-// practical panorama").
-const STREET_VIEW_SEARCH_RADII_METERS = [50, 200];
+// Search radii tried in order, widest last -- a tight first pass
+// (imagery actually close to the property), progressively widened only
+// when the previous radius came back with a genuine zero-results
+// outcome (never on a real API error, where a bigger radius would just
+// fail the same way), so a property on a street Google hasn't driven
+// directly still has a decent chance of showing *something* nearby
+// rather than immediately giving up (spec: "If imagery exists nearby
+// ... use the closest practical panorama").
+const STREET_VIEW_SEARCH_RADII_METERS = [50, 100, 250, 500];
+
+// Every known non-OK status the Street View service can report, mapped
+// to a short, non-sensitive explanation -- logged to the console (never
+// shown to the end user) so a real misconfiguration is diagnosable
+// instead of just "could not be loaded". Keyed loosely (uppercased,
+// substring-matched) since different Maps JS API versions have reported
+// these as either an Error.code or an Error.message fragment.
+const STREET_VIEW_ERROR_EXPLANATIONS: Record<string, string> = {
+  REQUEST_DENIED:
+    "the API key rejected this request -- check that the key's HTTP referrer restrictions include this exact " +
+    "hostname (http vs https and www vs non-www both matter) and that Maps JavaScript API is enabled and billed " +
+    "for this key's Google Cloud project.",
+  INVALID_REQUEST: "the request was malformed (missing/invalid location) -- this points at a bug, not configuration.",
+  OVER_QUERY_LIMIT: "the project's Street View request quota or billing limit was exceeded.",
+  UNKNOWN_ERROR: "a transient server-side error on Google's end -- often resolves on retry.",
+  NOT_FOUND: "no panorama exists near the requested location (this radius, specifically).",
+};
+
+function explainStreetViewFailure(err: unknown): string {
+  const e = err as StreetViewServiceError | undefined;
+  const rawCode = (e?.code || e?.status || "").toString().toUpperCase();
+  for (const key of Object.keys(STREET_VIEW_ERROR_EXPLANATIONS)) {
+    if (rawCode.includes(key)) return `${key}: ${STREET_VIEW_ERROR_EXPLANATIONS[key]}`;
+  }
+  const message = e?.message || (err instanceof Error ? err.message : String(err));
+  return `unrecognized error${rawCode ? ` (code: ${rawCode})` : ""}: ${message}`;
+}
+
+// ZERO_RESULTS (and the "NOT_FOUND"-style code some Maps JS API
+// versions use for the same idea) is the one outcome that should
+// advance to the next, wider search radius rather than being treated as
+// a real failure -- every other status is a genuine error worth
+// stopping on immediately (a bigger radius will not fix a rejected API
+// key).
+function isZeroResultsFailure(err: unknown): boolean {
+  const e = err as StreetViewServiceError | undefined;
+  const rawCode = (e?.code || e?.status || "").toString().toUpperCase();
+  return rawCode.includes("ZERO_RESULTS") || rawCode.includes("NOT_FOUND");
+}
 
 function PropertyStreetView({
   propertyAddress,
@@ -3186,120 +3227,172 @@ function PropertyStreetView({
     onResolvedChangeRef.current = onResolvedChange;
   });
 
+  // A fallback "Open in Google Street View" destination built from the
+  // property's coordinates alone -- available the instant a valid
+  // address has geocoded, independent of whether our own embedded
+  // panorama lookup below has succeeded, failed, or is still running
+  // (spec item 10: the button must stay usable even if the embedded
+  // viewer errors out). Google's own /maps/@ pano deep link performs
+  // its own "nearest panorama" resolution when opened, so this alone is
+  // already useful; `openUrl` (state, set only once our own lookup
+  // succeeds) is preferred over this whenever it is available, since it
+  // points at the exact panorama/heading already shown on this page.
+  const fallbackOpenUrl =
+    propertyLat !== null && propertyLng !== null
+      ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${propertyLat},${propertyLng}`
+      : null;
+  const effectiveOpenUrl = openUrl ?? fallbackOpenUrl;
+
   useEffect(() => {
+    // Whenever the property's coordinates change (a new address
+    // geocoded, or the address was cleared) invalidate any lookup
+    // already in flight for the previous address, so a late-arriving
+    // response for a stale address can never overwrite what's shown for
+    // the current one (spec item 11).
+    const seq = ++requestSeqRef.current;
+
     if (propertyLat === null || propertyLng === null) {
-      // Invalidate any lookup already in flight for a previous address
-      // so its response, if it arrives late, is ignored.
-      requestSeqRef.current += 1;
       setStatus("idle");
       setIsApproximate(false);
       setOpenUrl(null);
+      panoramaRef.current?.setVisible(false);
       onResolvedChangeRef.current(null);
       return;
     }
     if (!embedApiKey) {
       setStatus("notConfigured");
       setOpenUrl(null);
+      panoramaRef.current?.setVisible(false);
       onResolvedChangeRef.current(null);
       return;
     }
 
-    const seq = ++requestSeqRef.current;
     setStatus("loading");
+    setOpenUrl(null);
+    // Hide (never destroy -- it gets reused/re-panoed below) whatever
+    // panorama was showing for the previous address while the new
+    // lookup runs, per spec item 11 ("clear the old Street View").
+    panoramaRef.current?.setVisible(false);
+
     const propertyLocation = { lat: propertyLat, lng: propertyLng };
 
-    loadGoogleMapsCoreLibrary(embedApiKey)
-      .then((lib) => {
+    async function resolveStreetView() {
+      let lib;
+      try {
+        lib = await loadGoogleStreetViewLibrary(embedApiKey as string);
+      } catch (err) {
         if (seq !== requestSeqRef.current) return;
-        const service = new lib.StreetViewService();
-
-        const tryRadius = (radiusIndex: number) => {
-          const radius = STREET_VIEW_SEARCH_RADII_METERS[radiusIndex];
-          service
-            .getPanorama({ location: propertyLocation, radius, source: "outdoor" })
-            .then((response) => {
-              if (seq !== requestSeqRef.current) return;
-              const latLng = response.data.location?.latLng;
-              const panoId = response.data.location?.pano;
-              if (!latLng || !panoId) {
-                if (radiusIndex + 1 < STREET_VIEW_SEARCH_RADII_METERS.length) {
-                  tryRadius(radiusIndex + 1);
-                  return;
-                }
-                setStatus("notFound");
-                setOpenUrl(null);
-                onResolvedChangeRef.current(null);
-                return;
-              }
-
-              const panoLocation = { lat: latLng.lat(), lng: latLng.lng() };
-              const heading = computeHeadingDegrees(panoLocation, propertyLocation);
-              const roundedHeading = Math.round(heading);
-              const approximate = haversineMetersLatLng(panoLocation, propertyLocation) > STREET_VIEW_APPROXIMATE_THRESHOLD_METERS;
-
-              if (!containerRef.current) {
-                setStatus("notFound");
-                setOpenUrl(null);
-                onResolvedChangeRef.current(null);
-                return;
-              }
-
-              if (!panoramaRef.current) {
-                panoramaRef.current = new lib.StreetViewPanorama(containerRef.current, {
-                  pano: panoId,
-                  pov: { heading: roundedHeading, pitch: 0 },
-                  zoom: 1,
-                  addressControl: false,
-                  showRoadLabels: false,
-                  motionTracking: false,
-                  motionTrackingControl: false,
-                  fullscreenControl: true,
-                  zoomControl: true,
-                  panControl: true,
-                  linksControl: true,
-                  clickToGo: true,
-                });
-              } else {
-                panoramaRef.current.setPano(panoId);
-                panoramaRef.current.setPov({ heading: roundedHeading, pitch: 0 });
-                panoramaRef.current.setVisible(true);
-              }
-
-              setIsApproximate(approximate);
-              setStatus("found");
-              setOpenUrl(
-                `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${panoLocation.lat},${panoLocation.lng}` +
-                  `&heading=${roundedHeading}&pitch=0&pano=${encodeURIComponent(panoId)}`
-              );
-              onResolvedChangeRef.current({
-                lat: panoLocation.lat,
-                lng: panoLocation.lng,
-                heading: roundedHeading,
-                isNearestApproximate: approximate,
-              });
-            })
-            .catch((err) => {
-              if (seq !== requestSeqRef.current) return;
-              if (radiusIndex + 1 < STREET_VIEW_SEARCH_RADII_METERS.length) {
-                tryRadius(radiusIndex + 1);
-                return;
-              }
-              console.error("[PropertyStreetView] StreetViewService.getPanorama failed:", err);
-              setStatus("error");
-              setOpenUrl(null);
-              onResolvedChangeRef.current(null);
-            });
-        };
-
-        tryRadius(0);
-      })
-      .catch((err) => {
-        if (seq !== requestSeqRef.current) return;
-        console.error("[PropertyStreetView] Failed to load the Maps JavaScript API core library:", err);
+        console.error(
+          "[PropertyStreetView] Failed to load the Maps JavaScript API's \"streetView\" library:",
+          err
+        );
         setStatus("error");
-        setOpenUrl(null);
         onResolvedChangeRef.current(null);
-      });
+        return;
+      }
+      if (seq !== requestSeqRef.current) return;
+
+      const service = new lib.StreetViewService();
+      const source = lib.StreetViewSource?.OUTDOOR ?? "outdoor";
+      const preference = lib.StreetViewPreference?.NEAREST ?? "nearest";
+
+      for (let i = 0; i < STREET_VIEW_SEARCH_RADII_METERS.length; i++) {
+        const radius = STREET_VIEW_SEARCH_RADII_METERS[i];
+        const isLastRadius = i === STREET_VIEW_SEARCH_RADII_METERS.length - 1;
+
+        let response;
+        try {
+          response = await service.getPanorama({ location: propertyLocation, radius, source, preference });
+        } catch (err) {
+          if (seq !== requestSeqRef.current) return;
+          if (isZeroResultsFailure(err)) {
+            console.info(`[PropertyStreetView] No panorama within ${radius}m; ${explainStreetViewFailure(err)}`);
+            if (!isLastRadius) continue;
+            setStatus("notFound");
+            setOpenUrl(null);
+            onResolvedChangeRef.current(null);
+            return;
+          }
+          console.error(
+            `[PropertyStreetView] StreetViewService.getPanorama failed at radius ${radius}m -- ${explainStreetViewFailure(err)}`,
+            err
+          );
+          setStatus("error");
+          setOpenUrl(null);
+          onResolvedChangeRef.current(null);
+          return;
+        }
+        if (seq !== requestSeqRef.current) return;
+
+        const latLng = response?.data?.location?.latLng;
+        const panoId = response?.data?.location?.pano;
+        if (!latLng || !panoId) {
+          console.info(`[PropertyStreetView] No panorama within ${radius}m (empty response, not an error).`);
+          if (!isLastRadius) continue;
+          setStatus("notFound");
+          setOpenUrl(null);
+          onResolvedChangeRef.current(null);
+          return;
+        }
+
+        // Found one -- render it and stop (spec: "Stop once valid
+        // Street View imagery is found").
+        const panoLocation = { lat: latLng.lat(), lng: latLng.lng() };
+        const heading = Math.round(computeHeadingDegrees(panoLocation, propertyLocation));
+        const approximate = haversineMetersLatLng(panoLocation, propertyLocation) > STREET_VIEW_APPROXIMATE_THRESHOLD_METERS;
+
+        if (!containerRef.current) {
+          console.error("[PropertyStreetView] Panorama found but the viewer's DOM container was not mounted.");
+          setStatus("error");
+          onResolvedChangeRef.current(null);
+          return;
+        }
+
+        try {
+          if (!panoramaRef.current) {
+            panoramaRef.current = new lib.StreetViewPanorama(containerRef.current, {
+              pano: panoId,
+              pov: { heading, pitch: 0 },
+              zoom: 1,
+              addressControl: true,
+              showRoadLabels: false,
+              motionTracking: false,
+              motionTrackingControl: false,
+              fullscreenControl: true,
+              zoomControl: true,
+              panControl: true,
+              linksControl: true,
+              clickToGo: true,
+            });
+          } else {
+            panoramaRef.current.setPano(panoId);
+            panoramaRef.current.setPov({ heading, pitch: 0 });
+          }
+          panoramaRef.current.setVisible(true);
+        } catch (err) {
+          console.error("[PropertyStreetView] Failed to construct/update StreetViewPanorama:", err);
+          setStatus("error");
+          onResolvedChangeRef.current(null);
+          return;
+        }
+
+        setIsApproximate(approximate);
+        setStatus("found");
+        setOpenUrl(
+          `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${panoLocation.lat},${panoLocation.lng}` +
+            `&heading=${heading}&pitch=0&pano=${encodeURIComponent(panoId)}`
+        );
+        onResolvedChangeRef.current({
+          lat: panoLocation.lat,
+          lng: panoLocation.lng,
+          heading,
+          isNearestApproximate: approximate,
+        });
+        return;
+      }
+    }
+
+    void resolveStreetView();
     // embedApiKey never changes at runtime (it is a build-time env var);
     // onResolvedChange is read through onResolvedChangeRef instead of
     // being a dependency, so this only re-runs when the property's
@@ -3346,15 +3439,15 @@ function PropertyStreetView({
 
       <div className="mt-4 flex justify-center">
         <a
-          href={openUrl ?? "#"}
+          href={effectiveOpenUrl ?? "#"}
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => {
-            if (!openUrl) e.preventDefault();
+            if (!effectiveOpenUrl) e.preventDefault();
           }}
-          aria-disabled={!openUrl}
+          aria-disabled={!effectiveOpenUrl}
           className={`inline-flex items-center gap-2 border px-4 py-2.5 text-sm transition-colors w-full sm:w-auto justify-center ${
-            openUrl
+            effectiveOpenUrl
               ? "border-line-dark text-ink hover:border-brass"
               : "border-line-dark/50 text-ink/40 cursor-not-allowed"
           }`}
@@ -3699,7 +3792,15 @@ function PropertyStreetViewPrintSection({
 }: {
   streetViewData: { lat: number; lng: number; heading: number; isNearestApproximate: boolean } | null;
 }) {
-  if (!streetViewData) return null;
+  // The route can fail independently of the interactive viewer (e.g. its
+  // own metadata pre-check finds no imagery, or the paid image request
+  // errors) -- when that happens, hide this whole card on <img onError>
+  // rather than showing a broken-image icon in the printed report. This
+  // never touches or depends on the interactive PropertyStreetView
+  // panorama above, which is a fully separate code path.
+  const [imageFailed, setImageFailed] = useState(false);
+
+  if (!streetViewData || imageFailed) return null;
 
   const imageUrl = `/api/transit/street-view?lat=${streetViewData.lat}&lng=${streetViewData.lng}&heading=${streetViewData.heading}&pitch=0`;
 
@@ -3725,6 +3826,7 @@ function PropertyStreetViewPrintSection({
           alt="Street View of the property frontage"
           className="block w-full h-auto"
           style={{ aspectRatio: "640 / 400", objectFit: "contain", maxHeight: "3.4in" }}
+          onError={() => setImageFailed(true)}
         />
       </div>
       {streetViewData.isNearestApproximate && (

@@ -17,18 +17,32 @@ import { NextRequest, NextResponse } from "next/server";
  * resulting image bytes -- so the private key never appears in any
  * browser-visible markup, network request, or JS bundle.
  *
- * Deliberately does not perform its own availability check (the Street
- * View Static API returns an HTTP 200 "Sorry, we have no imagery here"
+ * Before requesting the (paid) image, this route first calls the Street
+ * View Static API's metadata endpoint -- a free request that reports
+ * whether imagery actually exists near the given location without
+ * billing for an image -- and only proceeds to fetch the image if the
+ * metadata reports status "OK". This matters because the paid image
+ * endpoint itself returns an HTTP 200 "Sorry, we have no imagery here"
  * placeholder image, not an error status, when nothing is available at
- * a location -- so a request-level check here could not reliably tell
- * the two cases apart anyway). Availability is instead determined once,
- * client-side, by the same google.maps.StreetViewService.getPanorama()
- * call that powers the interactive on-page panorama (see
- * PropertyStreetView in SharedHousingCalculator.tsx) -- this route is
- * only ever requested with the coordinates of a panorama that call
- * already confirmed exists, using the exact lat/lng/heading the live
- * page is showing, so the printed image always matches what the user
- * saw interactively.
+ * a location, so skipping the metadata check would let the printable
+ * report silently embed that placeholder instead of a real photo. The
+ * metadata response's own resolved pano_id/location is used for the
+ * actual image request, so the print image is pinned to the exact same
+ * panorama the metadata check confirmed exists (rather than re-deriving
+ * "nearest" separately and risking a mismatch).
+ *
+ * This is defense-in-depth on top of (not a replacement for) the
+ * client-side availability check: in normal operation this route is
+ * only ever requested with the coordinates of a panorama that
+ * google.maps.StreetViewService.getPanorama() already confirmed exists
+ * client-side (see PropertyStreetView in SharedHousingCalculator.tsx),
+ * using the exact lat/lng/heading the live page is showing, so the
+ * printed image matches what the user saw interactively. A failure or
+ * "no imagery" result from this route only affects the printable
+ * report image -- it cannot affect, and is never read by, the
+ * interactive on-page Street View viewer, which is a fully independent
+ * code path (google.maps.StreetViewPanorama rendered client-side via
+ * the public NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY, not this route).
  */
 export const runtime = "nodejs";
 // This response depends entirely on per-request query params (a
@@ -64,6 +78,51 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "missing_coordinates" }, { status: 400 });
   }
 
+  // Free metadata pre-check: confirms imagery actually exists near
+  // (lat,lng) -- and gives back the exact panorama's own location --
+  // before spending a paid image request on it. See the file-header
+  // comment for why this matters (the image endpoint alone can't tell
+  // "no imagery" apart from a real photo).
+  const metadataUrl =
+    `https://maps.googleapis.com/maps/api/streetview/metadata` +
+    `?location=${lat},${lng}` +
+    `&source=outdoor` +
+    `&key=${apiKey}`;
+
+  let imageLat = lat;
+  let imageLng = lng;
+
+  try {
+    const metaRes = await fetch(metadataUrl);
+    if (!metaRes.ok) {
+      console.error(`[street-view route] metadata request failed with HTTP ${metaRes.status}`);
+      return NextResponse.json({ error: "upstream_failed" }, { status: 502 });
+    }
+    const meta = (await metaRes.json()) as {
+      status?: string;
+      location?: { lat?: number; lng?: number };
+    };
+    if (meta.status !== "OK") {
+      // ZERO_RESULTS (no imagery), REQUEST_DENIED (key/API-config
+      // problem), INVALID_REQUEST, OVER_QUERY_LIMIT, etc. -- none of
+      // these mean an image exists to fetch, so stop here rather than
+      // requesting (and billing for) the paid placeholder image.
+      console.info(`[street-view route] metadata status "${meta.status}" -- no image request made.`);
+      return NextResponse.json({ error: "no_imagery", metadataStatus: meta.status ?? "UNKNOWN" }, { status: 404 });
+    }
+    // Pin the image request to the metadata's own resolved panorama
+    // location, if present, so the fetched image matches exactly what
+    // the metadata check confirmed exists (rather than re-deriving
+    // "nearest" a second time via the image endpoint's own snapping).
+    if (typeof meta.location?.lat === "number" && typeof meta.location?.lng === "number") {
+      imageLat = meta.location.lat;
+      imageLng = meta.location.lng;
+    }
+  } catch (err) {
+    console.error("[street-view route] metadata request threw:", err);
+    return NextResponse.json({ error: "request_failed" }, { status: 502 });
+  }
+
   // 640x400 at the API's own max free-tier resolution for a single
   // request -- large enough to inspect the driveway, curb space, and
   // frontage once printed, while keeping a fixed 8:5 aspect ratio the
@@ -71,7 +130,7 @@ export async function GET(req: NextRequest) {
   const streetViewUrl =
     `https://maps.googleapis.com/maps/api/streetview` +
     `?size=640x400` +
-    `&location=${lat},${lng}` +
+    `&location=${imageLat},${imageLng}` +
     `&heading=${heading}` +
     `&pitch=${pitch}` +
     `&fov=90` +
@@ -96,7 +155,8 @@ export async function GET(req: NextRequest) {
         "Cache-Control": "private, max-age=3600",
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("[street-view route] image request threw:", err);
     return NextResponse.json({ error: "request_failed" }, { status: 502 });
   }
 }
