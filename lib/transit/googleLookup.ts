@@ -72,6 +72,17 @@ export interface AutoTransitFound {
 export interface AutoTransitNotFound {
   status: "notFound";
   matchedAddress: string | null;
+  // The property still geocoded successfully even though no bus stop
+  // was found nearby -- "no transit stop nearby" and "could not
+  // geocode this address" are independent outcomes, and callers that
+  // only need the property's coordinates (e.g. the Property Street
+  // View feature, which has nothing to do with bus stops) should not
+  // have to wait for a bus stop to also be found. Null only on the
+  // genuinely unexpected case where this function reaches a "notFound"
+  // return without ever having geocoded (should not happen given the
+  // current pipeline order, but kept nullable defensively).
+  propertyLatitude: number | null;
+  propertyLongitude: number | null;
 }
 
 export interface AutoTransitError {
@@ -289,7 +300,12 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
   );
 
   if (candidates.length === 0) {
-    return { status: "notFound", matchedAddress: formattedAddress || null };
+    return {
+      status: "notFound",
+      matchedAddress: formattedAddress || null,
+      propertyLatitude: propertyLocation.lat,
+      propertyLongitude: propertyLocation.lng,
+    };
   }
 
   const shortlist = shortlistCandidates(propertyLocation, candidates);
@@ -320,7 +336,12 @@ export async function lookupNearestBusStopByWalking(address: string, apiKey: str
 
   const best = pickShortestWalk(routed);
   if (!best) {
-    return { status: "notFound", matchedAddress: formattedAddress || null };
+    return {
+      status: "notFound",
+      matchedAddress: formattedAddress || null,
+      propertyLatitude: propertyLocation.lat,
+      propertyLongitude: propertyLocation.lng,
+    };
   }
 
   return {

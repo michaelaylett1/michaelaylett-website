@@ -35,6 +35,7 @@
  */
 
 import type { GooglePlacesLibrary } from "./googlePlacesTypes";
+import type { GoogleMapsCoreLibrary } from "./googleStreetViewTypes";
 
 declare global {
   interface Window {
@@ -47,6 +48,7 @@ declare global {
 }
 
 const LOG_PREFIX = "[PropertyAddressAutocomplete]";
+const STREET_VIEW_LOG_PREFIX = "[PropertyStreetView]";
 
 // Google's official inline bootstrap loader (see the doc link above),
 // reproduced verbatim except for the one internal template literal
@@ -70,7 +72,84 @@ function injectBootstrapLoader(apiKey: string) {
   console.info(`${LOG_PREFIX} Injected the Google Maps bootstrap loader.`);
 }
 
-let loadPromise: Promise<GooglePlacesLibrary> | null = null;
+let placesLoadPromise: Promise<GooglePlacesLibrary> | null = null;
+let coreLoadPromise: Promise<GoogleMapsCoreLibrary> | null = null;
+
+/**
+ * Shared implementation behind both loadGooglePlacesLibrary (below) and
+ * loadGoogleMapsCoreLibrary (also below, added for the interactive
+ * Property Street View panorama). Both load the same underlying Maps
+ * JavaScript API bootstrap (injected at most once per page load no
+ * matter how many times either caller runs) and only differ in which
+ * named library they import from it and which in-flight/resolved
+ * promise they cache -- StreetViewService/StreetViewPanorama live in
+ * the core "maps" library, not "places", so they need their own
+ * importLibrary() call and their own cache, but must not inject a
+ * second competing bootstrap script.
+ */
+function loadGoogleMapsLibrary<T>(
+  apiKey: string,
+  libraryName: string,
+  logPrefix: string,
+  getCache: () => Promise<T> | null,
+  setCache: (value: Promise<T> | null) => void
+): Promise<T> {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error(`${logPrefix} Google Maps can only be loaded in the browser.`));
+  }
+  if (!apiKey) {
+    const err = new Error(
+      `${logPrefix} No Google Maps API key configured (NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY is empty). ` +
+        "This feature cannot start until this environment variable is set and the site is rebuilt/redeployed."
+    );
+    console.error(err.message);
+    return Promise.reject(err);
+  }
+  const cached = getCache();
+  if (cached) return cached;
+
+  const promise = new Promise<T>((resolve, reject) => {
+    try {
+      injectBootstrapLoader(apiKey);
+    } catch (err) {
+      console.error(`${logPrefix} Failed to inject the Google Maps bootstrap loader:`, err);
+      reject(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
+    if (!window.google?.maps?.importLibrary) {
+      const err = new Error(
+        `${logPrefix} google.maps.importLibrary was not defined after injecting the bootstrap loader. ` +
+          "This usually means the page's Content Security Policy blocked the inline bootstrap script."
+      );
+      console.error(err.message);
+      reject(err);
+      return;
+    }
+
+    window.google.maps
+      .importLibrary(libraryName)
+      .then((lib) => {
+        resolve(lib as T);
+      })
+      .catch((err) => {
+        console.error(
+          `${logPrefix} google.maps.importLibrary("${libraryName}") failed. Common causes: the Maps JavaScript ` +
+            "API (and, for places, Places API (New)) is not enabled for this API key's Google Cloud project, the " +
+            "key's HTTP referrer restrictions do not include this site's domain, or the key is invalid/restricted " +
+            "incorrectly. Full error:",
+          err
+        );
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+  }).catch((err) => {
+    setCache(null);
+    throw err;
+  });
+
+  setCache(promise);
+  return promise;
+}
 
 /**
  * Loads the Maps JavaScript API (if not already loaded) and resolves
@@ -86,57 +165,34 @@ let loadPromise: Promise<GooglePlacesLibrary> | null = null;
  * from the browser console instead of failing silently.
  */
 export function loadGooglePlacesLibrary(apiKey: string): Promise<GooglePlacesLibrary> {
-  if (typeof window === "undefined") {
-    return Promise.reject(new Error(`${LOG_PREFIX} Google Maps can only be loaded in the browser.`));
-  }
-  if (!apiKey) {
-    const err = new Error(
-      `${LOG_PREFIX} No Google Maps API key configured (NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY is empty). ` +
-        "Address autocomplete cannot start until this environment variable is set and the site is rebuilt/redeployed."
-    );
-    console.error(err.message);
-    return Promise.reject(err);
-  }
-  if (loadPromise) return loadPromise;
-
-  loadPromise = new Promise<GooglePlacesLibrary>((resolve, reject) => {
-    try {
-      injectBootstrapLoader(apiKey);
-    } catch (err) {
-      console.error(`${LOG_PREFIX} Failed to inject the Google Maps bootstrap loader:`, err);
-      reject(err instanceof Error ? err : new Error(String(err)));
-      return;
+  return loadGoogleMapsLibrary(
+    apiKey,
+    "places",
+    LOG_PREFIX,
+    () => placesLoadPromise,
+    (value) => {
+      placesLoadPromise = value;
     }
+  );
+}
 
-    if (!window.google?.maps?.importLibrary) {
-      const err = new Error(
-        `${LOG_PREFIX} google.maps.importLibrary was not defined after injecting the bootstrap loader. ` +
-          "This usually means the page's Content Security Policy blocked the inline bootstrap script."
-      );
-      console.error(err.message);
-      reject(err);
-      return;
+/**
+ * Loads the Maps JavaScript API's core "maps" library, which is where
+ * StreetViewService and StreetViewPanorama live -- used by the
+ * interactive Property Street View panorama on the Transit and Bus
+ * Stop Access section. Shares the same bootstrap-injection singleton
+ * as loadGooglePlacesLibrary above (both ultimately load the same
+ * underlying script), but is cached separately since it resolves a
+ * different library object.
+ */
+export function loadGoogleMapsCoreLibrary(apiKey: string): Promise<GoogleMapsCoreLibrary> {
+  return loadGoogleMapsLibrary(
+    apiKey,
+    "maps",
+    STREET_VIEW_LOG_PREFIX,
+    () => coreLoadPromise,
+    (value) => {
+      coreLoadPromise = value;
     }
-
-    window.google.maps
-      .importLibrary("places")
-      .then((lib) => {
-        resolve(lib as GooglePlacesLibrary);
-      })
-      .catch((err) => {
-        console.error(
-          `${LOG_PREFIX} google.maps.importLibrary("places") failed. Common causes: the Maps JavaScript API or ` +
-            "Places API (New) is not enabled for this API key's Google Cloud project, the key's HTTP referrer " +
-            "restrictions do not include this site's domain, or the key is invalid/restricted incorrectly. " +
-            "Full error:",
-          err
-        );
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-  }).catch((err) => {
-    loadPromise = null;
-    throw err;
-  });
-
-  return loadPromise;
+  );
 }

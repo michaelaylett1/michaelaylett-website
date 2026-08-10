@@ -424,23 +424,28 @@ Two independent Google Maps Platform keys are involved, and everything
 degrades gracefully if either (or both) are missing:
 
 - `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` -- a public, client-side key
-  used for two things: the embedded map (a walking-route panel once a
-  stop is found, or a plain search panel before that), and the Property
-  Address field's autocomplete suggestions. Without it, the map shows
-  "The embedded Google Maps view is not configured." and the address
-  field simply has no suggestions (typing the full address by hand
-  still works normally).
+  used for three things: the embedded map (a walking-route panel once a
+  stop is found, or a plain search panel before that), the Property
+  Address field's autocomplete suggestions, and the interactive Property
+  Street View panorama (see below) -- all three already run on the same
+  Maps JavaScript API, so no additional API needs enabling for Street
+  View specifically, only the same key. Without it, the map shows "The
+  embedded Google Maps view is not configured.", the address field
+  simply has no suggestions (typing the full address by hand still works
+  normally), and Street View shows "Google Street View is not configured
+  for this site."
 - `GOOGLE_MAPS_API_KEY` -- runs the automatic transit lookup itself
   (Geocoding, Places, and Directions APIs), server-side only. Without
   it, automatic lookup is skipped entirely and the transit fields simply
   start blank for hand entry -- there is no error banner and no
   automatic "no bus stops were found" failure result. This same key
   also powers the printable report's static transit map image (Static
-  Maps API) -- see below -- and the Property Tax section's automatic
-  County suggestion (Geocoding API only). Without it, the County
-  suggestion is skipped entirely and the field is left for manual
-  selection, with the same neutral "could not be identified
-  automatically" message the transit fields show.
+  Maps API) and static Property Street View image (Street View Static
+  API) -- see below -- and the Property Tax section's automatic County
+  suggestion (Geocoding API only). Without it, the County suggestion is
+  skipped entirely and the field is left for manual selection, with the
+  same neutral "could not be identified automatically" message the
+  transit fields show.
 
 The automatic-lookup logic lives in `lib/transit/googleLookup.ts`
 (pure functions plus the actual Google API calls) and is only ever
@@ -455,6 +460,33 @@ googlePlacesTypes.ts` for the minimal type definitions this uses instead
 of pulling in the full `@types/google.maps` package. The transit UI is
 `TransitAndBusStopAccessSection` and `TransitPrintSection`. All of this
 lives in `components/underwriting/SharedHousingCalculator.tsx`.
+
+**Property Street View.** Directly below the walking-route map, the
+Transit and Bus Stop Access section also shows an interactive Google
+Street View panorama centered on the property, purely as a visual tool
+for inspecting the driveway, curb space, and street parking -- it never
+estimates a parking-space count, and it never changes anything the
+automatic transit lookup above computes. It reuses the property's
+coordinates already geocoded by that same lookup (whether or not a bus
+stop was found nearby -- geocoding success and "is there a bus stop
+nearby" are independent outcomes), so no separate address entry or
+geocode call is needed. `PropertyStreetView` (in
+`SharedHousingCalculator.tsx`) loads the Maps JavaScript API's core
+library client-side via `loadGoogleMapsCoreLibrary` (added to the same
+`lib/transit/googleMapsLoader.ts` used for autocomplete, sharing its
+bootstrap-script singleton) using the same public embed key, calls
+`google.maps.StreetViewService.getPanorama()` to find the nearest
+available panorama (widening the search radius once if nothing turns up
+close by), and initializes `google.maps.StreetViewPanorama` with the
+camera heading calculated to face from the panorama's actual location
+toward the property's geocoded coordinates -- the user can still freely
+rotate, tilt, and move from there. If no imagery is available nearby at
+all, a neutral "Street View imagery is not available for this property."
+message is shown instead of a broken or empty panorama; see
+`lib/transit/googleStreetViewTypes.ts` for the minimal type definitions
+used instead of the full `@types/google.maps` package. An "Open in
+Google Street View" button opens the same panorama directly in Google
+Maps in a new tab.
 
 **Printable report's transit map.** The printed/PDF underwriting report
 shows a static map image (property marker, nearest-bus-stop marker, and
@@ -476,6 +508,25 @@ variable is needed, but the same Google Cloud project/key does need
 automatic lookup has completed for the current address, the map is
 simply omitted from the printed report rather than showing an empty box
 or a broken image.
+
+**Printable report's Property Street View.** The printed/PDF report
+similarly includes a static Property Street View image, in its own
+clearly labeled "Property Street View" card right after the Transit and
+Bus Stop Access card -- always on one printed page, never cropped. It
+uses the exact panorama location and camera heading the interactive
+on-page Street View already resolved via `StreetViewService`, so the
+printed frame matches what was shown interactively; this route never
+performs its own availability search. The image comes from
+`app/api/transit/street-view/route.ts`, a same-origin proxy built the
+same way as the transit map's route above -- it fetches the Google
+Street View Static API image entirely server-side using the same
+`GOOGLE_MAPS_API_KEY`, so that key never appears in any browser-visible
+markup or network request. This requires **Street View Static API**
+enabled and added to the lookup key's API restrictions (see step 2
+below), in addition to Geocoding, Places, Directions, and Maps Static
+API. If no panorama was found for the current address (or none has
+resolved yet), the Property Street View card is simply omitted from the
+printed report rather than showing an empty box or a broken image.
 
 The rest of the Underwriting calculator (all five financing structures,
 the printable report, and the Excel export) works fully regardless of
@@ -521,22 +572,35 @@ environment variable is needed -- the existing
 
 1. In the same (or a different) Google Cloud project, go to **APIs &
    Services > Library** and enable each of: **Geocoding API**, **Places
-   API**, **Directions API**, **Maps Static API**. The first three run
-   the automatic lookup itself; Maps Static API renders the printable
-   report's transit map image from that same lookup's result.
+   API**, **Directions API**, **Maps Static API**, **Street View Static
+   API**. The first three run the automatic lookup itself; Maps Static
+   API renders the printable report's transit map image, and Street View
+   Static API renders the printable report's Property Street View image,
+   both from that same lookup's/panorama's already-resolved result.
 2. Go to **APIs & Services > Credentials**, click **Create Credentials >
    API Key**, and copy the key. **Use a separate key from the embed key
    above** -- this one is never exposed to the browser, so it should
    never carry the embed key's HTTP referrer restriction.
 3. Click the new key to edit it, and under **API restrictions**,
-   restrict it to only the four APIs above. Since it is only ever
+   restrict it to only the five APIs above. Since it is only ever
    called from your Vercel server, not a browser, an HTTP referrer
    restriction would not work here; if your Vercel project uses a
    static outbound IP range you can optionally add an IP restriction
    instead, or leave it unrestricted (still access-restricted to just
-   those four APIs).
-4. Confirm billing is enabled; all four APIs require an active billing
+   those five APIs).
+4. Confirm billing is enabled; all five APIs require an active billing
    account, even within Google's free monthly usage credit.
+
+**Already had this key from before Property Street View was added?**
+Its API restrictions are almost certainly still missing **Street View
+Static API**, in which case the printable report's Property Street View
+image will fail to load (the interactive on-page panorama is unaffected,
+since that runs on the public embed key's Maps JavaScript API instead).
+Go back to this key in **APIs & Services > Credentials**, enable
+**Street View Static API** for the project (step 1 above), and add it to
+its **API restrictions** list (step 3 above). No new key or new
+environment variable is needed -- the existing `GOOGLE_MAPS_API_KEY`
+value is reused as-is.
 
 ### 3. Create both environment variables in Vercel
 

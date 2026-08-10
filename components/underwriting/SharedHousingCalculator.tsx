@@ -57,6 +57,7 @@ import {
   Bus,
   RefreshCw,
   Loader2,
+  Camera,
 } from "lucide-react";
 import {
   exportUnderwritingToExcel,
@@ -103,8 +104,10 @@ import {
   operatingDefaultsSourceLabel,
   type OperatingExpenseKey,
 } from "@/lib/operatingExpenseDefaults";
-import { loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
+import { loadGoogleMapsCoreLibrary, loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
+import type { StreetViewPanorama } from "@/lib/transit/googleStreetViewTypes";
+import { computeHeadingDegrees, haversineMetersLatLng } from "@/lib/transit/streetViewGeo";
 import {
   AUTOCOMPLETE_DEBOUNCE_MS,
   buildAutocompleteRequest,
@@ -3128,6 +3131,247 @@ function PropertyAddressAutocomplete({
 // actually in flight or just finished.
 type TransitAutoStatus = "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error";
 
+// ---------------------------------------------------------------------
+// Property Street View -- an interactive Google Street View panorama
+// centered on the property, so the driveway, curb space, front yard,
+// and street parking conditions can be visually inspected. Purely a
+// visual tool: it never estimates a parking-space count and never
+// changes anything the automatic transit lookup already computes (see
+// TransitAndBusStopAccessSection below, which renders this alongside
+// the existing bus-stop map/fields, not in place of any of them).
+// ---------------------------------------------------------------------
+
+type StreetViewUiStatus = "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error";
+
+interface StreetViewResolvedData {
+  lat: number;
+  lng: number;
+  heading: number;
+  isNearestApproximate: boolean;
+}
+
+// A panorama found more than this far from the property's geocoded
+// coordinates is described as "the nearest available" imagery rather
+// than presented as if it were taken right in front of the property.
+const STREET_VIEW_APPROXIMATE_THRESHOLD_METERS = 30;
+// Search radii tried in order -- a tight first pass (imagery actually
+// close to the property), widened once if nothing turns up within it,
+// so a property on a street Google hasn't driven still has a decent
+// chance of showing *something* nearby rather than immediately giving
+// up (spec section 5: "If imagery exists nearby ... use the closest
+// practical panorama").
+const STREET_VIEW_SEARCH_RADII_METERS = [50, 200];
+
+function PropertyStreetView({
+  propertyAddress,
+  propertyLat,
+  propertyLng,
+  onResolvedChange,
+}: {
+  propertyAddress: string;
+  propertyLat: number | null;
+  propertyLng: number | null;
+  onResolvedChange: (data: StreetViewResolvedData | null) => void;
+}) {
+  const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const panoramaRef = useRef<StreetViewPanorama | null>(null);
+  const requestSeqRef = useRef(0);
+  const onResolvedChangeRef = useRef(onResolvedChange);
+  const [status, setStatus] = useState<StreetViewUiStatus>("idle");
+  const [isApproximate, setIsApproximate] = useState(false);
+  const [openUrl, setOpenUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    onResolvedChangeRef.current = onResolvedChange;
+  });
+
+  useEffect(() => {
+    if (propertyLat === null || propertyLng === null) {
+      // Invalidate any lookup already in flight for a previous address
+      // so its response, if it arrives late, is ignored.
+      requestSeqRef.current += 1;
+      setStatus("idle");
+      setIsApproximate(false);
+      setOpenUrl(null);
+      onResolvedChangeRef.current(null);
+      return;
+    }
+    if (!embedApiKey) {
+      setStatus("notConfigured");
+      setOpenUrl(null);
+      onResolvedChangeRef.current(null);
+      return;
+    }
+
+    const seq = ++requestSeqRef.current;
+    setStatus("loading");
+    const propertyLocation = { lat: propertyLat, lng: propertyLng };
+
+    loadGoogleMapsCoreLibrary(embedApiKey)
+      .then((lib) => {
+        if (seq !== requestSeqRef.current) return;
+        const service = new lib.StreetViewService();
+
+        const tryRadius = (radiusIndex: number) => {
+          const radius = STREET_VIEW_SEARCH_RADII_METERS[radiusIndex];
+          service
+            .getPanorama({ location: propertyLocation, radius, source: "outdoor" })
+            .then((response) => {
+              if (seq !== requestSeqRef.current) return;
+              const latLng = response.data.location?.latLng;
+              const panoId = response.data.location?.pano;
+              if (!latLng || !panoId) {
+                if (radiusIndex + 1 < STREET_VIEW_SEARCH_RADII_METERS.length) {
+                  tryRadius(radiusIndex + 1);
+                  return;
+                }
+                setStatus("notFound");
+                setOpenUrl(null);
+                onResolvedChangeRef.current(null);
+                return;
+              }
+
+              const panoLocation = { lat: latLng.lat(), lng: latLng.lng() };
+              const heading = computeHeadingDegrees(panoLocation, propertyLocation);
+              const roundedHeading = Math.round(heading);
+              const approximate = haversineMetersLatLng(panoLocation, propertyLocation) > STREET_VIEW_APPROXIMATE_THRESHOLD_METERS;
+
+              if (!containerRef.current) {
+                setStatus("notFound");
+                setOpenUrl(null);
+                onResolvedChangeRef.current(null);
+                return;
+              }
+
+              if (!panoramaRef.current) {
+                panoramaRef.current = new lib.StreetViewPanorama(containerRef.current, {
+                  pano: panoId,
+                  pov: { heading: roundedHeading, pitch: 0 },
+                  zoom: 1,
+                  addressControl: false,
+                  showRoadLabels: false,
+                  motionTracking: false,
+                  motionTrackingControl: false,
+                  fullscreenControl: true,
+                  zoomControl: true,
+                  panControl: true,
+                  linksControl: true,
+                  clickToGo: true,
+                });
+              } else {
+                panoramaRef.current.setPano(panoId);
+                panoramaRef.current.setPov({ heading: roundedHeading, pitch: 0 });
+                panoramaRef.current.setVisible(true);
+              }
+
+              setIsApproximate(approximate);
+              setStatus("found");
+              setOpenUrl(
+                `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${panoLocation.lat},${panoLocation.lng}` +
+                  `&heading=${roundedHeading}&pitch=0&pano=${encodeURIComponent(panoId)}`
+              );
+              onResolvedChangeRef.current({
+                lat: panoLocation.lat,
+                lng: panoLocation.lng,
+                heading: roundedHeading,
+                isNearestApproximate: approximate,
+              });
+            })
+            .catch((err) => {
+              if (seq !== requestSeqRef.current) return;
+              if (radiusIndex + 1 < STREET_VIEW_SEARCH_RADII_METERS.length) {
+                tryRadius(radiusIndex + 1);
+                return;
+              }
+              console.error("[PropertyStreetView] StreetViewService.getPanorama failed:", err);
+              setStatus("error");
+              setOpenUrl(null);
+              onResolvedChangeRef.current(null);
+            });
+        };
+
+        tryRadius(0);
+      })
+      .catch((err) => {
+        if (seq !== requestSeqRef.current) return;
+        console.error("[PropertyStreetView] Failed to load the Maps JavaScript API core library:", err);
+        setStatus("error");
+        setOpenUrl(null);
+        onResolvedChangeRef.current(null);
+      });
+    // embedApiKey never changes at runtime (it is a build-time env var);
+    // onResolvedChange is read through onResolvedChangeRef instead of
+    // being a dependency, so this only re-runs when the property's
+    // actual coordinates change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propertyLat, propertyLng, embedApiKey]);
+
+  return (
+    <div className="mt-8 pt-6 border-t border-line-dark">
+      <p className="eyebrow text-brass mb-1">Property Street View</p>
+      <p className="text-sm text-ink/70 leading-[1.45] mb-4 max-w-2xl">
+        An interactive Google Street View centered on the property address above -- rotate, look up
+        and down, and move along the street to inspect the driveway, curb space, and frontage.
+      </p>
+
+      <div className="flex justify-center">
+        <div className="w-full max-w-[850px]">
+          <div className="relative w-full h-[350px] sm:h-[450px] border border-line-dark bg-paper-2 overflow-hidden">
+            <div
+              ref={containerRef}
+              className="absolute inset-0"
+              role="img"
+              aria-label={
+                status === "found" ? `Street View near ${propertyAddress}` : "Street View not currently shown"
+              }
+            />
+            {status !== "found" && (
+              <div className="absolute inset-0 flex items-center justify-center bg-paper-2 text-sm text-ink/60 text-center px-6">
+                {status === "loading" && "Loading Street View..."}
+                {status === "notFound" && "Street View imagery is not available for this property."}
+                {status === "notConfigured" && "Google Street View is not configured for this site."}
+                {status === "error" && "Street View could not be loaded right now."}
+                {status === "idle" && "Enter a Property Address above to load Street View."}
+              </div>
+            )}
+          </div>
+          {status === "found" && isApproximate && (
+            <p className="mt-2 text-xs text-ink/50 text-center">
+              Showing the nearest available Street View imagery.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-center">
+        <a
+          href={openUrl ?? "#"}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => {
+            if (!openUrl) e.preventDefault();
+          }}
+          aria-disabled={!openUrl}
+          className={`inline-flex items-center gap-2 border px-4 py-2.5 text-sm transition-colors w-full sm:w-auto justify-center ${
+            openUrl
+              ? "border-line-dark text-ink hover:border-brass"
+              : "border-line-dark/50 text-ink/40 cursor-not-allowed"
+          }`}
+        >
+          Open in Google Street View
+          <ExternalLink size={14} aria-hidden="true" />
+        </a>
+      </div>
+
+      <p className="mt-4 text-xs text-ink/50 leading-relaxed max-w-2xl">
+        Use Street View to visually evaluate driveway and street parking. Parking availability
+        should be confirmed independently and may have changed since the imagery was captured.
+      </p>
+    </div>
+  );
+}
+
 function TransitAndBusStopAccessSection({
   address,
   nearestStopDraft,
@@ -3140,6 +3384,9 @@ function TransitAndBusStopAccessSection({
   onNotesDraftChange,
   autoStatus,
   autoStopCoords,
+  propertyLat,
+  propertyLng,
+  onStreetViewResolvedChange,
 }: {
   address: string;
   nearestStopDraft: string;
@@ -3152,6 +3399,9 @@ function TransitAndBusStopAccessSection({
   onNotesDraftChange: (value: string) => void;
   autoStatus: TransitAutoStatus;
   autoStopCoords: { lat: number; lng: number } | null;
+  propertyLat: number | null;
+  propertyLng: number | null;
+  onStreetViewResolvedChange: (data: StreetViewResolvedData | null) => void;
 }) {
   const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
   const hasAddress = looksLikeUsableAddress(address);
@@ -3314,6 +3564,18 @@ function TransitAndBusStopAccessSection({
         acquiring the property.
       </p>
 
+      {/* Property Street View -- an additional visual tool, entirely
+          separate from the bus-stop lookup above (spec section 8: must
+          not change any existing transit calculation). Uses the same
+          property coordinates the automatic lookup already geocoded,
+          whether or not a nearby bus stop was found. */}
+      <PropertyStreetView
+        propertyAddress={address}
+        propertyLat={propertyLat}
+        propertyLng={propertyLng}
+        onResolvedChange={onStreetViewResolvedChange}
+      />
+
       {/* Temporary deployment marker -- confirms which build/component is
           actually live. Safe to remove once the correct deployment has
           been confirmed. */}
@@ -3418,6 +3680,61 @@ function TransitPrintSection({
         Google Maps and can be edited on the underwriting page. Verify sidewalks, road crossings,
         lighting, terrain, accessibility, stop activity, route schedules, and current bus service
         before acquiring the property.
+      </p>
+    </div>
+  );
+}
+
+// The printable-report counterpart to the interactive PropertyStreetView
+// panorama: a single static image from /api/transit/street-view (server-
+// proxied, so the private GOOGLE_MAPS_API_KEY never reaches the
+// browser), using the exact panorama location/heading the interactive
+// view already resolved client-side via StreetViewService -- never a
+// second, independent availability search. Renders nothing at all when
+// no panorama was found (or none has resolved yet), the same "omit
+// rather than show something broken" approach TransitPrintSection above
+// already uses for its own map image.
+function PropertyStreetViewPrintSection({
+  streetViewData,
+}: {
+  streetViewData: { lat: number; lng: number; heading: number; isNearestApproximate: boolean } | null;
+}) {
+  if (!streetViewData) return null;
+
+  const imageUrl = `/api/transit/street-view?lat=${streetViewData.lat}&lng=${streetViewData.lng}&heading=${streetViewData.heading}&pitch=0`;
+
+  return (
+    <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <Camera size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Property Street View</p>
+      </div>
+      <div
+        className="print:break-inside-avoid-page rounded-lg overflow-hidden border border-ink/10 bg-ink/5"
+        style={{ maxHeight: "3.4in" }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element -- a plain
+            <img> is required here (not next/image) so the static Street
+            View image rasterizes as a normal image in browser print
+            output; see the identical rationale on TransitPrintSection's
+            map image above. */}
+        <img
+          src={imageUrl}
+          width={640}
+          height={400}
+          alt="Street View of the property frontage"
+          className="block w-full h-auto"
+          style={{ aspectRatio: "640 / 400", objectFit: "contain", maxHeight: "3.4in" }}
+        />
+      </div>
+      {streetViewData.isNearestApproximate && (
+        <p className="mt-2 text-[8pt] text-ink/70 leading-relaxed">
+          Showing the nearest available Street View imagery.
+        </p>
+      )}
+      <p className="mt-2 text-[8pt] text-ink leading-relaxed">
+        Use Street View to visually evaluate driveway and street parking. Parking availability
+        should be confirmed independently and may have changed since the imagery was captured.
       </p>
     </div>
   );
@@ -4264,6 +4581,22 @@ export default function SharedHousingCalculator() {
     stopLng: number;
     polyline: string | null;
   } | null>(null);
+  // The property's own geocoded coordinates, captured whenever the
+  // automatic lookup above successfully geocodes the address --
+  // regardless of whether a nearby bus stop was also found. Kept
+  // separate from transitPrintMapData (which requires a stop, since it
+  // draws a route to one) because the Property Street View feature
+  // below has nothing to do with bus stops and should work for any
+  // address that geocodes, "found" or "notFound" alike.
+  const [propertyGeoLocation, setPropertyGeoLocation] = useState<{ lat: number; lng: number } | null>(null);
+  // Whatever panorama location/heading the interactive Property Street
+  // View (PropertyStreetView, inside TransitAndBusStopAccessSection)
+  // most recently resolved via StreetViewService client-side -- reused
+  // as-is for the printable report's static Street View image (via
+  // /api/transit/street-view) so the printed frame matches what was
+  // shown interactively on the live page, and so the print image
+  // endpoint never has to re-run its own availability search.
+  const [streetViewPrintData, setStreetViewPrintData] = useState<StreetViewResolvedData | null>(null);
   const transitAutoLookupAddressRef = useRef("");
 
   useEffect(() => {
@@ -4273,6 +4606,7 @@ export default function SharedHousingCalculator() {
       transitAutoLookupAddressRef.current = "";
       setTransitAutoStopCoords(null);
       setTransitPrintMapData(null);
+      setPropertyGeoLocation(null);
       setTransitAutoStatus("idle");
       return;
     }
@@ -4294,6 +4628,7 @@ export default function SharedHousingCalculator() {
     // it is hand-written commentary, not an automatic lookup result.
     setTransitAutoStopCoords(null);
     setTransitPrintMapData(null);
+    setPropertyGeoLocation(null);
     setTransitNearestStopDraft("");
     setTransitWalkingTimeDraft("");
     setTransitWalkingDistanceDraft("");
@@ -4322,8 +4657,15 @@ export default function SharedHousingCalculator() {
               stopLng: data.nearestStop.longitude,
               polyline: data.routePolyline,
             });
+            setPropertyGeoLocation({ lat: data.propertyLatitude, lng: data.propertyLongitude });
             setTransitAutoStatus("found");
           } else if (data.status === "notFound") {
+            // No bus stop nearby, but the address itself may well have
+            // geocoded fine -- Street View only needs the property's
+            // coordinates, not a bus stop, so it stays available here.
+            if (data.propertyLatitude !== null && data.propertyLongitude !== null) {
+              setPropertyGeoLocation({ lat: data.propertyLatitude, lng: data.propertyLongitude });
+            }
             setTransitAutoStatus("notFound");
           } else if (data.status === "error" && data.reason === "not_configured") {
             setTransitAutoStatus("notConfigured");
@@ -5406,6 +5748,9 @@ export default function SharedHousingCalculator() {
     setTransitNotes("");
     setTransitAutoStatus("idle");
     setTransitAutoStopCoords(null);
+    setTransitPrintMapData(null);
+    setPropertyGeoLocation(null);
+    setStreetViewPrintData(null);
     transitAutoLookupAddressRef.current = "";
     setPropertyImages((prev) => {
       prev.forEach(revokeMediaFile);
@@ -8303,6 +8648,9 @@ export default function SharedHousingCalculator() {
           onNotesDraftChange={setTransitNotes}
           autoStatus={transitAutoStatus}
           autoStopCoords={transitAutoStopCoords}
+          propertyLat={propertyGeoLocation?.lat ?? null}
+          propertyLng={propertyGeoLocation?.lng ?? null}
+          onStreetViewResolvedChange={setStreetViewPrintData}
         />
 
         {/* ---------------------------------------------------------- */}
@@ -11957,6 +12305,7 @@ export default function SharedHousingCalculator() {
             data={transitResult}
             mapData={transitPrintMapData}
           />
+          <PropertyStreetViewPrintSection streetViewData={streetViewPrintData} />
 
           {financingMode === "traditional" && traditionalLongTermRent !== null && (
             <TraditionalLtvPrintCard
