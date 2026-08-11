@@ -2483,14 +2483,18 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
       label: "Is the Seller Carrying a Balance in Second Position?",
       value: data.stackHasSellerCarry ? "Yes" : "No",
     },
-    ...(data.stackHasSellerCarry
-      ? ([
-          { label: "Seller's Current First Loan Balance", value: money(data.stackSellerFirstLoanBalance), format: FMT_CURRENCY, input: true },
-          { label: "Existing Second Lien", value: money(data.stackSellerSecondLien), format: FMT_CURRENCY, input: true },
-          { label: "Miscellaneous Liens", value: money(data.stackMiscLiens), format: FMT_CURRENCY, input: true },
-          { label: "Down Payment to Seller", value: money(data.stackDownPaymentToSeller), format: FMT_CURRENCY, input: true },
-        ] as KVRow[])
-      : []),
+    // Seller's Current First Loan Balance / Existing Second Lien /
+    // Miscellaneous Liens / Down Payment to Seller describe the
+    // property's existing debt, liens, and the cash due the seller at
+    // closing -- all independent of whether the seller is ALSO carrying
+    // a brand-new second-position note, so these four rows are always
+    // included regardless of stackHasSellerCarry. They continue to feed
+    // stackPotentialSellerCarry (and, when stackHasSellerCarry is false,
+    // stackAdditionalClosingFundsFromNoSellerCarry) either way.
+    { label: "Seller's Current First Loan Balance", value: money(data.stackSellerFirstLoanBalance), format: FMT_CURRENCY, input: true },
+    { label: "Existing Second Lien", value: money(data.stackSellerSecondLien), format: FMT_CURRENCY, input: true },
+    { label: "Miscellaneous Liens", value: money(data.stackMiscLiens), format: FMT_CURRENCY, input: true },
+    { label: "Down Payment to Seller", value: money(data.stackDownPaymentToSeller), format: FMT_CURRENCY, input: true },
     { label: "Bank Loan-to-Value Percentage", value: pct(data.stackEffectiveBankLtvPct), format: FMT_PERCENT },
     { label: "Estimated First-Position Bank Loan", value: money(data.stackBankLoanAmount), format: FMT_CURRENCY },
     { label: "Bank Interest Rate", value: pct(data.stackBankInterestRatePct), format: FMT_PERCENT, input: true },

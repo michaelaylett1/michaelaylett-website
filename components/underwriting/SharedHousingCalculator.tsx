@@ -7530,9 +7530,15 @@ export default function SharedHousingCalculator() {
                     { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
                     { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
                     { label: "Estimated Monthly Bank PITI", value: formatCents(stackMonthlyBankPITI) },
+                    {
+                      label: "Seller's Current First Loan Balance",
+                      value: formatCents(financing.stackSellerFirstLoanBalance),
+                    },
+                    { label: "Existing Second Lien", value: formatCents(financing.stackSellerSecondLien) },
+                    { label: "Miscellaneous Liens", value: formatCents(financing.stackMiscLiens) },
+                    { label: "Down Payment to Seller", value: formatCents(financing.stackDownPaymentToSeller) },
                     ...(hasSellerCarry
                       ? [
-                          { label: "Down Payment to Seller", value: formatCents(financing.stackDownPaymentToSeller) },
                           {
                             label: "Are Monthly Seller Finance Payments Required?",
                             value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
@@ -7983,17 +7989,13 @@ export default function SharedHousingCalculator() {
                     label: "Is the Seller Carrying a Balance in Second Position?",
                     value: hasSellerCarry ? "Yes" : "No",
                   },
-                  ...(hasSellerCarry
-                    ? [
-                        {
-                          label: "Seller's Current First Loan Balance",
-                          value: formatWhole(financing.stackSellerFirstLoanBalance),
-                        },
-                        { label: "Existing Second Lien", value: formatWhole(financing.stackSellerSecondLien) },
-                        { label: "Miscellaneous Liens", value: formatWhole(financing.stackMiscLiens) },
-                        { label: "Down Payment to Seller", value: formatWhole(financing.stackDownPaymentToSeller) },
-                      ]
-                    : []),
+                  {
+                    label: "Seller's Current First Loan Balance",
+                    value: formatWhole(financing.stackSellerFirstLoanBalance),
+                  },
+                  { label: "Existing Second Lien", value: formatWhole(financing.stackSellerSecondLien) },
+                  { label: "Miscellaneous Liens", value: formatWhole(financing.stackMiscLiens) },
+                  { label: "Down Payment to Seller", value: formatWhole(financing.stackDownPaymentToSeller) },
                   { label: "Estimated First-Position Bank Loan", value: formatWhole(stackBankLoanAmount) },
                   { label: "Potential Seller-Carry Amount", value: formatWhole(stackPotentialSellerCarry) },
                   ...(hasSellerCarry
@@ -10500,8 +10502,21 @@ export default function SharedHousingCalculator() {
                 )}
               </div>
 
-              {hasSellerCarry && (
-              <>
+              {/* Property Information: Seller's Current First Loan
+                  Balance, Existing Second Lien, Miscellaneous Liens, and
+                  Down Payment to Seller describe the property's existing
+                  debt/liens and the cash due the seller at closing -- all
+                  four are fully independent of whether the seller is
+                  ALSO carrying a brand-new second-position note after
+                  closing, so this section always renders and stays
+                  editable regardless of the hasSellerCarry selection
+                  above. They continue to feed stackPotentialSellerCarry
+                  (see above) unconditionally either way -- when
+                  hasSellerCarry is false, that amount flows into the
+                  Stack Method closing reconciliation as
+                  stackAdditionalClosingFundsFromNoSellerCarry instead of
+                  a new seller-financed debt, but these four inputs
+                  themselves are never hidden, disabled, or reset. */}
               <div className="mt-8 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-ink/50 mb-3">Property Information</p>
                 <div className="grid sm:grid-cols-2 gap-5">
@@ -10546,8 +10561,6 @@ export default function SharedHousingCalculator() {
                   The existing debt, liens, and seller down payment exceed the purchase price. Please
                   review the entered amounts.
                 </p>
-              )}
-              </>
               )}
 
               {/* Acquisition Structure */}
@@ -10643,13 +10656,13 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
 
-              {/* Estimated Seller Cash at Closing + reconciliation: only
-                  meaningful when there is an actual seller-carried
-                  balance to reconcile against -- with no seller carry,
-                  every row here would otherwise show as $0/Purchase
-                  Price, which is exactly the kind of misleading "$0
-                  seller-finance field" the No state must avoid. */}
-              {hasSellerCarry && (
+              {/* Estimated Seller Cash at Closing + reconciliation: the
+                  existing debt/lien payoffs and Down Payment to Seller
+                  below apply to every Stack Method deal regardless of the
+                  hasSellerCarry selection, so this section always
+                  renders. Only the "Seller-Financed Balance" row switches
+                  to "None" when hasSellerCarry is false -- it is never
+                  hidden along with everything else. */}
               <div className="mt-8 pt-6 border-t border-line-dark">
                 <ReadOnlyStat
                   label="Estimated Seller Cash at Closing"
@@ -10676,7 +10689,7 @@ export default function SharedHousingCalculator() {
                   </div>
                   <div className="flex justify-between border-b border-line-dark/40 py-1.5">
                     <span className="text-ink/60">Seller-Financed Balance</span>
-                    <span>{formatCents(stackSellerFinancedBalance)}</span>
+                    <span>{hasSellerCarry ? formatCents(stackSellerFinancedBalance) : "None"}</span>
                   </div>
                   <div className="flex justify-between py-1.5">
                     <span className="text-ink/60">Purchase Price</span>
@@ -10684,7 +10697,6 @@ export default function SharedHousingCalculator() {
                   </div>
                 </div>
               </div>
-              )}
 
               {/* Monthly Bank Financing */}
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -12803,12 +12815,32 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink/60 min-w-0">Estimated Monthly Bank PITI</span>
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlyBankPITI)}</span>
                 </div>
+                {/* Seller's Current First Loan Balance / Existing Second
+                    Lien / Miscellaneous Liens / Down Payment to Seller
+                    describe the property's existing debt, liens, and the
+                    cash due the seller at closing -- all independent of
+                    whether the seller is ALSO carrying a brand-new
+                    second-position note, so these four always print
+                    regardless of the Is the Seller Carrying a Balance in
+                    Second Position? selection below. */}
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Seller's Current First Loan Balance</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackSellerFirstLoanBalance)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Existing Second Lien</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackSellerSecondLien)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Miscellaneous Liens</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackMiscLiens)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Down Payment to Seller</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackDownPaymentToSeller)}</span>
+                </div>
                 {hasSellerCarry ? (
                   <>
-                    <div className="flex justify-between gap-3">
-                      <span className="text-ink/60 min-w-0">Down Payment to Seller</span>
-                      <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackDownPaymentToSeller)}</span>
-                    </div>
                     <div className="flex justify-between gap-3">
                       <span className="text-ink/60 min-w-0">Estimated Seller-Financed Balance</span>
                       <span className="text-ink flex-shrink-0 text-right">{formatCents(stackSellerFinancedBalance)}</span>
