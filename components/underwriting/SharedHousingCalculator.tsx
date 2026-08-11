@@ -4134,6 +4134,22 @@ export default function SharedHousingCalculator() {
   // no monthly seller-finance payment is ever automatically assumed.
   const [stackSellerFinancePaymentsRequired, setStackSellerFinancePaymentsRequired] = useState(false);
 
+  // Is the Seller Carrying a Balance in Second Position?: not every
+  // Stack Method deal has a seller-financed second at all -- some are
+  // funded entirely by the primary bank/DSCR loan plus the Stack
+  // Method closing structure, with no second-position note. Defaults
+  // to true so existing/previously saved Stack Method underwriting
+  // records (which never had this toggle and always modeled a seller
+  // carry) keep behaving exactly as before. When false, every
+  // seller-carry figure (balance, payment, interest, principal
+  // paydown, balloon balance) is forced to $0 -- see
+  // stackSellerFinancedBalance below, which is the single source of
+  // truth every other Stack Method calculation reads from. Critically,
+  // this is an explicit user choice, never inferred from whether
+  // Purchase Price minus the other Stack Method inputs happens to be
+  // greater than $0.
+  const [hasSellerCarry, setHasSellerCarry] = useState(true);
+
   // Are Monthly Seller Finance Payments Required? (Hybrid): the same
   // optional-payment pattern as Stack Method above, applied to the
   // Hybrid structure's seller-financed balance. Defaults to No/false --
@@ -5744,6 +5760,11 @@ export default function SharedHousingCalculator() {
     // default, so no monthly seller-finance payment is assumed after a
     // reset.
     setStackSellerFinancePaymentsRequired(false);
+    // Is the Seller Carrying a Balance in Second Position? resets to
+    // Yes, its default -- matching every previously saved Stack Method
+    // underwriting, which never had this toggle and always modeled a
+    // seller carry.
+    setHasSellerCarry(true);
     // Are Monthly Seller Finance Payments Required? (Hybrid) resets to
     // No, its default, so the seller-financed balance is once again
     // assumed to carry unamortized until the balloon date after a reset.
@@ -6213,7 +6234,20 @@ export default function SharedHousingCalculator() {
   // Estimated Seller-Financed Balance (workbook: "Proposed Seller
   // Carry") = Purchase Price - Seller's Current First Loan Balance -
   // Existing Second Lien - Miscellaneous Liens - Down Payment to
-  // Seller, floored at $0 for display and every downstream use.
+  // Seller, floored at $0 for display and every downstream use. Only
+  // computed at all when hasSellerCarry is true -- when the user has
+  // explicitly selected "No" for "Is the Seller Carrying a Balance in
+  // Second Position?", this is forced to exactly $0 regardless of the
+  // other Property Information fields, which are themselves hidden in
+  // that state (see the Stack Method UI section below). This is a
+  // deliberate, explicit gate: the difference between Purchase Price
+  // and the primary loan (or these payoff fields) is NEVER
+  // automatically treated as a seller-carried balance -- only an
+  // explicit "Yes" here does that. stackSellerFinancedBalance is the
+  // single source of truth every other Stack Method calculation reads
+  // from (debt totals, leverage ratio, cash-to-close, monthly payment,
+  // amortization, balloon), so gating it here is sufficient to zero out
+  // seller-carry everywhere downstream.
   const stackSellerFinancedBalanceRaw = useMemo(
     () =>
       financing.purchasePrice -
@@ -6229,7 +6263,9 @@ export default function SharedHousingCalculator() {
       financing.stackDownPaymentToSeller,
     ]
   );
-  const stackSellerFinancedBalance = Math.max(0, round2(stackSellerFinancedBalanceRaw));
+  const stackSellerFinancedBalance = hasSellerCarry
+    ? Math.max(0, round2(stackSellerFinancedBalanceRaw))
+    : 0;
 
   // Total Debt at Acquisition = First-Position Bank Loan + Seller-
   // Financed Balance.
@@ -6386,7 +6422,7 @@ export default function SharedHousingCalculator() {
   // amortization fields (hidden in that state) contain.
   const stackSellerAmortMonths = Math.max(1, Math.round(stackSellerFinanceAmortizationYears * 12));
   const stackMonthlySellerFinancePayment = useMemo(() => {
-    if (!stackSellerFinancePaymentsRequired) return 0;
+    if (!hasSellerCarry || !stackSellerFinancePaymentsRequired) return 0;
     return round2(
       calculateMonthlyPaymentForTerm(
         stackSellerFinancedBalance,
@@ -6395,6 +6431,7 @@ export default function SharedHousingCalculator() {
       )
     );
   }, [
+    hasSellerCarry,
     stackSellerFinancePaymentsRequired,
     stackSellerFinancedBalance,
     percent.stackSellerFinanceRatePct,
@@ -7425,7 +7462,13 @@ export default function SharedHousingCalculator() {
                     { label: "Purchase Price", value: formatCents(financing.purchasePrice) },
                     { label: "Bank Loan-to-Value Percentage", value: formatPercent(stackEffectiveBankLtvPct) },
                     { label: "Estimated First-Position Bank Loan", value: formatCents(stackBankLoanAmount) },
-                    { label: "Estimated Seller-Financed Balance", value: formatCents(stackSellerFinancedBalance) },
+                    {
+                      label: "Is the Seller Carrying a Balance in Second Position?",
+                      value: hasSellerCarry ? "Yes" : "No",
+                    },
+                    ...(hasSellerCarry
+                      ? [{ label: "Estimated Seller-Financed Balance", value: formatCents(stackSellerFinancedBalance) }]
+                      : [{ label: "Seller-Carried Second", value: "None" }]),
                     { label: "Total Debt at Acquisition", value: formatCents(stackTotalDebtAtAcquisition) },
                     {
                       label: "Current Leverage Ratio",
@@ -7440,29 +7483,33 @@ export default function SharedHousingCalculator() {
                     { label: "Annual Property Taxes", value: formatCents(financing.annualPropertyTaxes) },
                     { label: "Annual Property Insurance", value: formatCents(financing.annualPropertyInsurance) },
                     { label: "Estimated Monthly Bank PITI", value: formatCents(stackMonthlyBankPITI) },
-                    { label: "Down Payment to Seller", value: formatCents(financing.stackDownPaymentToSeller) },
-                    {
-                      label: "Are Monthly Seller Finance Payments Required?",
-                      value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
-                    },
-                    ...(stackSellerFinancePaymentsRequired
+                    ...(hasSellerCarry
                       ? [
+                          { label: "Down Payment to Seller", value: formatCents(financing.stackDownPaymentToSeller) },
                           {
-                            label: "Seller Finance Interest Rate",
-                            value: formatPercent(percent.stackSellerFinanceRatePct),
+                            label: "Are Monthly Seller Finance Payments Required?",
+                            value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
                           },
+                          ...(stackSellerFinancePaymentsRequired
+                            ? [
+                                {
+                                  label: "Seller Finance Interest Rate",
+                                  value: formatPercent(percent.stackSellerFinanceRatePct),
+                                },
+                                {
+                                  label: "Seller Finance Amortization",
+                                  value: `${stackSellerFinanceAmortizationYears} Years (${stackSellerAmortMonths} Monthly Payments)`,
+                                },
+                              ]
+                            : []),
                           {
-                            label: "Seller Finance Amortization",
-                            value: `${stackSellerFinanceAmortizationYears} Years (${stackSellerAmortMonths} Monthly Payments)`,
+                            label: "Monthly Seller Finance Payment",
+                            value: stackSellerFinancePaymentsRequired
+                              ? formatCents(stackMonthlySellerFinancePayment)
+                              : "Not Included",
                           },
                         ]
                       : []),
-                    {
-                      label: "Monthly Seller Finance Payment",
-                      value: stackSellerFinancePaymentsRequired
-                        ? formatCents(stackMonthlySellerFinancePayment)
-                        : "Not Included",
-                    },
                     { label: "Total Monthly Housing Payment", value: formatCents(results.monthlyHousingPayment) },
                     { label: "Cash to Close, Leg 1", value: formatCents(stackCashToCloseLeg1) },
                     { label: "Transactional Funding Fee", value: formatCents(stackTransactionalFundingFee) },
@@ -7715,6 +7762,7 @@ export default function SharedHousingCalculator() {
       stackTransactionalFundingFee,
       stackEstimatedBuyerCashAtClosing,
       stackSellerFinancePaymentsRequired,
+      hasSellerCarry,
       stackZeroOutOfPocket,
       stackEffectiveBankLtvPct,
       traditionalEffectiveDownPaymentPct,
@@ -7883,17 +7931,29 @@ export default function SharedHousingCalculator() {
                     value: formatPercent(percent.stackTransactionalFundingFeePct),
                   },
                   {
-                    label: "Seller's Current First Loan Balance",
-                    value: formatWhole(financing.stackSellerFirstLoanBalance),
+                    label: "Is the Seller Carrying a Balance in Second Position?",
+                    value: hasSellerCarry ? "Yes" : "No",
                   },
-                  { label: "Existing Second Lien", value: formatWhole(financing.stackSellerSecondLien) },
-                  { label: "Miscellaneous Liens", value: formatWhole(financing.stackMiscLiens) },
-                  { label: "Down Payment to Seller", value: formatWhole(financing.stackDownPaymentToSeller) },
+                  ...(hasSellerCarry
+                    ? [
+                        {
+                          label: "Seller's Current First Loan Balance",
+                          value: formatWhole(financing.stackSellerFirstLoanBalance),
+                        },
+                        { label: "Existing Second Lien", value: formatWhole(financing.stackSellerSecondLien) },
+                        { label: "Miscellaneous Liens", value: formatWhole(financing.stackMiscLiens) },
+                        { label: "Down Payment to Seller", value: formatWhole(financing.stackDownPaymentToSeller) },
+                      ]
+                    : []),
                   { label: "Estimated First-Position Bank Loan", value: formatWhole(stackBankLoanAmount) },
-                  {
-                    label: "Estimated Seller-Financed Balance",
-                    value: formatWhole(stackSellerFinancedBalance),
-                  },
+                  ...(hasSellerCarry
+                    ? [
+                        {
+                          label: "Estimated Seller-Financed Balance",
+                          value: formatWhole(stackSellerFinancedBalance),
+                        },
+                      ]
+                    : [{ label: "Seller-Carried Second", value: "None" }]),
                   { label: "Total Debt at Acquisition", value: formatWhole(stackTotalDebtAtAcquisition) },
                   {
                     label: "Current Leverage Ratio",
@@ -7901,28 +7961,32 @@ export default function SharedHousingCalculator() {
                   },
                   { label: "Bank Interest Rate", value: formatPercent(percent.stackBankInterestRatePct) },
                   { label: "Bank Amortization", value: `${stackBankAmortizationYears} Years` },
-                  {
-                    label: "Are Monthly Seller Finance Payments Required?",
-                    value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
-                  },
-                  ...(stackSellerFinancePaymentsRequired
+                  ...(hasSellerCarry
                     ? [
                         {
-                          label: "Seller Finance Interest Rate",
-                          value: formatPercent(percent.stackSellerFinanceRatePct),
+                          label: "Are Monthly Seller Finance Payments Required?",
+                          value: stackSellerFinancePaymentsRequired ? "Yes" : "No",
                         },
+                        ...(stackSellerFinancePaymentsRequired
+                          ? [
+                              {
+                                label: "Seller Finance Interest Rate",
+                                value: formatPercent(percent.stackSellerFinanceRatePct),
+                              },
+                              {
+                                label: "Seller Finance Amortization",
+                                value: `${stackSellerFinanceAmortizationYears} Years`,
+                              },
+                            ]
+                          : []),
                         {
-                          label: "Seller Finance Amortization",
-                          value: `${stackSellerFinanceAmortizationYears} Years`,
+                          label: "Estimated Monthly Seller Finance Payment",
+                          value: stackSellerFinancePaymentsRequired
+                            ? formatCents(stackMonthlySellerFinancePayment)
+                            : "Not Included",
                         },
                       ]
                     : []),
-                  {
-                    label: "Estimated Monthly Seller Finance Payment",
-                    value: stackSellerFinancePaymentsRequired
-                      ? formatCents(stackMonthlySellerFinancePayment)
-                      : "Not Included",
-                  },
                   { label: "Base Capital Required", value: formatWhole(results.stackBaseCapitalRequired) },
                   {
                     label: "Signed Buyer Closing Result",
@@ -8050,6 +8114,7 @@ export default function SharedHousingCalculator() {
       stackBankAmortizationYears,
       stackSellerFinanceAmortizationYears,
       stackSellerFinancePaymentsRequired,
+      hasSellerCarry,
       stackMonthlySellerFinancePayment,
       stackEstimatedBuyerCashAtClosing,
       stackZeroOutOfPocket,
@@ -8279,7 +8344,7 @@ export default function SharedHousingCalculator() {
             rows: stackBankAmortization.schedule,
           },
         ];
-        if (stackSellerFinancePaymentsRequired) {
+        if (hasSellerCarry && stackSellerFinancePaymentsRequired) {
           schedules.push({
             sheetName: "Seller-Carried 2nd Amort",
             title: "Seller-Carried Second Amortization Schedule",
@@ -8397,6 +8462,7 @@ export default function SharedHousingCalculator() {
         stackTransactionalFundingFeePct: percent.stackTransactionalFundingFeePct,
         stackTransactionalFundingFee,
         stackCashToCloseLeg1,
+        stackHasSellerCarry: hasSellerCarry,
         stackSellerFinancePaymentsRequired,
         stackSellerFinanceRatePct: percent.stackSellerFinanceRatePct,
         stackSellerFinanceAmortizationYears,
@@ -10304,6 +10370,62 @@ export default function SharedHousingCalculator() {
                 )}
               </div>
 
+              {/* Is the Seller Carrying a Balance in Second Position?:
+                  not every Stack Method deal has a seller-financed
+                  second at all. Defaults to Yes so previously saved
+                  Stack Method underwriting records (which never had
+                  this toggle and always modeled a seller carry) keep
+                  loading and behaving exactly as before. Selecting No
+                  hides every seller-carry-specific field below and
+                  forces the seller-carried balance, payment, interest,
+                  principal paydown, and balloon balance to $0 -- the
+                  Stack Method is then underwritten using only the
+                  primary bank/DSCR loan and the closing structure
+                  below, never by silently assuming Purchase Price minus
+                  the primary loan is a seller-financed note. */}
+              <div className="mt-8 pt-6 border-t border-line-dark">
+                <p className="eyebrow text-ink/50 mb-3 inline-flex items-center">
+                  Is the Seller Carrying a Balance in Second Position?
+                  <InfoTip text="Yes models a seller-financed second-position note (the default, matching every previously saved Stack Method underwriting). No removes seller-carry entirely -- the purchase is then funded solely by the primary bank/DSCR loan plus the Stack Method closing structure, with no second-position note assumed." />
+                </p>
+                <div
+                  className="inline-flex border border-line-dark"
+                  role="group"
+                  aria-label="Is the Seller Carrying a Balance in Second Position?"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setHasSellerCarry(true)}
+                    aria-pressed={hasSellerCarry}
+                    className={`px-4 py-2 text-sm transition-colors ${
+                      hasSellerCarry
+                        ? "bg-brass/10 text-ink border-r border-line-dark"
+                        : "text-ink/60 hover:text-ink border-r border-line-dark"
+                    }`}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHasSellerCarry(false)}
+                    aria-pressed={!hasSellerCarry}
+                    className={`px-4 py-2 text-sm transition-colors ${
+                      !hasSellerCarry ? "bg-brass/10 text-ink" : "text-ink/60 hover:text-ink"
+                    }`}
+                  >
+                    No
+                  </button>
+                </div>
+                {!hasSellerCarry && (
+                  <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+                    Seller-Carried Second: None. This Stack Method structure is underwritten using
+                    only the primary bank/DSCR loan and the closing structure below.
+                  </p>
+                )}
+              </div>
+
+              {hasSellerCarry && (
+              <>
               <div className="mt-8 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-ink/50 mb-3">Property Information</p>
                 <div className="grid sm:grid-cols-2 gap-5">
@@ -10349,6 +10471,8 @@ export default function SharedHousingCalculator() {
                   review the entered amounts.
                 </p>
               )}
+              </>
+              )}
 
               {/* Acquisition Structure */}
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -10360,12 +10484,20 @@ export default function SharedHousingCalculator() {
                     helperText="Purchase Price x Bank Loan-to-Value Percentage."
                     info="The primary loan, typically from a bank or DSCR lender, repaid first if the property is ever sold or foreclosed on."
                   />
-                  <ReadOnlyStat
-                    label="Estimated Seller-Financed Balance"
-                    value={formatWhole(stackSellerFinancedBalance)}
-                    helperText="Purchase Price minus Seller's Current First Loan Balance, Existing Second Lien, Miscellaneous Liens, and Down Payment to Seller. Never falls below $0."
-                    info="Second-position financing provided directly by the seller for the remaining balance, repaid after the first-position loan. Not legal, lending, or tax advice."
-                  />
+                  {hasSellerCarry ? (
+                    <ReadOnlyStat
+                      label="Estimated Seller-Financed Balance"
+                      value={formatWhole(stackSellerFinancedBalance)}
+                      helperText="Purchase Price minus Seller's Current First Loan Balance, Existing Second Lien, Miscellaneous Liens, and Down Payment to Seller. Never falls below $0."
+                      info="Second-position financing provided directly by the seller for the remaining balance, repaid after the first-position loan. Not legal, lending, or tax advice."
+                    />
+                  ) : (
+                    <ReadOnlyStat
+                      label="Seller-Financed Balance"
+                      value="None"
+                      helperText="No seller-carried second-position financing in this structure."
+                    />
+                  )}
                   <ReadOnlyStat label="Total Debt at Acquisition" value={formatWhole(stackTotalDebtAtAcquisition)} />
                   <ReadOnlyStat
                     label="Current Leverage Ratio"
@@ -10433,7 +10565,13 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
 
-              {/* Estimated Seller Cash at Closing + reconciliation */}
+              {/* Estimated Seller Cash at Closing + reconciliation: only
+                  meaningful when there is an actual seller-carried
+                  balance to reconcile against -- with no seller carry,
+                  every row here would otherwise show as $0/Purchase
+                  Price, which is exactly the kind of misleading "$0
+                  seller-finance field" the No state must avoid. */}
+              {hasSellerCarry && (
               <div className="mt-8 pt-6 border-t border-line-dark">
                 <ReadOnlyStat
                   label="Estimated Seller Cash at Closing"
@@ -10468,6 +10606,7 @@ export default function SharedHousingCalculator() {
                   </div>
                 </div>
               </div>
+              )}
 
               {/* Monthly Bank Financing */}
               <div className="mt-8 pt-6 border-t border-line-dark">
@@ -10535,7 +10674,13 @@ export default function SharedHousingCalculator() {
                 </div>
               </div>
 
-              {/* Seller Financing Terms */}
+              {/* Seller Financing Terms: entirely hidden when there is no
+                  seller-carried second (hasSellerCarry === false) -- the
+                  rate, amortization, and monthly-payment fields this
+                  section would otherwise show are all moot at $0 and
+                  must not be presented to the user as things to fill
+                  in. */}
+              {hasSellerCarry && (
               <div className="mt-8 pt-6 border-t border-line-dark">
                 <p className="eyebrow text-ink/50 mb-3">Seller Financing Terms</p>
                 <div className="grid sm:grid-cols-2 gap-5">
@@ -10614,6 +10759,7 @@ export default function SharedHousingCalculator() {
                   </p>
                 )}
               </div>
+              )}
 
               {/* Total Monthly Housing Payment */}
               <div className="mt-8 pt-6 border-t border-line-dark rounded border border-line-dark bg-white p-6">
@@ -10623,14 +10769,16 @@ export default function SharedHousingCalculator() {
                     <span className="text-ink/70">Estimated Monthly Bank PITI</span>
                     <span>{formatCents(stackMonthlyBankPITI)}</span>
                   </div>
-                  <div className="flex items-center justify-between py-2.5 text-sm">
-                    <span className="text-ink/70">Monthly Seller Finance Payment</span>
-                    <span>
-                      {stackSellerFinancePaymentsRequired
-                        ? formatCents(stackMonthlySellerFinancePayment)
-                        : "Not Included"}
-                    </span>
-                  </div>
+                  {hasSellerCarry && (
+                    <div className="flex items-center justify-between py-2.5 text-sm">
+                      <span className="text-ink/70">Monthly Seller Finance Payment</span>
+                      <span>
+                        {stackSellerFinancePaymentsRequired
+                          ? formatCents(stackMonthlySellerFinancePayment)
+                          : "Not Included"}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
                   <span className="eyebrow text-brass">Total Monthly Housing Payment</span>
@@ -10714,7 +10862,9 @@ export default function SharedHousingCalculator() {
                   stackBalloonAnalysis
                     ? [
                         { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
-                        { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+                        ...(hasSellerCarry
+                          ? [{ label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon }]
+                          : []),
                       ]
                     : []
                 }
@@ -10732,25 +10882,31 @@ export default function SharedHousingCalculator() {
               />
 
               {/* Seller Finance Amortization Schedule: the second-position
-                  seller-carried loan, and only appears when monthly
-                  seller-finance payments are required -- when they are
-                  not required, the balance simply carries unamortized to
-                  the balloon date, so there is no schedule to show. */}
-              {stackSellerFinancePaymentsRequired ? (
-                <AmortizationScheduleBlock
-                  title="Seller-Carried Second Amortization Schedule"
-                  schedule={stackSellerAmortization.schedule}
-                  csvFilename="stack-method-seller-finance-amortization-schedule.csv"
-                />
-              ) : (
-                <div className="mt-8 pt-6 border-t border-line-dark">
-                  <p className="eyebrow text-ink/70 mb-2">Seller-Carried Second Amortization Schedule</p>
-                  <p className="text-xs text-ink/50 leading-relaxed">
-                    No monthly seller-finance payments are required for this deal, so the
-                    seller-financed balance is not amortized -- it carries in full, unchanged, until
-                    the balloon date.
-                  </p>
-                </div>
+                  seller-carried loan. Not shown at all -- not even a
+                  placeholder -- when there is no seller carry
+                  (hasSellerCarry === false). When there is a seller
+                  carry, it only appears when monthly seller-finance
+                  payments are required -- when they are not required,
+                  the balance simply carries unamortized to the balloon
+                  date, so there is no schedule to show, only an
+                  explanatory note. */}
+              {hasSellerCarry && (
+                stackSellerFinancePaymentsRequired ? (
+                  <AmortizationScheduleBlock
+                    title="Seller-Carried Second Amortization Schedule"
+                    schedule={stackSellerAmortization.schedule}
+                    csvFilename="stack-method-seller-finance-amortization-schedule.csv"
+                  />
+                ) : (
+                  <div className="mt-8 pt-6 border-t border-line-dark">
+                    <p className="eyebrow text-ink/70 mb-2">Seller-Carried Second Amortization Schedule</p>
+                    <p className="text-xs text-ink/50 leading-relaxed">
+                      No monthly seller-finance payments are required for this deal, so the
+                      seller-financed balance is not amortized -- it carries in full, unchanged, until
+                      the balloon date.
+                    </p>
+                  </div>
+                )
               )}
 
               {/* Co-Living Underwriting note: the existing shared-housing
@@ -12271,7 +12427,9 @@ export default function SharedHousingCalculator() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Seller-Financed Balance</span>
-                      <span className="font-medium text-ink">{formatCents(stackSellerFinancedBalance)}</span>
+                      <span className="font-medium text-ink">
+                        {hasSellerCarry ? formatCents(stackSellerFinancedBalance) : "None"}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-ink/60">Total Debt at Acquisition</span>
@@ -12567,37 +12725,46 @@ export default function SharedHousingCalculator() {
                   <span className="text-ink/60 min-w-0">Estimated Monthly Bank PITI</span>
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlyBankPITI)}</span>
                 </div>
-                <div className="flex justify-between gap-3">
-                  <span className="text-ink/60 min-w-0">Down Payment to Seller</span>
-                  <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackDownPaymentToSeller)}</span>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <span className="text-ink/60 min-w-0">Estimated Seller-Financed Balance</span>
-                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackSellerFinancedBalance)}</span>
-                </div>
-                <div className="flex justify-between gap-3">
-                  <span className="text-ink/60 min-w-0">Are Monthly Seller Finance Payments Required?</span>
-                  <span className="text-ink flex-shrink-0 text-right">{stackSellerFinancePaymentsRequired ? "Yes" : "No"}</span>
-                </div>
-                {stackSellerFinancePaymentsRequired ? (
+                {hasSellerCarry ? (
                   <>
                     <div className="flex justify-between gap-3">
-                      <span className="text-ink/60 min-w-0">Seller Finance Interest Rate</span>
-                      <span className="text-ink flex-shrink-0 text-right">{formatPercent(percent.stackSellerFinanceRatePct)}</span>
+                      <span className="text-ink/60 min-w-0">Down Payment to Seller</span>
+                      <span className="text-ink flex-shrink-0 text-right">{formatCents(financing.stackDownPaymentToSeller)}</span>
                     </div>
                     <div className="flex justify-between gap-3">
-                      <span className="text-ink/60 min-w-0">Seller Finance Amortization</span>
-                      <span className="text-ink flex-shrink-0 text-right">30-years</span>
+                      <span className="text-ink/60 min-w-0">Estimated Seller-Financed Balance</span>
+                      <span className="text-ink flex-shrink-0 text-right">{formatCents(stackSellerFinancedBalance)}</span>
                     </div>
                     <div className="flex justify-between gap-3">
-                      <span className="text-ink/60 min-w-0">Estimated Monthly Seller Finance Payment</span>
-                      <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlySellerFinancePayment)}</span>
+                      <span className="text-ink/60 min-w-0">Are Monthly Seller Finance Payments Required?</span>
+                      <span className="text-ink flex-shrink-0 text-right">{stackSellerFinancePaymentsRequired ? "Yes" : "No"}</span>
                     </div>
+                    {stackSellerFinancePaymentsRequired ? (
+                      <>
+                        <div className="flex justify-between gap-3">
+                          <span className="text-ink/60 min-w-0">Seller Finance Interest Rate</span>
+                          <span className="text-ink flex-shrink-0 text-right">{formatPercent(percent.stackSellerFinanceRatePct)}</span>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <span className="text-ink/60 min-w-0">Seller Finance Amortization</span>
+                          <span className="text-ink flex-shrink-0 text-right">30-years</span>
+                        </div>
+                        <div className="flex justify-between gap-3">
+                          <span className="text-ink/60 min-w-0">Estimated Monthly Seller Finance Payment</span>
+                          <span className="text-ink flex-shrink-0 text-right">{formatCents(stackMonthlySellerFinancePayment)}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex justify-between gap-3">
+                        <span className="text-ink/60 min-w-0">Monthly Seller Finance Payment</span>
+                        <span className="text-ink flex-shrink-0 text-right">Not Included</span>
+                      </div>
+                    )}
                   </>
                 ) : (
-                  <div className="flex justify-between gap-3">
-                    <span className="text-ink/60 min-w-0">Monthly Seller Finance Payment</span>
-                    <span className="text-ink flex-shrink-0 text-right">Not Included</span>
+                  <div className="flex justify-between gap-3 col-span-2">
+                    <span className="text-ink/60 min-w-0">Seller-Carried Second</span>
+                    <span className="text-ink flex-shrink-0 text-right">None</span>
                   </div>
                 )}
                 <div className="flex justify-between gap-3">
@@ -12684,7 +12851,7 @@ export default function SharedHousingCalculator() {
             <AmortizationPrintCard title="Bank Loan Amortization Schedule" schedule={stackBankAmortization.schedule} />
           )}
 
-          {financingMode === "stackMethod" && stackSellerFinancePaymentsRequired && (
+          {financingMode === "stackMethod" && hasSellerCarry && stackSellerFinancePaymentsRequired && (
             <AmortizationPrintCard
               title="Seller-Carried Second Amortization Schedule"
               schedule={stackSellerAmortization.schedule}
@@ -12696,7 +12863,9 @@ export default function SharedHousingCalculator() {
               analysis={stackBalloonAnalysis}
               loanBalanceRows={[
                 { label: "First-Position Loan Balance at Balloon", value: stackBalloonAnalysis.bankBalanceAtBalloon },
-                { label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon },
+                ...(hasSellerCarry
+                  ? [{ label: "Seller-Finance Balance at Balloon", value: stackBalloonAnalysis.sellerBalanceAtBalloon }]
+                  : []),
               ]}
               stackRefinanceDetail
             />

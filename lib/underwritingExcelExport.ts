@@ -230,6 +230,15 @@ export interface UnderwritingExportData {
   stackTransactionalFundingFeePct: number;
   stackTransactionalFundingFee: number;
   stackCashToCloseLeg1: number;
+  // Is the Seller Carrying a Balance in Second Position?: an explicit
+  // user choice, never inferred from stackSellerFinancedBalance > 0.
+  // When false, every seller-carry-specific figure below
+  // (stackSellerFinancedBalance, stackMonthlySellerFinancePayment, the
+  // seller leg of stackBalloon) is already $0 by the time it reaches
+  // this export -- this flag is what tells the worksheet builders to
+  // omit the seller-carry rows/sheets entirely instead of printing
+  // misleading $0 values.
+  stackHasSellerCarry: boolean;
   stackSellerFinancePaymentsRequired: boolean;
   stackSellerFinanceRatePct: number;
   stackSellerFinanceAmortizationYears: number;
@@ -1250,7 +1259,9 @@ function activeBalloon(data: UnderwritingExportData): { rows: KVRow[] } | null {
     return {
       rows: stackBalloonRows(data.stackBalloon, [
         { label: "First-Position Loan Balance at Balloon", value: data.stackBalloon.bankBalanceAtBalloon },
-        { label: "Seller-Finance Balance at Balloon", value: data.stackBalloon.sellerBalanceAtBalloon },
+        ...(data.stackHasSellerCarry
+          ? [{ label: "Seller-Finance Balance at Balloon", value: data.stackBalloon.sellerBalanceAtBalloon }]
+          : []),
       ]),
     };
   }
@@ -1466,6 +1477,16 @@ function financingNotesText(data: UnderwritingExportData): string {
     );
   }
   if (data.financingMode === "stackMethod") {
+    if (!data.stackHasSellerCarry) {
+      return (
+        `Stack Method: primary bank/DSCR loan only, no seller-carried second. Primary Bank/DSCR loan: balance ` +
+        `${fmtDollarsCents(money(data.stackBankLoanAmount))} at ${data.stackBankInterestRatePct.toFixed(2)}% interest, ` +
+        `monthly Principal and Interest ${fmtDollarsCents(money(data.stackBankMonthlyPI))}, ${data.stackBankAmortizationYears}-year ` +
+        `amortization (taxes and insurance are shown as separate line items above, never blended into this payment). ` +
+        `Seller-Carried Second: None -- this structure is funded entirely by the primary loan plus the Stack Method ` +
+        `closing structure. See the "Financing Details" worksheet for the complete breakdown.`
+      );
+    }
     const secondPart = data.stackSellerFinancePaymentsRequired
       ? `Seller-carried second: balance ${fmtDollarsCents(money(data.stackSellerFinancedBalance))} at ` +
         `${data.stackSellerFinanceRatePct.toFixed(2)}% interest, monthly payment ` +
@@ -1599,7 +1620,11 @@ function buildUnderwritingSheet(
   // completely empty (no label, no dash, no 0, nothing), even though E4
   // to its left still holds 0 for internal formula consistency (E4 is
   // never displayed on its own; it only ever feeds into C17/Annual Debt
-  // Payments and C23/Total Monthly Housing Payment below).
+  // Payments and C23/Total Monthly Housing Payment below). Stack Method
+  // with no seller carry (data.stackHasSellerCarry === false) is treated
+  // the same as Traditional/Subject To/Seller Financing here -- there is
+  // no second loan at all, so no label is shown, matching item 9's
+  // "do not display a $0.00 payment as if it exists".
   const secondaryPaymentValue = isHybrid
     ? data.hybridMonthlySellerFinancePayment
     : isStack
@@ -1608,7 +1633,7 @@ function buildUnderwritingSheet(
   ws.getCell("E4").value = money(secondaryPaymentValue);
   const secondaryPaymentLabel = isHybrid
     ? "Hybrid Seller-Finance Payment"
-    : isStack
+    : isStack && data.stackHasSellerCarry
       ? "Seller-Carried Second Payment"
       : null;
   if (secondaryPaymentLabel) {
@@ -2432,10 +2457,18 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
   return [
     { label: "Purchase Price", value: money(data.purchasePrice), format: FMT_CURRENCY, input: true },
     ...propertyTaxDetailRows(data),
-    { label: "Seller's Current First Loan Balance", value: money(data.stackSellerFirstLoanBalance), format: FMT_CURRENCY, input: true },
-    { label: "Existing Second Lien", value: money(data.stackSellerSecondLien), format: FMT_CURRENCY, input: true },
-    { label: "Miscellaneous Liens", value: money(data.stackMiscLiens), format: FMT_CURRENCY, input: true },
-    { label: "Down Payment to Seller", value: money(data.stackDownPaymentToSeller), format: FMT_CURRENCY, input: true },
+    {
+      label: "Is the Seller Carrying a Balance in Second Position?",
+      value: data.stackHasSellerCarry ? "Yes" : "No",
+    },
+    ...(data.stackHasSellerCarry
+      ? ([
+          { label: "Seller's Current First Loan Balance", value: money(data.stackSellerFirstLoanBalance), format: FMT_CURRENCY, input: true },
+          { label: "Existing Second Lien", value: money(data.stackSellerSecondLien), format: FMT_CURRENCY, input: true },
+          { label: "Miscellaneous Liens", value: money(data.stackMiscLiens), format: FMT_CURRENCY, input: true },
+          { label: "Down Payment to Seller", value: money(data.stackDownPaymentToSeller), format: FMT_CURRENCY, input: true },
+        ] as KVRow[])
+      : []),
     { label: "Bank Loan-to-Value Percentage", value: pct(data.stackEffectiveBankLtvPct), format: FMT_PERCENT },
     { label: "Estimated First-Position Bank Loan", value: money(data.stackBankLoanAmount), format: FMT_CURRENCY },
     { label: "Bank Interest Rate", value: pct(data.stackBankInterestRatePct), format: FMT_PERCENT, input: true },
@@ -2443,28 +2476,36 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
     { label: "Monthly Bank Principal and Interest", value: money(data.stackBankMonthlyPI), format: FMT_CURRENCY },
     { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
     { label: "Estimated Monthly Bank PITI", value: money(data.stackMonthlyBankPITI), format: FMT_CURRENCY },
-    { label: "Estimated Seller-Financed Balance", value: money(data.stackSellerFinancedBalance), format: FMT_CURRENCY },
+    ...(data.stackHasSellerCarry
+      ? ([
+          { label: "Estimated Seller-Financed Balance", value: money(data.stackSellerFinancedBalance), format: FMT_CURRENCY },
+        ] as KVRow[])
+      : ([{ label: "Seller-Carried Second", value: "None" }] as KVRow[])),
     { label: "Total Debt at Acquisition", value: money(data.stackTotalDebtAtAcquisition), format: FMT_CURRENCY },
     {
       label: "Current Leverage Ratio",
       value: data.stackLeverageRatioDecimal === null ? "N/A" : data.stackLeverageRatioDecimal,
       format: data.stackLeverageRatioDecimal === null ? undefined : FMT_PERCENT,
     },
-    { label: "Are Monthly Seller Finance Payments Required?", value: data.stackSellerFinancePaymentsRequired ? "Yes" : "No" },
-    {
-      label: "Seller Finance Interest Rate",
-      value: data.stackSellerFinancePaymentsRequired ? pct(data.stackSellerFinanceRatePct) : "Not Applicable",
-      format: data.stackSellerFinancePaymentsRequired ? FMT_PERCENT : undefined,
-    },
-    {
-      label: "Seller Finance Amortization",
-      value: data.stackSellerFinancePaymentsRequired ? `${data.stackSellerFinanceAmortizationYears} years` : "Not Applicable",
-    },
-    {
-      label: "Estimated Monthly Seller Finance Payment",
-      value: data.stackSellerFinancePaymentsRequired ? money(data.stackMonthlySellerFinancePayment) : "Not Included",
-      format: data.stackSellerFinancePaymentsRequired ? FMT_CURRENCY : undefined,
-    },
+    ...(data.stackHasSellerCarry
+      ? ([
+          { label: "Are Monthly Seller Finance Payments Required?", value: data.stackSellerFinancePaymentsRequired ? "Yes" : "No" },
+          {
+            label: "Seller Finance Interest Rate",
+            value: data.stackSellerFinancePaymentsRequired ? pct(data.stackSellerFinanceRatePct) : "Not Applicable",
+            format: data.stackSellerFinancePaymentsRequired ? FMT_PERCENT : undefined,
+          },
+          {
+            label: "Seller Finance Amortization",
+            value: data.stackSellerFinancePaymentsRequired ? `${data.stackSellerFinanceAmortizationYears} years` : "Not Applicable",
+          },
+          {
+            label: "Estimated Monthly Seller Finance Payment",
+            value: data.stackSellerFinancePaymentsRequired ? money(data.stackMonthlySellerFinancePayment) : "Not Included",
+            format: data.stackSellerFinancePaymentsRequired ? FMT_CURRENCY : undefined,
+          },
+        ] as KVRow[])
+      : []),
     { label: "Stack Method Closing Cost Percentage", value: pct(data.stackClosingCostPct), format: FMT_PERCENT, input: true },
     { label: "Stack Method Closing Costs", value: money(data.stackClosingCosts), format: FMT_CURRENCY },
     { label: "Agent Commission Percentage", value: pct(data.stackAgentCommissionPct), format: FMT_PERCENT, input: true },
