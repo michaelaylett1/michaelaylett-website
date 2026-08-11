@@ -12853,6 +12853,25 @@ export default function SharedHousingCalculator() {
                     </div>
                   </>
                 )}
+                {/* Closing Costs / Agent Fee / Assignment Fee are the same
+                    stackClosingCosts / stackAgentFees / capital.assignmentFee
+                    values already used to compute Cash to Close, Leg 1 above
+                    -- shown here individually (rather than only as one
+                    combined figure) so the printout can be audited line by
+                    line, matching the same breakdown shown in the Capital
+                    Required section below. */}
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Closing Costs</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackClosingCosts)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Agent Fee</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(stackAgentFees)}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-ink/60 min-w-0">Assignment Fee</span>
+                  <span className="text-ink flex-shrink-0 text-right">{formatCents(capital.assignmentFee)}</span>
+                </div>
                 <div className="flex justify-between gap-3">
                   <span className="text-ink/60 min-w-0">Cash to Close, Leg 1</span>
                   <span className="text-ink flex-shrink-0 text-right">{formatCents(stackCashToCloseLeg1)}</span>
@@ -13238,10 +13257,20 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink">{formatCents(capital.appliances)}</span>
               </div>
               {financingMode === "stackMethod" ? (
-                <div className="flex justify-between">
-                  <span className="text-ink/60">Closing Costs, Agent Fees, and Assignment Fee</span>
-                  <span className="text-ink">Included above</span>
-                </div>
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Closing Costs</span>
+                    <span className="text-ink">{formatCents(stackClosingCosts)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Agent Fee</span>
+                    <span className="text-ink">{formatCents(stackAgentFees)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Assignment Fee</span>
+                    <span className="text-ink">{formatCents(capital.assignmentFee)}</span>
+                  </div>
+                </>
               ) : (
                 <>
                   <div className="flex justify-between">
@@ -13271,6 +13300,15 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink">{formatCents(results.holdingCosts)}</span>
               </div>
             </div>
+            {financingMode === "stackMethod" && (
+              <p className="mt-2 text-[8pt] text-ink/50 leading-relaxed">
+                Closing Costs, Agent Fee, and Assignment Fee above are the same figures used in
+                Cash to Close, Leg 1 in the Stack Method Financing section of this report --
+                already reflected in the Estimated Cash to Buyer at Closing / Estimated Buyer
+                Cash Required adjustment below, and not added a second time into Base Capital
+                Required, so they are never double-counted in Adjusted Total Capital Required.
+              </p>
+            )}
             {financingMode === "stackMethod" && (
               <div className="mt-2 pt-2 border-t border-ink/10">
                 <p className="text-[8.5pt] font-semibold uppercase tracking-wide text-ink/60 mb-1.5">
