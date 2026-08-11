@@ -239,6 +239,26 @@ export interface UnderwritingExportData {
   // omit the seller-carry rows/sheets entirely instead of printing
   // misleading $0 values.
   stackHasSellerCarry: boolean;
+  // Potential Seller-Carry Amount: Purchase Price minus the seller's
+  // existing first loan balance, second lien, misc liens, and down
+  // payment to seller, floored at $0 -- computed unconditionally,
+  // regardless of stackHasSellerCarry. When stackHasSellerCarry is
+  // true this becomes the second-position debt
+  // (stackSellerFinancedBalance). When false, the exact same dollar
+  // amount instead flows into the Stack Method closing reconciliation
+  // as stackAdditionalClosingFundsFromNoSellerCarry -- it is never
+  // dropped from the transaction and never counted in both places at
+  // once (stackSellerFinancedBalance + stackAdditionalClosingFundsFromNoSellerCarry
+  // always equals stackPotentialSellerCarry).
+  stackPotentialSellerCarry: number;
+  // The amount that would otherwise have been the seller-carried
+  // balance, reallocated into the closing structure -- $0 whenever
+  // stackHasSellerCarry is true. Already fully reflected inside
+  // stackEstimatedBuyerCashAtClosing/stackBaseCapitalRequired-derived
+  // figures below; this field exists purely so the reallocation can be
+  // shown and audited on its own line (Financing Details worksheet,
+  // Full Underwriting Breakdown, printable report).
+  stackAdditionalClosingFundsFromNoSellerCarry: number;
   stackSellerFinancePaymentsRequired: boolean;
   stackSellerFinanceRatePct: number;
   stackSellerFinanceAmortizationYears: number;
@@ -1483,8 +1503,10 @@ function financingNotesText(data: UnderwritingExportData): string {
         `${fmtDollarsCents(money(data.stackBankLoanAmount))} at ${data.stackBankInterestRatePct.toFixed(2)}% interest, ` +
         `monthly Principal and Interest ${fmtDollarsCents(money(data.stackBankMonthlyPI))}, ${data.stackBankAmortizationYears}-year ` +
         `amortization (taxes and insurance are shown as separate line items above, never blended into this payment). ` +
-        `Seller-Carried Second: None -- this structure is funded entirely by the primary loan plus the Stack Method ` +
-        `closing structure. See the "Financing Details" worksheet for the complete breakdown.`
+        `Seller-Carried Second: None. The ${fmtDollarsCents(money(data.stackAdditionalClosingFundsFromNoSellerCarry))} ` +
+        `that would otherwise have been a seller-carried second is instead applied through the Stack Method closing ` +
+        `structure as funds available at closing, reducing Estimated Buyer Cash Required. See the "Financing Details" ` +
+        `worksheet for the complete breakdown.`
       );
     }
     const secondPart = data.stackSellerFinancePaymentsRequired
@@ -2476,11 +2498,22 @@ function financingDetailsRows(data: UnderwritingExportData): KVRow[] {
     { label: "Monthly Bank Principal and Interest", value: money(data.stackBankMonthlyPI), format: FMT_CURRENCY },
     { label: "Annual Property Insurance", value: money(data.annualPropertyInsurance), format: FMT_CURRENCY, input: true },
     { label: "Estimated Monthly Bank PITI", value: money(data.stackMonthlyBankPITI), format: FMT_CURRENCY },
+    // Potential Seller-Carry Amount is shown regardless of the Yes/No
+    // selection -- it is the same fixed dollar amount either way, only
+    // its destination (seller debt vs. closing funds) differs below.
+    { label: "Potential Seller-Carry Amount", value: money(data.stackPotentialSellerCarry), format: FMT_CURRENCY },
     ...(data.stackHasSellerCarry
       ? ([
           { label: "Estimated Seller-Financed Balance", value: money(data.stackSellerFinancedBalance), format: FMT_CURRENCY },
         ] as KVRow[])
-      : ([{ label: "Seller-Carried Second", value: "None" }] as KVRow[])),
+      : ([
+          { label: "Seller-Carried Second", value: "None" },
+          {
+            label: "Amount Applied Through Closing Structure",
+            value: money(data.stackAdditionalClosingFundsFromNoSellerCarry),
+            format: FMT_CURRENCY,
+          },
+        ] as KVRow[])),
     { label: "Total Debt at Acquisition", value: money(data.stackTotalDebtAtAcquisition), format: FMT_CURRENCY },
     {
       label: "Current Leverage Ratio",

@@ -6231,23 +6231,32 @@ export default function SharedHousingCalculator() {
     [financing.purchasePrice, stackEffectiveBankLtvPct]
   );
 
-  // Estimated Seller-Financed Balance (workbook: "Proposed Seller
-  // Carry") = Purchase Price - Seller's Current First Loan Balance -
-  // Existing Second Lien - Miscellaneous Liens - Down Payment to
-  // Seller, floored at $0 for display and every downstream use. Only
-  // computed at all when hasSellerCarry is true -- when the user has
-  // explicitly selected "No" for "Is the Seller Carrying a Balance in
-  // Second Position?", this is forced to exactly $0 regardless of the
-  // other Property Information fields, which are themselves hidden in
-  // that state (see the Stack Method UI section below). This is a
-  // deliberate, explicit gate: the difference between Purchase Price
-  // and the primary loan (or these payoff fields) is NEVER
-  // automatically treated as a seller-carried balance -- only an
-  // explicit "Yes" here does that. stackSellerFinancedBalance is the
-  // single source of truth every other Stack Method calculation reads
-  // from (debt totals, leverage ratio, cash-to-close, monthly payment,
-  // amortization, balloon), so gating it here is sufficient to zero out
-  // seller-carry everywhere downstream.
+  // Potential Seller-Carry Amount (workbook: "Proposed Seller Carry") =
+  // Purchase Price - Seller's Current First Loan Balance - Existing
+  // Second Lien - Miscellaneous Liens - Down Payment to Seller, floored
+  // at $0. This is computed unconditionally -- regardless of the "Is
+  // the Seller Carrying a Balance in Second Position?" selection --
+  // because it represents a fixed amount of funding the Stack Method
+  // transaction structure produces (Purchase Price minus everything
+  // else the deal already accounts for). What differs by selection is
+  // only *where that amount goes*, never whether it exists:
+  //   - Seller Carry = Yes: it becomes stackSellerFinancedBalance, a
+  //     second-position debt owed to the seller (principal, interest,
+  //     a monthly payment, and a balloon balance all apply to it).
+  //   - Seller Carry = No: it becomes
+  //     stackAdditionalClosingFundsFromNoSellerCarry, cash available
+  //     through the Stack Method closing structure instead -- it is
+  //     never a debt, never accrues interest, and never appears in the
+  //     amortization schedule or balloon analysis, but it still reduces
+  //     Estimated Buyer Cash Required / increases Cash Received at
+  //     Closing by the exact same amount a seller-carried balance of
+  //     that size would have. See stackEstimatedBuyerCashAtClosing
+  //     below, which reads stackPotentialSellerCarry directly (not
+  //     stackSellerFinancedBalance) for exactly this reason -- it is
+  //     mathematically identical to
+  //     stackSellerFinancedBalance + stackAdditionalClosingFundsFromNoSellerCarry
+  //     in both states, so the funds are applied to the closing
+  //     reconciliation exactly once, never twice, and never dropped.
   const stackSellerFinancedBalanceRaw = useMemo(
     () =>
       financing.purchasePrice -
@@ -6263,9 +6272,28 @@ export default function SharedHousingCalculator() {
       financing.stackDownPaymentToSeller,
     ]
   );
-  const stackSellerFinancedBalance = hasSellerCarry
-    ? Math.max(0, round2(stackSellerFinancedBalanceRaw))
-    : 0;
+  const stackPotentialSellerCarry = useMemo(
+    () => Math.max(0, round2(stackSellerFinancedBalanceRaw)),
+    [stackSellerFinancedBalanceRaw]
+  );
+  // The actual second-position debt owed to the seller -- $0 whenever
+  // hasSellerCarry is false, per the explicit-selection rule (never
+  // inferred from Purchase Price minus the primary loan). This is the
+  // single source of truth for every seller-carry *debt* calculation
+  // (total debt at acquisition, leverage ratio, monthly payment,
+  // amortization, balloon) -- but NOT for the closing/cash-at-closing
+  // calculations below, which must keep counting
+  // stackPotentialSellerCarry's dollar amount even when it is not a
+  // debt (see stackAdditionalClosingFundsFromNoSellerCarry above).
+  const stackSellerFinancedBalance = hasSellerCarry ? stackPotentialSellerCarry : 0;
+  // The amount that would otherwise have been the seller-carried
+  // balance, reallocated into the Stack Method closing structure as
+  // funds available at closing -- $0 whenever hasSellerCarry is true
+  // (in that case the same dollar amount is already flowing through as
+  // stackSellerFinancedBalance instead). Displayed on-page, in the Full
+  // Underwriting Breakdown, in print, and in the Excel export so the
+  // reallocation is fully auditable.
+  const stackAdditionalClosingFundsFromNoSellerCarry = hasSellerCarry ? 0 : stackPotentialSellerCarry;
 
   // Total Debt at Acquisition = First-Position Bank Loan + Seller-
   // Financed Balance.
@@ -6329,13 +6357,24 @@ export default function SharedHousingCalculator() {
     [stackCashToCloseLeg1, percent.stackTransactionalFundingFeePct]
   );
 
-  // Estimated Buyer Cash at Closing = Seller-Financed Balance - Cash to
-  // Close, Leg 1 - Transactional Funding Fee. Positive, zero, and
-  // negative results are all preserved unmodified, since the sign is
-  // itself meaningful (see the contextual label logic in the UI below).
+  // Estimated Buyer Cash at Closing = Potential Seller-Carry Amount -
+  // Cash to Close, Leg 1 - Transactional Funding Fee. Deliberately reads
+  // stackPotentialSellerCarry, NOT stackSellerFinancedBalance -- the
+  // dollar amount that would otherwise have been a seller-carried
+  // second-position balance is still funding this closing whether or
+  // not it is structured as a debt owed to the seller (see the "Is the
+  // Seller Carrying a Balance in Second Position?" selection above).
+  // When hasSellerCarry is true, stackPotentialSellerCarry equals
+  // stackSellerFinancedBalance exactly, so this produces the same
+  // result as before for that case; when false, the same dollar amount
+  // still reduces Estimated Buyer Cash Required / increases Cash
+  // Received at Closing, just no longer as seller debt. Positive, zero,
+  // and negative results are all preserved unmodified, since the sign
+  // is itself meaningful (see the contextual label logic in the UI
+  // below).
   const stackEstimatedBuyerCashAtClosing = useMemo(
-    () => round2(stackSellerFinancedBalance - stackCashToCloseLeg1 - stackTransactionalFundingFee),
-    [stackSellerFinancedBalance, stackCashToCloseLeg1, stackTransactionalFundingFee]
+    () => round2(stackPotentialSellerCarry - stackCashToCloseLeg1 - stackTransactionalFundingFee),
+    [stackPotentialSellerCarry, stackCashToCloseLeg1, stackTransactionalFundingFee]
   );
 
   // Net Stack Method Buyer Cash Requirement: the amount actually
@@ -6343,14 +6382,15 @@ export default function SharedHousingCalculator() {
   // purposes. Never negative (a positive cash-back result must never
   // become a negative capital contribution), and mathematically the
   // same result as taking the absolute value of a negative Estimated
-  // Buyer Cash at Closing.
+  // Buyer Cash at Closing. Also reads stackPotentialSellerCarry (see
+  // stackEstimatedBuyerCashAtClosing above for why).
   const stackNetBuyerCashRequirement = useMemo(
     () =>
       Math.max(
         0,
-        round2(stackCashToCloseLeg1 + stackTransactionalFundingFee - stackSellerFinancedBalance)
+        round2(stackCashToCloseLeg1 + stackTransactionalFundingFee - stackPotentialSellerCarry)
       ),
-    [stackCashToCloseLeg1, stackTransactionalFundingFee, stackSellerFinancedBalance]
+    [stackCashToCloseLeg1, stackTransactionalFundingFee, stackPotentialSellerCarry]
   );
 
   // Can this be purchased for an estimated $0 out of pocket? Yes if the
@@ -7466,9 +7506,16 @@ export default function SharedHousingCalculator() {
                       label: "Is the Seller Carrying a Balance in Second Position?",
                       value: hasSellerCarry ? "Yes" : "No",
                     },
+                    { label: "Potential Seller-Carry Amount", value: formatCents(stackPotentialSellerCarry) },
                     ...(hasSellerCarry
                       ? [{ label: "Estimated Seller-Financed Balance", value: formatCents(stackSellerFinancedBalance) }]
-                      : [{ label: "Seller-Carried Second", value: "None" }]),
+                      : [
+                          { label: "Seller-Carried Second", value: "None" },
+                          {
+                            label: "Amount Applied Through Closing Structure",
+                            value: formatCents(stackAdditionalClosingFundsFromNoSellerCarry),
+                          },
+                        ]),
                     { label: "Total Debt at Acquisition", value: formatCents(stackTotalDebtAtAcquisition) },
                     {
                       label: "Current Leverage Ratio",
@@ -7748,6 +7795,8 @@ export default function SharedHousingCalculator() {
       hybridMonthlySellerFinancePayment,
       stackBankLoanAmount,
       stackSellerFinancedBalance,
+      stackPotentialSellerCarry,
+      stackAdditionalClosingFundsFromNoSellerCarry,
       stackTotalDebtAtAcquisition,
       stackLeverageRatio,
       stackLeverageRatioDecimal,
@@ -7946,6 +7995,7 @@ export default function SharedHousingCalculator() {
                       ]
                     : []),
                   { label: "Estimated First-Position Bank Loan", value: formatWhole(stackBankLoanAmount) },
+                  { label: "Potential Seller-Carry Amount", value: formatWhole(stackPotentialSellerCarry) },
                   ...(hasSellerCarry
                     ? [
                         {
@@ -7953,7 +8003,13 @@ export default function SharedHousingCalculator() {
                           value: formatWhole(stackSellerFinancedBalance),
                         },
                       ]
-                    : [{ label: "Seller-Carried Second", value: "None" }]),
+                    : [
+                        { label: "Seller-Carried Second", value: "None" },
+                        {
+                          label: "Amount Applied Through Closing Structure",
+                          value: formatWhole(stackAdditionalClosingFundsFromNoSellerCarry),
+                        },
+                      ]),
                   { label: "Total Debt at Acquisition", value: formatWhole(stackTotalDebtAtAcquisition) },
                   {
                     label: "Current Leverage Ratio",
@@ -8108,6 +8164,8 @@ export default function SharedHousingCalculator() {
       capital,
       stackBankLoanAmount,
       stackSellerFinancedBalance,
+      stackPotentialSellerCarry,
+      stackAdditionalClosingFundsFromNoSellerCarry,
       stackTotalDebtAtAcquisition,
       stackLeverageRatio,
       stackLeverageRatioDecimal,
@@ -8463,6 +8521,8 @@ export default function SharedHousingCalculator() {
         stackTransactionalFundingFee,
         stackCashToCloseLeg1,
         stackHasSellerCarry: hasSellerCarry,
+        stackPotentialSellerCarry,
+        stackAdditionalClosingFundsFromNoSellerCarry,
         stackSellerFinancePaymentsRequired,
         stackSellerFinanceRatePct: percent.stackSellerFinanceRatePct,
         stackSellerFinanceAmortizationYears,
@@ -10417,10 +10477,26 @@ export default function SharedHousingCalculator() {
                   </button>
                 </div>
                 {!hasSellerCarry && (
-                  <p className="mt-3 text-xs text-ink/50 leading-relaxed">
-                    Seller-Carried Second: None. This Stack Method structure is underwritten using
-                    only the primary bank/DSCR loan and the closing structure below.
-                  </p>
+                  <div className="mt-4 rounded border border-line-dark bg-paper-2 p-4">
+                    <p className="text-xs text-ink/50 leading-relaxed">
+                      Seller-Carried Second: None. This Stack Method structure is underwritten using
+                      only the primary bank/DSCR loan and the closing structure below.
+                    </p>
+                    <div className="mt-3 flex justify-between items-baseline">
+                      <span className="text-sm text-ink/70">Amount Reallocated to Closing Structure</span>
+                      <span className="font-display text-lg text-ink">
+                        {formatCents(stackAdditionalClosingFundsFromNoSellerCarry)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-ink/50 leading-relaxed">
+                      The amount that would otherwise have been a seller-carried second-position
+                      balance is not dropped from the transaction -- it flows into the Stack Method
+                      closing reconciliation below as funds available at closing instead, reducing
+                      Estimated Buyer Cash Required (or increasing Estimated Cash to Buyer at
+                      Closing). It is applied exactly once, never as a separate seller-finance
+                      obligation.
+                    </p>
+                  </div>
                 )}
               </div>
 
@@ -10546,8 +10622,10 @@ export default function SharedHousingCalculator() {
                     {formatCents(Math.abs(stackEstimatedBuyerCashAtClosing))}
                   </p>
                   <p className="mt-2 text-xs text-ink/50 leading-relaxed">
-                    Calculation: Seller-Financed Balance {formatCents(stackSellerFinancedBalance)} minus Cash to
-                    Close, Leg 1 {formatCents(stackCashToCloseLeg1)} minus Transactional Funding Fee{" "}
+                    Calculation:{" "}
+                    {hasSellerCarry ? "Seller-Financed Balance" : "Amount Reallocated to Closing Structure"}{" "}
+                    {formatCents(stackPotentialSellerCarry)} minus Cash to Close, Leg 1{" "}
+                    {formatCents(stackCashToCloseLeg1)} minus Transactional Funding Fee{" "}
                     {formatCents(stackTransactionalFundingFee)} = {formatCents(stackEstimatedBuyerCashAtClosing)}
                   </p>
                   <p className="mt-3 text-xs text-ink/50 leading-relaxed">
@@ -12762,10 +12840,18 @@ export default function SharedHousingCalculator() {
                     )}
                   </>
                 ) : (
-                  <div className="flex justify-between gap-3 col-span-2">
-                    <span className="text-ink/60 min-w-0">Seller-Carried Second</span>
-                    <span className="text-ink flex-shrink-0 text-right">None</span>
-                  </div>
+                  <>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-ink/60 min-w-0">Seller-Carried Second</span>
+                      <span className="text-ink flex-shrink-0 text-right">None</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-ink/60 min-w-0">Amount Applied Through Closing Structure</span>
+                      <span className="text-ink flex-shrink-0 text-right">
+                        {formatCents(stackAdditionalClosingFundsFromNoSellerCarry)}
+                      </span>
+                    </div>
+                  </>
                 )}
                 <div className="flex justify-between gap-3">
                   <span className="text-ink/60 min-w-0">Cash to Close, Leg 1</span>
