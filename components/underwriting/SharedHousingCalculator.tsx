@@ -120,14 +120,24 @@ import {
   CONDITION_OPTIONS,
   PLUMBING_TYPE_OPTIONS,
   ELECTRICAL_TYPE_OPTIONS,
+  FOUNDATION_TYPE_OPTIONS,
+  KNOWN_ISSUES_OPTIONS,
+  computeFoundationStatus,
+  computeFoundationReserveInclusion,
+  shouldShowFoundationReserveReminder,
+  FOUNDATION_RESERVE_REMINDER,
+  FOUNDATION_SCOPE_OF_WORK_NOTE,
   SYSTEM_LABELS,
   type MajorSystemsState,
   type ReserveSystemState,
   type UtilitySystemState,
+  type FoundationState,
   type SystemCondition,
   type IncludeReserveOption,
   type PlumbingType,
   type ElectricalType,
+  type FoundationType,
+  type KnownIssuesOption,
   type ReserveSystemKey,
   type UtilitySystemKey,
   type MajorSystemKey,
@@ -3147,6 +3157,151 @@ function MajorSystemUtilityCard({
   );
 }
 
+// Foundation card: unlike the other five systems there is no age or
+// expected/remaining life concept at all -- status is driven purely by
+// Condition + Known Foundation Issues (computeFoundationStatus), and the
+// reserve is a plain manually-entered dollar amount (never an automatic
+// age-based trigger) since foundation repair costs vary too much by
+// property/problem to assume a default.
+function FoundationCard({
+  state,
+  repairReserveDraft,
+  onTypeChange,
+  onConditionChange,
+  onKnownIssuesChange,
+  onNotesChange,
+  onRepairReserveChange,
+  onRepairReserveBlur,
+  onAlreadyInScopeOfWorkToggle,
+}: {
+  state: FoundationState;
+  repairReserveDraft: string;
+  onTypeChange: (value: FoundationType) => void;
+  onConditionChange: (condition: SystemCondition) => void;
+  onKnownIssuesChange: (value: KnownIssuesOption) => void;
+  onNotesChange: (notes: string) => void;
+  onRepairReserveChange: (raw: string) => void;
+  onRepairReserveBlur: () => void;
+  onAlreadyInScopeOfWorkToggle: (value: boolean) => void;
+}) {
+  const status = computeFoundationStatus(state.condition, state.knownIssues);
+  const colors = statusColorClasses(status.color);
+  const showReserveReminder = shouldShowFoundationReserveReminder(state.condition, state.knownIssues);
+  const inclusion = computeFoundationReserveInclusion(state);
+  return (
+    <div className={`rounded border p-5 ${colors.card}`}>
+      <p className="eyebrow text-ink mb-4">Foundation</p>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor="foundationType" className="block mb-2">
+            <FieldLabel>Foundation Type</FieldLabel>
+          </label>
+          <select
+            id="foundationType"
+            value={state.foundationType}
+            onChange={(e) => onTypeChange(e.target.value as FoundationType)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {FOUNDATION_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="foundationCondition" className="block mb-2">
+            <FieldLabel>Condition</FieldLabel>
+          </label>
+          <select
+            id="foundationCondition"
+            value={state.condition}
+            onChange={(e) => onConditionChange(e.target.value as SystemCondition)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {CONDITION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="foundationKnownIssues" className="block mb-2">
+            <FieldLabel>Known Foundation Issues?</FieldLabel>
+          </label>
+          <select
+            id="foundationKnownIssues"
+            value={state.knownIssues}
+            onChange={(e) => onKnownIssuesChange(e.target.value as KnownIssuesOption)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {KNOWN_ISSUES_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded bg-white/70 border border-line-dark/30 px-3 py-2">
+        <span className="eyebrow text-ink/50">Status</span>
+        <span className={`text-sm font-semibold uppercase tracking-wide ${colors.text}`}>{status.statusLabel}</span>
+      </div>
+      {status.note && <p className={`mt-2 text-xs ${colors.text}`}>{status.note}</p>}
+      <div className="mt-4">
+        <label htmlFor="foundationRepairReserve" className="block mb-2">
+          <FieldLabel info="Foundation repair costs vary too much by property and problem to assume a default -- enter an amount here if warranted. Added to Total Reserves unless already accounted for in Scope of Work below.">
+            Estimated Foundation Repair / Reserve
+          </FieldLabel>
+        </label>
+        <input
+          id="foundationRepairReserve"
+          type="text"
+          inputMode="decimal"
+          value={repairReserveDraft}
+          onChange={(e) => onRepairReserveChange(e.target.value)}
+          onBlur={onRepairReserveBlur}
+          className={`w-full border px-3 py-2.5 text-ink outline-none focus:border-brass ${
+            showReserveReminder ? "border-red-700 bg-red-50" : "bg-white border-line-dark"
+          }`}
+        />
+        {showReserveReminder && <p className="mt-1.5 text-xs text-red-800">{FOUNDATION_RESERVE_REMINDER}</p>}
+      </div>
+      <div className="mt-4">
+        <label className="inline-flex items-center gap-2 text-sm text-ink/70">
+          <input
+            type="checkbox"
+            checked={state.alreadyInScopeOfWork}
+            onChange={(e) => onAlreadyInScopeOfWorkToggle(e.target.checked)}
+          />
+          Foundation Repair Already Included in Scope of Work?
+        </label>
+        {state.alreadyInScopeOfWork && <p className="mt-1.5 text-xs text-ink/50">{FOUNDATION_SCOPE_OF_WORK_NOTE}</p>}
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded bg-white border border-line-dark px-3 py-2.5">
+        <span className="text-xs text-ink/60">Reserve Included in Underwriting</span>
+        <span className="text-sm font-semibold text-ink">
+          {inclusion.included ? formatCents(inclusion.amount) : "Not Included"}
+        </span>
+      </div>
+      <div className="mt-4">
+        <label htmlFor="foundationNotes" className="block mb-2">
+          <FieldLabel>Notes</FieldLabel>
+        </label>
+        <textarea
+          id="foundationNotes"
+          value={state.notes}
+          onChange={(e) => onNotesChange(e.target.value)}
+          rows={2}
+          placeholder="Inspection findings, cracks, settlement, water intrusion, previous repairs, structural concerns, etc."
+          className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass resize-none"
+        />
+      </div>
+    </div>
+  );
+}
+
 function MajorSystemsSection({
   majorSystems,
   majorSystemsDraft,
@@ -3167,6 +3322,11 @@ function MajorSystemsSection({
   onUsefulLifeBlur,
   onPlumbingTypeChange,
   onElectricalTypeChange,
+  onFoundationTypeChange,
+  onFoundationKnownIssuesChange,
+  onFoundationRepairReserveChange,
+  onFoundationRepairReserveBlur,
+  onFoundationAlreadyInScopeOfWorkToggle,
 }: {
   majorSystems: MajorSystemsState;
   majorSystemsDraft: {
@@ -3180,6 +3340,7 @@ function MajorSystemsSection({
     waterHeaterReplacementCost: string;
     plumbingUsefulLife: string;
     electricalUsefulLife: string;
+    foundationRepairReserve: string;
   };
   reserveSummary: MajorSystemsReserveSummary;
   onReserveAgeChange: (key: ReserveSystemKey, raw: string) => void;
@@ -3198,6 +3359,11 @@ function MajorSystemsSection({
   onUsefulLifeBlur: (key: UtilitySystemKey) => void;
   onPlumbingTypeChange: (value: PlumbingType) => void;
   onElectricalTypeChange: (value: ElectricalType) => void;
+  onFoundationTypeChange: (value: FoundationType) => void;
+  onFoundationKnownIssuesChange: (value: KnownIssuesOption) => void;
+  onFoundationRepairReserveChange: (raw: string) => void;
+  onFoundationRepairReserveBlur: () => void;
+  onFoundationAlreadyInScopeOfWorkToggle: (value: boolean) => void;
 }) {
   return (
     <div className="mt-8 pt-6 border-t border-line-dark">
@@ -3296,6 +3462,17 @@ function MajorSystemsSection({
           onUsefulLifeBlur={() => onUsefulLifeBlur("electrical")}
           onTypeChange={(v) => onElectricalTypeChange(v as ElectricalType)}
         />
+        <FoundationCard
+          state={majorSystems.foundation}
+          repairReserveDraft={majorSystemsDraft.foundationRepairReserve}
+          onTypeChange={onFoundationTypeChange}
+          onConditionChange={(c) => onConditionChange("foundation", c)}
+          onKnownIssuesChange={onFoundationKnownIssuesChange}
+          onNotesChange={(n) => onNotesChange("foundation", n)}
+          onRepairReserveChange={onFoundationRepairReserveChange}
+          onRepairReserveBlur={onFoundationRepairReserveBlur}
+          onAlreadyInScopeOfWorkToggle={onFoundationAlreadyInScopeOfWorkToggle}
+        />
       </div>
 
       {/* Reserve Summary: Base Reserves clearly separated from Major
@@ -3317,9 +3494,13 @@ function MajorSystemsSection({
             <span className="text-ink/60">HVAC Reserve</span>
             <span>{formatCents(reserveSummary.hvacReserve)}</span>
           </div>
-          <div className="flex justify-between py-1.5">
+          <div className="flex justify-between border-b border-line-dark/40 py-1.5">
             <span className="text-ink/60">Water Heater Reserve</span>
             <span>{formatCents(reserveSummary.waterHeaterReserve)}</span>
+          </div>
+          <div className="flex justify-between py-1.5">
+            <span className="text-ink/60">Foundation Reserve</span>
+            <span>{formatCents(reserveSummary.foundationReserve)}</span>
           </div>
         </div>
         <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
@@ -3395,6 +3576,13 @@ function MajorSystemsPrintCard({
   const electricalStatus = computeSystemStatus(majorSystems.electrical.condition, electricalRemaining);
   const electricalWarning = shouldShowMajorCapitalExpenseWarning(majorSystems.electrical.condition);
 
+  const foundationStatus = computeFoundationStatus(majorSystems.foundation.condition, majorSystems.foundation.knownIssues);
+  const foundationInclusion = computeFoundationReserveInclusion(majorSystems.foundation);
+  const foundationTypeLabel =
+    FOUNDATION_TYPE_OPTIONS.find((opt) => opt.value === majorSystems.foundation.foundationType)?.label ?? "Unknown";
+  const foundationKnownIssuesLabel =
+    KNOWN_ISSUES_OPTIONS.find((opt) => opt.value === majorSystems.foundation.knownIssues)?.label ?? "Unknown";
+
   type Row = {
     key: string;
     label: string;
@@ -3407,6 +3595,11 @@ function MajorSystemsPrintCard({
     scopeOfWorkLabel: string;
     notes: string;
     warning: string | null;
+    // Only populated for Foundation, which has no age/expected/remaining
+    // life columns to hang this on (spec: never show an Expected Useful
+    // Life or Estimated Remaining Life for Foundation) -- rendered as a
+    // "Type: X | Known Issues: Y" line instead.
+    extraDetail?: string;
   };
 
   const rows: Row[] = [
@@ -3481,6 +3674,20 @@ function MajorSystemsPrintCard({
       notes: majorSystems.electrical.notes.trim(),
       warning: electricalStatus.conditionNote ?? (electricalWarning ? MAJOR_CAPITAL_EXPENSE_WARNING : null),
     },
+    {
+      key: "foundation",
+      label: SYSTEM_LABELS.foundation,
+      ageLabel: "—",
+      expectedLifeLabel: "—",
+      remainingLabel: "—",
+      color: foundationStatus.color,
+      conditionText: conditionLabel(majorSystems.foundation.condition),
+      reserveLabel: foundationInclusion.included ? formatCents(foundationInclusion.amount) : "Not Included",
+      scopeOfWorkLabel: majorSystems.foundation.alreadyInScopeOfWork ? "Yes" : "No",
+      notes: majorSystems.foundation.notes.trim(),
+      warning: foundationStatus.note,
+      extraDetail: `Foundation Type: ${foundationTypeLabel} | Known Foundation Issues: ${foundationKnownIssuesLabel}`,
+    },
   ];
 
   return (
@@ -3518,12 +3725,13 @@ function MajorSystemsPrintCard({
           })}
         </tbody>
       </table>
-      {rows.some((row) => row.warning || row.notes) && (
+      {rows.some((row) => row.warning || row.notes || row.extraDetail) && (
         <div className="mt-2 pt-2 border-t border-ink/10 space-y-1">
           {rows.map((row) =>
-            row.warning || row.notes ? (
+            row.warning || row.notes || row.extraDetail ? (
               <p key={row.key} className="text-[8pt] leading-relaxed">
                 <span className="font-semibold text-ink">{row.label}:</span>{" "}
+                {row.extraDetail && <span className="text-ink/60">{row.extraDetail}. </span>}
                 {row.warning && <span className={statusColorClasses(row.color).text}>{row.warning} </span>}
                 {row.notes && <span className="text-ink/60">{row.notes}</span>}
               </p>
@@ -3549,6 +3757,12 @@ function MajorSystemsPrintCard({
             <span className="text-ink/60">Water Heater Reserve</span>
             <span className="text-ink">{formatCents(reserveSummary.waterHeaterReserve)}</span>
           </div>
+          {reserveSummary.foundationReserve > 0 && (
+            <div className="mt-1 flex justify-between text-[9.5pt]">
+              <span className="text-ink/60">Foundation Reserve</span>
+              <span className="text-ink">{formatCents(reserveSummary.foundationReserve)}</span>
+            </div>
+          )}
         </>
       )}
       <div className="mt-1 flex justify-between text-[9.5pt]">
@@ -4893,6 +5107,7 @@ export default function SharedHousingCalculator() {
     waterHeaterReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.waterHeater),
     plumbingUsefulLife: "",
     electricalUsefulLife: "",
+    foundationRepairReserve: formatCents(0),
   }));
 
   const [percent, setPercent] = useState<Record<PercentKey, number>>(PERCENT_DEFAULTS);
@@ -6097,6 +6312,37 @@ export default function SharedHousingCalculator() {
     setMajorSystems((prev) => ({ ...prev, electrical: { ...prev.electrical, electricalType } }));
   }
 
+  // Foundation handlers -- Foundation has no age/remaining-life concept
+  // (handleSystemConditionChange/handleSystemNotesChange above already
+  // cover Condition and Notes generically since "foundation" is part of
+  // MajorSystemKey), so it only needs its own Type, Known Issues, the
+  // manually-entered Estimated Foundation Repair / Reserve currency
+  // field (same draft-string/parsed-number/blur-clamp pattern as every
+  // other currency field), and its own Scope-of-Work override toggle.
+  function handleFoundationTypeChange(foundationType: FoundationType) {
+    setMajorSystems((prev) => ({ ...prev, foundation: { ...prev.foundation, foundationType } }));
+  }
+  function handleFoundationKnownIssuesChange(knownIssues: KnownIssuesOption) {
+    setMajorSystems((prev) => ({ ...prev, foundation: { ...prev.foundation, knownIssues } }));
+  }
+  function handleFoundationRepairReserveChange(raw: string) {
+    setMajorSystemsDraft((prev) => ({ ...prev, foundationRepairReserve: raw }));
+    setMajorSystems((prev) => ({
+      ...prev,
+      foundation: { ...prev.foundation, repairReserve: parseTypedAmount(raw) },
+    }));
+  }
+  function handleFoundationRepairReserveBlur() {
+    setMajorSystems((prev) => {
+      const clamped = round2(Math.max(0, prev.foundation.repairReserve));
+      setMajorSystemsDraft((d) => ({ ...d, foundationRepairReserve: formatCents(clamped) }));
+      return { ...prev, foundation: { ...prev.foundation, repairReserve: clamped } };
+    });
+  }
+  function handleFoundationAlreadyInScopeOfWorkToggle(alreadyInScopeOfWork: boolean) {
+    setMajorSystems((prev) => ({ ...prev, foundation: { ...prev.foundation, alreadyInScopeOfWork } }));
+  }
+
   // Scope of Work line item handlers. Each item is added with a blank
   // name and $0 cost -- the user must type a custom name and amount;
   // nothing is pre-filled or hard-coded as required. Costs use the same
@@ -6797,6 +7043,7 @@ export default function SharedHousingCalculator() {
       waterHeaterReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.waterHeater),
       plumbingUsefulLife: "",
       electricalUsefulLife: "",
+      foundationRepairReserve: formatCents(0),
     });
     // Financing Structure resets to its default of no selection, which
     // also clears the Traditional Financing and Hybrid inputs (Purchase
@@ -8608,6 +8855,14 @@ export default function SharedHousingCalculator() {
                         label: "Water Heater Reserve",
                         value: formatCents(majorSystemsReserveSummary.waterHeaterReserve),
                       },
+                      ...(majorSystemsReserveSummary.foundationReserve > 0
+                        ? [
+                            {
+                              label: "Foundation Reserve",
+                              value: formatCents(majorSystemsReserveSummary.foundationReserve),
+                            },
+                          ]
+                        : []),
                     ]
                   : []),
                 { label: "Total Reserves", value: formatCents(majorSystemsReserveSummary.totalReserves) },
@@ -8662,6 +8917,14 @@ export default function SharedHousingCalculator() {
                         label: "Water Heater Reserve",
                         value: formatCents(majorSystemsReserveSummary.waterHeaterReserve),
                       },
+                      ...(majorSystemsReserveSummary.foundationReserve > 0
+                        ? [
+                            {
+                              label: "Foundation Reserve",
+                              value: formatCents(majorSystemsReserveSummary.foundationReserve),
+                            },
+                          ]
+                        : []),
                     ]
                   : []),
                 { label: "Total Reserves", value: formatCents(majorSystemsReserveSummary.totalReserves) },
@@ -9372,6 +9635,22 @@ export default function SharedHousingCalculator() {
           showCapitalExpenseWarning: shouldShowMajorCapitalExpenseWarning(majorSystems.electrical.condition),
           notes: majorSystems.electrical.notes,
         },
+        foundation: (() => {
+          const fs = computeFoundationStatus(majorSystems.foundation.condition, majorSystems.foundation.knownIssues);
+          return {
+            foundationTypeLabel:
+              FOUNDATION_TYPE_OPTIONS.find((o) => o.value === majorSystems.foundation.foundationType)?.label ??
+              majorSystems.foundation.foundationType,
+            conditionLabel: msConditionLabel(majorSystems.foundation.condition),
+            knownIssuesLabel:
+              KNOWN_ISSUES_OPTIONS.find((o) => o.value === majorSystems.foundation.knownIssues)?.label ??
+              majorSystems.foundation.knownIssues,
+            status: { color: fs.color, statusLabel: fs.statusLabel, conditionNote: fs.note },
+            repairReserve: majorSystems.foundation.repairReserve,
+            alreadyInScopeOfWork: majorSystems.foundation.alreadyInScopeOfWork,
+            notes: majorSystems.foundation.notes,
+          };
+        })(),
         baseReserves: majorSystemsReserveSummary.baseReserves,
       };
 
@@ -12877,6 +13156,11 @@ export default function SharedHousingCalculator() {
             onUsefulLifeBlur={handleEstimatedUsefulLifeBlur}
             onPlumbingTypeChange={handlePlumbingTypeChange}
             onElectricalTypeChange={handleElectricalTypeChange}
+            onFoundationTypeChange={handleFoundationTypeChange}
+            onFoundationKnownIssuesChange={handleFoundationKnownIssuesChange}
+            onFoundationRepairReserveChange={handleFoundationRepairReserveChange}
+            onFoundationRepairReserveBlur={handleFoundationRepairReserveBlur}
+            onFoundationAlreadyInScopeOfWorkToggle={handleFoundationAlreadyInScopeOfWorkToggle}
           />
 
           <div className="mt-8 pt-6 border-t border-brass flex items-center justify-between">
@@ -14282,6 +14566,12 @@ export default function SharedHousingCalculator() {
                     <span className="text-ink/60">Water Heater Reserve</span>
                     <span className="text-ink">{formatCents(majorSystemsReserveSummary.waterHeaterReserve)}</span>
                   </div>
+                  {majorSystemsReserveSummary.foundationReserve > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-ink/60">Foundation Reserve</span>
+                      <span className="text-ink">{formatCents(majorSystemsReserveSummary.foundationReserve)}</span>
+                    </div>
+                  )}
                 </>
               )}
               <div className="flex justify-between">

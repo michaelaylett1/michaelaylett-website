@@ -18,12 +18,29 @@ export type SystemCondition = "excellent" | "good" | "fair" | "poor" | "unknown"
 export type IncludeReserveOption = "automatic" | "yes" | "no";
 export type PlumbingType = "copper" | "pex" | "cpvc" | "galvanized" | "castIron" | "pvc" | "other" | "unknown";
 export type ElectricalType = "updated" | "partiallyUpdated" | "original" | "unknown";
+export type FoundationType = "slab" | "crawlSpace" | "basement" | "pierAndBeam" | "other" | "unknown";
+export type KnownIssuesOption = "yes" | "no" | "unknown";
 
 export const CONDITION_OPTIONS: { value: SystemCondition; label: string }[] = [
   { value: "excellent", label: "Excellent" },
   { value: "good", label: "Good" },
   { value: "fair", label: "Fair" },
   { value: "poor", label: "Poor" },
+  { value: "unknown", label: "Unknown" },
+];
+
+export const FOUNDATION_TYPE_OPTIONS: { value: FoundationType; label: string }[] = [
+  { value: "slab", label: "Slab" },
+  { value: "crawlSpace", label: "Crawl Space" },
+  { value: "basement", label: "Basement" },
+  { value: "pierAndBeam", label: "Pier and Beam" },
+  { value: "other", label: "Other" },
+  { value: "unknown", label: "Unknown" },
+];
+
+export const KNOWN_ISSUES_OPTIONS: { value: KnownIssuesOption; label: string }[] = [
+  { value: "yes", label: "Yes" },
+  { value: "no", label: "No" },
   { value: "unknown", label: "Unknown" },
 ];
 
@@ -70,7 +87,7 @@ export const DEFAULT_REPLACEMENT_COST: Record<"roof" | "hvac" | "waterHeater", n
 // state, per spec section 4.
 export const RESERVE_TRIGGER_YEARS = 5;
 
-export const MAJOR_SYSTEM_KEYS = ["roof", "hvac", "waterHeater", "plumbing", "electrical"] as const;
+export const MAJOR_SYSTEM_KEYS = ["roof", "hvac", "waterHeater", "plumbing", "electrical", "foundation"] as const;
 export type ReserveSystemKey = "roof" | "hvac" | "waterHeater";
 export type UtilitySystemKey = "plumbing" | "electrical";
 export type MajorSystemKey = (typeof MAJOR_SYSTEM_KEYS)[number];
@@ -81,6 +98,7 @@ export const SYSTEM_LABELS: Record<MajorSystemKey, string> = {
   waterHeater: "Water Heater",
   plumbing: "Plumbing",
   electrical: "Electrical",
+  foundation: "Foundation",
 };
 
 // ---------------------------------------------------------------------
@@ -108,12 +126,29 @@ export interface UtilitySystemState {
   estimatedUsefulLifeYears: number | null;
 }
 
+// Foundation (spec: no age, no expected/remaining life -- status is
+// driven entirely by Condition + Known Foundation Issues, and the
+// reserve is a plain manually-entered dollar amount rather than an
+// automatic age-based trigger, since foundation repair costs vary too
+// much by property/problem to assume a default).
+export interface FoundationState {
+  foundationType: FoundationType;
+  condition: SystemCondition;
+  knownIssues: KnownIssuesOption;
+  // "Estimated Foundation Repair / Reserve" -- defaults to $0, always
+  // manually entered/edited (never auto-populated with a default cost).
+  repairReserve: number;
+  alreadyInScopeOfWork: boolean;
+  notes: string;
+}
+
 export interface MajorSystemsState {
   roof: ReserveSystemState;
   hvac: ReserveSystemState;
   waterHeater: ReserveSystemState;
   plumbing: UtilitySystemState & { plumbingType: PlumbingType };
   electrical: UtilitySystemState & { electricalType: ElectricalType };
+  foundation: FoundationState;
 }
 
 function defaultReserveSystem(replacementCost: number): ReserveSystemState {
@@ -143,6 +178,17 @@ function defaultUtilitySystem(): UtilitySystemState {
   };
 }
 
+function defaultFoundationState(): FoundationState {
+  return {
+    foundationType: "unknown",
+    condition: "unknown",
+    knownIssues: "unknown",
+    repairReserve: 0,
+    alreadyInScopeOfWork: false,
+    notes: "",
+  };
+}
+
 export function makeDefaultMajorSystemsState(): MajorSystemsState {
   return {
     roof: defaultReserveSystem(DEFAULT_REPLACEMENT_COST.roof),
@@ -150,6 +196,7 @@ export function makeDefaultMajorSystemsState(): MajorSystemsState {
     waterHeater: defaultReserveSystem(DEFAULT_REPLACEMENT_COST.waterHeater),
     plumbing: { ...defaultUtilitySystem(), plumbingType: "unknown" },
     electrical: { ...defaultUtilitySystem(), electricalType: "unknown" },
+    foundation: defaultFoundationState(),
   };
 }
 
@@ -289,6 +336,54 @@ export function computeSystemStatus(condition: SystemCondition, remaining: Remai
 }
 
 // ---------------------------------------------------------------------
+// Foundation status -- driven entirely by Condition + Known Foundation
+// Issues (no age/remaining-life concept at all). Green requires BOTH an
+// Excellent/Good condition AND Known Foundation Issues = No; red fires
+// on either Poor condition OR Known Foundation Issues = Yes (whichever
+// is true); everything else (Fair condition, or Condition/Known Issues
+// = Unknown) is a neutral "not fully verified" status that never by
+// itself assumes a foundation problem exists.
+// ---------------------------------------------------------------------
+export interface FoundationStatus {
+  color: StatusColor;
+  statusLabel: string;
+  // Due-diligence guidance (red case) or condition/verification notes
+  // (fair/unknown case) -- null when status is a clean green.
+  note: string | null;
+}
+
+export const FOUNDATION_DUE_DILIGENCE_NOTE =
+  "Foundation concerns should be evaluated during due diligence. Consider obtaining a structural or foundation inspection and adding an appropriate repair amount to the Scope of Work or reserves.";
+
+export function computeFoundationStatus(condition: SystemCondition, knownIssues: KnownIssuesOption): FoundationStatus {
+  if (condition === "poor" || knownIssues === "yes") {
+    return { color: "red", statusLabel: "Potential Major Capital Expense", note: FOUNDATION_DUE_DILIGENCE_NOTE };
+  }
+  const isGoodOrExcellent = condition === "excellent" || condition === "good";
+  if (isGoodOrExcellent && knownIssues === "no") {
+    return { color: "green", statusLabel: "No Major Issues Identified", note: null };
+  }
+  // Fair condition and/or Condition/Known Issues = Unknown -- never red,
+  // never assumes a problem, but flags that due diligence/verification
+  // is still needed.
+  const notes: string[] = [];
+  if (condition === "fair") notes.push("Condition should be reviewed during due diligence.");
+  if (condition === "unknown" || knownIssues === "unknown") notes.push("Foundation condition not verified.");
+  return {
+    color: "neutral",
+    statusLabel: "Foundation Status Not Fully Verified",
+    note: notes.length > 0 ? notes.join(" ") : null,
+  };
+}
+
+export function shouldShowFoundationReserveReminder(condition: SystemCondition, knownIssues: KnownIssuesOption): boolean {
+  return condition === "poor" || knownIssues === "yes";
+}
+
+export const FOUNDATION_RESERVE_REMINDER = "Consider entering an estimated foundation repair or reserve amount.";
+export const FOUNDATION_SCOPE_OF_WORK_NOTE = "Foundation repair accounted for in Scope of Work.";
+
+// ---------------------------------------------------------------------
 // Reserve inclusion + dollar amounts -- spec sections 6, 7, 9, 10, 15
 // ---------------------------------------------------------------------
 
@@ -335,16 +430,42 @@ export function computeReserveInclusion(system: ReserveSystemState, remaining: R
   return { included: false, amount: 0, reason: "automaticAboveThreshold" };
 }
 
+export interface FoundationReserveInclusionResult {
+  included: boolean;
+  amount: number;
+  reason: "alreadyInScopeOfWork" | "included" | "zeroAmount";
+}
+
+/**
+ * Foundation has no automatic/manual-yes/manual-no toggle like Roof/HVAC/
+ * Water Heater -- the manually-entered Estimated Foundation Repair /
+ * Reserve is simply added to Total Reserves unless the repair is already
+ * accounted for in Scope of Work (same double-count guard as the other
+ * three systems, spec section 15/"Scope of Work").
+ */
+export function computeFoundationReserveInclusion(foundation: FoundationState): FoundationReserveInclusionResult {
+  if (foundation.alreadyInScopeOfWork) {
+    return { included: false, amount: 0, reason: "alreadyInScopeOfWork" };
+  }
+  const amount = round2(Math.max(0, foundation.repairReserve));
+  if (amount <= 0) {
+    return { included: false, amount: 0, reason: "zeroAmount" };
+  }
+  return { included: true, amount, reason: "included" };
+}
+
 export interface MajorSystemsReserveSummary {
   baseReserves: number;
   roofReserve: number;
   hvacReserve: number;
   waterHeaterReserve: number;
+  foundationReserve: number;
   majorSystemReserveAdditions: number;
   totalReserves: number;
   roofIncluded: ReserveInclusionResult;
   hvacIncluded: ReserveInclusionResult;
   waterHeaterIncluded: ReserveInclusionResult;
+  foundationIncluded: FoundationReserveInclusionResult;
 }
 
 function round2(n: number): number {
@@ -375,21 +496,25 @@ export function computeMajorSystemsReserveSummary(
   const roofIncluded = computeReserveInclusion(majorSystems.roof, roofRemaining);
   const hvacIncluded = computeReserveInclusion(majorSystems.hvac, hvacRemaining);
   const waterHeaterIncluded = computeReserveInclusion(majorSystems.waterHeater, waterHeaterRemaining);
+  const foundationIncluded = computeFoundationReserveInclusion(majorSystems.foundation);
   const roofReserve = round2(roofIncluded.amount);
   const hvacReserve = round2(hvacIncluded.amount);
   const waterHeaterReserve = round2(waterHeaterIncluded.amount);
-  const majorSystemReserveAdditions = round2(roofReserve + hvacReserve + waterHeaterReserve);
+  const foundationReserve = round2(foundationIncluded.amount);
+  const majorSystemReserveAdditions = round2(roofReserve + hvacReserve + waterHeaterReserve + foundationReserve);
   const totalReserves = round2(baseReserves + majorSystemReserveAdditions);
   return {
     baseReserves: round2(baseReserves),
     roofReserve,
     hvacReserve,
     waterHeaterReserve,
+    foundationReserve,
     majorSystemReserveAdditions,
     totalReserves,
     roofIncluded,
     hvacIncluded,
     waterHeaterIncluded,
+    foundationIncluded,
   };
 }
 

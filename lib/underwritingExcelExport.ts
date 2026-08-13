@@ -105,12 +105,28 @@ export interface ExportUtilityMajorSystemRow {
   showCapitalExpenseWarning: boolean;
   notes: string;
 }
+// Foundation: no age/expected/remaining-life concept at all (status is
+// driven purely by Condition + Known Foundation Issues), and the reserve
+// is a plain manually-entered dollar amount rather than an automatic
+// age-based trigger -- see lib/majorSystems.ts's computeFoundationStatus
+// / computeFoundationReserveInclusion, the single source of truth this
+// data is resolved from on the component side.
+export interface ExportFoundationRow {
+  foundationTypeLabel: string;
+  conditionLabel: string;
+  knownIssuesLabel: string;
+  status: ExportMajorSystemStatus;
+  repairReserve: number;
+  alreadyInScopeOfWork: boolean;
+  notes: string;
+}
 export interface ExportMajorSystemsData {
   roof: ExportReserveMajorSystemRow;
   hvac: ExportReserveMajorSystemRow;
   waterHeater: ExportReserveMajorSystemRow;
   plumbing: ExportUtilityMajorSystemRow;
   electrical: ExportUtilityMajorSystemRow;
+  foundation: ExportFoundationRow;
   baseReserves: number;
 }
 
@@ -336,7 +352,7 @@ export interface UnderwritingExportData {
   // "Major Systems" worksheet -- see majorSystems below and
   // addMajorSystemsSheet. The Underwriting/Capital Required sheets'
   // "Reserves" rows are genuine cross-sheet formula links to
-  // 'Major Systems'!C15 (Total Reserves), never a duplicated static
+  // 'Major Systems'!C17 (Total Reserves), never a duplicated static
   // figure, so they can never drift out of sync with each other.
   majorSystems: ExportMajorSystemsData;
   furniture: number;
@@ -666,30 +682,39 @@ function addScopeOfWorkSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData)
 // ---------------------------------------------------------------------
 // "Major Systems" worksheet -- always added (unlike Scope of Work, which
 // is conditional on having at least one line item, Major Systems is
-// tracked for every underwriting record). Always exactly 5 system rows
-// (Roof, HVAC, Water Heater, Plumbing, Electrical) at fixed rows 4-8, so
-// every cross-sheet reference into this sheet (from the Underwriting and
-// Capital Required sheets' "Reserves" rows) can be a fully deterministic
-// formula rather than a computed row lookup, mirroring the existing
-// "Scope of Work"!C{n+4} convention used elsewhere in this file.
+// tracked for every underwriting record). Always exactly 6 system rows
+// (Roof, HVAC, Water Heater, Plumbing, Electrical, Foundation) at fixed
+// rows 4-9, so every cross-sheet reference into this sheet (from the
+// Underwriting and Capital Required sheets' "Reserves" rows) can be a
+// fully deterministic formula rather than a computed row lookup,
+// mirroring the existing "Scope of Work"!C{n+4} convention used
+// elsewhere in this file.
 //
 // Column layout: B System | C Age (Years) | D Expected Useful Life
 // (Years) | E Estimated Remaining Life (Years, formula) | F Condition |
-// G Estimated Replacement Cost | H Automatic Reserve Trigger (formula)
-// | I Include Replacement Reserve | J Included in Scope of Work? |
-// K Reserve Included in Underwriting (formula) | L Notes | M Type /
-// Material (Plumbing/Electrical only).
+// G Estimated Replacement Cost / Estimated Foundation Repair-Reserve |
+// H Automatic Reserve Trigger (formula) | I Include Replacement Reserve
+// | J Included in Scope of Work? | K Reserve Included in Underwriting
+// (formula) | L Notes | M Type / Material (Plumbing/Electrical/
+// Foundation). Foundation (row 9) leaves C/D/E/H/I blank ("N/A" where a
+// label reads better) since it has no age or expected/remaining-life
+// concept at all (spec: never show an Expected Useful Life or Estimated
+// Remaining Life for Foundation) -- its Known Foundation Issues answer
+// is folded into the Notes cell alongside its due-diligence note, same
+// as the printable report.
 //
 // Per spec section 17, remaining life and the automatic-trigger flag are
 // genuine in-sheet formulas (simple, safe derived arithmetic); Reserve
 // Included in Underwriting (K) is also a formula, but one built entirely
-// from other cells already on this same row (J/I/H/G) -- it reproduces
-// lib/majorSystems.ts's computeReserveInclusion precedence (already-in-
-// Scope-of-Work > manual Yes/No override > automatic threshold)
-// mechanically from those cells, it does not independently decide
-// anything the website hasn't already decided; every literal input
-// (age, condition, cost, overrides) is passed straight through from the
-// same MajorSystemsState the website itself computed from.
+// from other cells already on this same row (J/I/H/G, or for Foundation
+// just J/G) -- it reproduces lib/majorSystems.ts's computeReserveInclusion
+// / computeFoundationReserveInclusion precedence (already-in-Scope-of-
+// Work > manual Yes/No override > automatic threshold, or for Foundation
+// simply already-in-Scope-of-Work > the entered amount) mechanically
+// from those cells, it does not independently decide anything the
+// website hasn't already decided; every literal input (age, condition,
+// cost, overrides) is passed straight through from the same
+// MajorSystemsState the website itself computed from.
 function addMajorSystemsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
   const ms = data.majorSystems;
   const ws = wb.addWorksheet("Major Systems", { views: [{ showGridLines: false }] });
@@ -874,55 +899,134 @@ function addMajorSystemsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData
     ws.getRow(row).height = 28;
   }
 
+  function writeFoundationRow(row: number, sys: ExportFoundationRow) {
+    ws.getCell(row, 2).value = "Foundation";
+    fmtLabel(ws.getCell(row, 2), { bold: true, size: 10 });
+
+    // No age/expected/remaining-life concept for Foundation at all.
+    ["C", "D", "E"].forEach((col) => {
+      const cell = ws.getCell(`${col}${row}`);
+      cell.value = "N/A";
+      fmtValue(cell);
+      cell.alignment = { horizontal: "right" };
+    });
+
+    const conditionCell = ws.getCell(row, 6);
+    conditionCell.value = sys.conditionLabel;
+    fmtValue(conditionCell, undefined, { input: true });
+    conditionCell.alignment = { horizontal: "right" };
+    const conditionColor = statusFontColor(sys.status.color);
+    if (conditionColor) {
+      conditionCell.font = { ...conditionCell.font, color: { argb: conditionColor }, bold: true };
+    }
+
+    const reserveCostCell = ws.getCell(row, 7);
+    reserveCostCell.value = money(sys.repairReserve);
+    fmtValue(reserveCostCell, FMT_CURRENCY, { input: true });
+
+    const triggerCell = ws.getCell(row, 8);
+    triggerCell.value = "N/A";
+    fmtValue(triggerCell);
+    triggerCell.alignment = { horizontal: "right" };
+
+    const includeCell = ws.getCell(row, 9);
+    includeCell.value = "N/A";
+    fmtValue(includeCell);
+    includeCell.alignment = { horizontal: "right" };
+
+    const scopeCell = ws.getCell(row, 10);
+    scopeCell.value = sys.alreadyInScopeOfWork ? "Yes" : "No";
+    fmtValue(scopeCell, undefined, { input: true });
+    scopeCell.alignment = { horizontal: "right" };
+
+    // Reserve Included in Underwriting: already-in-Scope-of-Work always
+    // wins (0), otherwise the manually-entered repair/reserve amount
+    // flows straight through -- Foundation has no automatic/manual-yes/
+    // manual-no toggle to weigh in, unlike Roof/HVAC/Water Heater.
+    const reserveCell = ws.getCell(row, 11);
+    reserveCell.value = { formula: `IF(J${row}="Yes",0,G${row})` } as ExcelJS.CellFormulaValue;
+    fmtValue(reserveCell, FMT_CURRENCY);
+
+    const notesParts = [
+      `Known Foundation Issues: ${sys.knownIssuesLabel}.`,
+      sys.status.conditionNote,
+      sys.notes.trim(),
+    ].filter((p): p is string => !!p && p.length > 0);
+    const notesCell = ws.getCell(row, 12);
+    notesCell.value = notesParts.join(" ");
+    notesCell.font = {
+      size: 9,
+      name: "Calibri",
+      color: sys.status.color === "red" ? { argb: "FFB91C1C" } : undefined,
+      bold: sys.status.color === "red",
+    };
+    notesCell.alignment = { wrapText: true, vertical: "top" };
+
+    const typeCell = ws.getCell(row, 13);
+    typeCell.value = sys.foundationTypeLabel;
+    fmtValue(typeCell, undefined, { input: true });
+    typeCell.alignment = { horizontal: "right" };
+
+    ws.getRow(row).height = 28;
+  }
+
   writeReserveSystemRow(4, "Roof", ms.roof);
   writeReserveSystemRow(5, "HVAC", ms.hvac);
   writeReserveSystemRow(6, "Water Heater", ms.waterHeater);
   writeUtilitySystemRow(7, "Plumbing", ms.plumbing);
   writeUtilitySystemRow(8, "Electrical", ms.electrical);
+  writeFoundationRow(9, ms.foundation);
 
-  // ---- Reserve Summary (rows 10-15) ----
-  ws.mergeCells(10, 2, 10, 3);
-  const summaryHeader = ws.getCell(10, 2);
+  // ---- Reserve Summary (rows 11-17) ----
+  ws.mergeCells(11, 2, 11, 3);
+  const summaryHeader = ws.getCell(11, 2);
   summaryHeader.value = "Reserve Summary";
   summaryHeader.font = { bold: true, size: 12, color: { argb: COLOR_WHITE }, name: "Calibri" };
   summaryHeader.fill = FILL_HEADER;
   summaryHeader.alignment = { vertical: "middle", indent: 1 };
-  ws.getRow(10).height = 20;
+  ws.getRow(11).height = 20;
 
-  const baseLabelCell = ws.getCell(11, 2);
+  const baseLabelCell = ws.getCell(12, 2);
   baseLabelCell.value = "Base Reserves";
   fmtLabel(baseLabelCell);
-  const baseCell = ws.getCell(11, 3);
+  const baseCell = ws.getCell(12, 3);
   baseCell.value = money(ms.baseReserves);
   fmtValue(baseCell, FMT_CURRENCY, { input: true });
 
-  const roofLabelCell = ws.getCell(12, 2);
+  const roofLabelCell = ws.getCell(13, 2);
   roofLabelCell.value = "Roof Reserve";
   fmtLabel(roofLabelCell);
-  const roofSummaryCell = ws.getCell(12, 3);
+  const roofSummaryCell = ws.getCell(13, 3);
   roofSummaryCell.value = { formula: "K4" } as ExcelJS.CellFormulaValue;
   fmtValue(roofSummaryCell, FMT_CURRENCY);
 
-  const hvacLabelCell = ws.getCell(13, 2);
+  const hvacLabelCell = ws.getCell(14, 2);
   hvacLabelCell.value = "HVAC Reserve";
   fmtLabel(hvacLabelCell);
-  const hvacSummaryCell = ws.getCell(13, 3);
+  const hvacSummaryCell = ws.getCell(14, 3);
   hvacSummaryCell.value = { formula: "K5" } as ExcelJS.CellFormulaValue;
   fmtValue(hvacSummaryCell, FMT_CURRENCY);
 
-  const waterHeaterLabelCell = ws.getCell(14, 2);
+  const waterHeaterLabelCell = ws.getCell(15, 2);
   waterHeaterLabelCell.value = "Water Heater Reserve";
   fmtLabel(waterHeaterLabelCell);
-  const waterHeaterSummaryCell = ws.getCell(14, 3);
+  const waterHeaterSummaryCell = ws.getCell(15, 3);
   waterHeaterSummaryCell.value = { formula: "K6" } as ExcelJS.CellFormulaValue;
   fmtValue(waterHeaterSummaryCell, FMT_CURRENCY);
 
-  const totalLabelCell = ws.getCell(15, 2);
+  const foundationLabelCell = ws.getCell(16, 2);
+  foundationLabelCell.value = "Foundation Reserve";
+  fmtLabel(foundationLabelCell);
+  const foundationSummaryCell = ws.getCell(16, 3);
+  foundationSummaryCell.value = { formula: "K9" } as ExcelJS.CellFormulaValue;
+  fmtValue(foundationSummaryCell, FMT_CURRENCY);
+
+  const totalLabelCell = ws.getCell(17, 2);
   totalLabelCell.value = "Total Reserves";
   fmtLabel(totalLabelCell, { bold: true });
   totalLabelCell.border = BORDER_THIN_BOTTOM;
-  const totalCell = ws.getCell(15, 3);
-  totalCell.value = { formula: "C11+C12+C13+C14" } as ExcelJS.CellFormulaValue;
+  const totalCell = ws.getCell(17, 3);
+  totalCell.value = { formula: "C12+C13+C14+C15+C16" } as ExcelJS.CellFormulaValue;
   fmtValue(totalCell, FMT_CURRENCY, { emphasis: true });
 }
 
@@ -2271,7 +2375,7 @@ function buildUnderwritingSheet(
     { label: "Appliances", value: money(data.appliances) },
     { label: "Photos", value: money(data.photos) },
     { label: "Holding Costs", value: money(data.holdingCosts) },
-    { label: "Reserves", formula: "'Major Systems'!C15" }
+    { label: "Reserves", formula: "'Major Systems'!C17" }
   );
   if (!isStack) {
     capitalRowDefs.push({ label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) });
@@ -2907,7 +3011,7 @@ function capitalRequiredRows(data: UnderwritingExportData): { rows: KVRow[]; tot
   rows.push({ label: "Appliances", value: money(data.appliances), format: FMT_CURRENCY });
   rows.push({ label: "Photos", value: money(data.photos), format: FMT_CURRENCY });
   rows.push({ label: "Holding Costs", value: money(data.holdingCosts), format: FMT_CURRENCY });
-  rows.push({ label: "Reserves", formula: "'Major Systems'!C15", format: FMT_CURRENCY });
+  rows.push({ label: "Reserves", formula: "'Major Systems'!C17", format: FMT_CURRENCY });
   if (data.financingMode !== "traditional" && data.financingMode !== "stackMethod") {
     rows.push({ label: "Upfront Insurance Cost", value: money(data.upfrontInsurance), format: FMT_CURRENCY });
   }
