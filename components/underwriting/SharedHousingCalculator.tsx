@@ -104,6 +104,36 @@ import {
   operatingDefaultsSourceLabel,
   type OperatingExpenseKey,
 } from "@/lib/operatingExpenseDefaults";
+import {
+  makeDefaultMajorSystemsState,
+  computeFixedRemainingLife,
+  computeManualRemainingLife,
+  computeSystemStatus,
+  computeReserveInclusion,
+  computeMajorSystemsReserveSummary,
+  shouldShowMajorCapitalExpenseWarning,
+  MAJOR_CAPITAL_EXPENSE_WARNING,
+  SCOPE_OF_WORK_ALREADY_INCLUDED_NOTE,
+  EXPECTED_USEFUL_LIFE_YEARS,
+  DEFAULT_REPLACEMENT_COST,
+  RESERVE_TRIGGER_YEARS,
+  CONDITION_OPTIONS,
+  PLUMBING_TYPE_OPTIONS,
+  ELECTRICAL_TYPE_OPTIONS,
+  SYSTEM_LABELS,
+  type MajorSystemsState,
+  type ReserveSystemState,
+  type UtilitySystemState,
+  type SystemCondition,
+  type IncludeReserveOption,
+  type PlumbingType,
+  type ElectricalType,
+  type ReserveSystemKey,
+  type UtilitySystemKey,
+  type MajorSystemKey,
+  type MajorSystemsReserveSummary,
+  MAJOR_SYSTEM_KEYS,
+} from "@/lib/majorSystems";
 import { loadGoogleStreetViewLibrary, loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
 import type { StreetViewPanorama, StreetViewServiceError } from "@/lib/transit/googleStreetViewTypes";
@@ -2800,6 +2830,735 @@ function PropertyTaxSection({
   );
 }
 
+// ---------------------------------------------------------------------
+// Major Systems & Remaining Life -- one shared section (rendered once,
+// not duplicated per financing structure) covering Roof, HVAC, Water
+// Heater, Plumbing, and Electrical. See lib/majorSystems.ts for every
+// calculation; these components are purely presentational.
+// ---------------------------------------------------------------------
+function statusColorClasses(color: "green" | "red" | "neutral"): { card: string; text: string } {
+  if (color === "red") return { card: "border-red-700 bg-red-50", text: "text-red-800" };
+  if (color === "green") return { card: "border-green-700 bg-green-50", text: "text-green-800" };
+  return { card: "border-line-dark bg-paper-2", text: "text-ink/60" };
+}
+
+function MajorSystemReserveCard({
+  label,
+  systemKey,
+  expectedLifeYears,
+  state,
+  ageDraft,
+  replacementCostDraft,
+  onAgeChange,
+  onAgeBlur,
+  onAgeUnknownToggle,
+  onConditionChange,
+  onNotesChange,
+  onReplacementCostChange,
+  onReplacementCostBlur,
+  onIncludeReserveChange,
+  onAlreadyInScopeOfWorkToggle,
+}: {
+  label: string;
+  systemKey: ReserveSystemKey;
+  expectedLifeYears: number;
+  state: ReserveSystemState;
+  ageDraft: string;
+  replacementCostDraft: string;
+  onAgeChange: (raw: string) => void;
+  onAgeBlur: () => void;
+  onAgeUnknownToggle: (unknown: boolean) => void;
+  onConditionChange: (condition: SystemCondition) => void;
+  onNotesChange: (notes: string) => void;
+  onReplacementCostChange: (raw: string) => void;
+  onReplacementCostBlur: () => void;
+  onIncludeReserveChange: (option: IncludeReserveOption) => void;
+  onAlreadyInScopeOfWorkToggle: (value: boolean) => void;
+}) {
+  const remaining = computeFixedRemainingLife(state.ageYears, state.ageUnknown, expectedLifeYears);
+  const status = computeSystemStatus(state.condition, remaining);
+  const inclusion = computeReserveInclusion(state, remaining);
+  const colors = statusColorClasses(status.color);
+  return (
+    <div className={`rounded border p-5 ${colors.card}`}>
+      <p className="eyebrow text-ink mb-4">{label}</p>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor={`${systemKey}Age`} className="block mb-2">
+            <FieldLabel>Current Age (Years)</FieldLabel>
+          </label>
+          <input
+            id={`${systemKey}Age`}
+            type="text"
+            inputMode="numeric"
+            value={ageDraft}
+            onChange={(e) => onAgeChange(e.target.value)}
+            onBlur={onAgeBlur}
+            disabled={state.ageUnknown}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass disabled:bg-paper-2 disabled:text-ink/40"
+          />
+          <label className="mt-2 inline-flex items-center gap-2 text-xs text-ink/60">
+            <input
+              type="checkbox"
+              checked={state.ageUnknown}
+              onChange={(e) => onAgeUnknownToggle(e.target.checked)}
+            />
+            Age Unknown
+          </label>
+        </div>
+        <ReadOnlyStat label="Expected Useful Life" value={`${expectedLifeYears} years`} />
+        <div>
+          <label htmlFor={`${systemKey}Condition`} className="block mb-2">
+            <FieldLabel>Condition</FieldLabel>
+          </label>
+          <select
+            id={`${systemKey}Condition`}
+            value={state.condition}
+            onChange={(e) => onConditionChange(e.target.value as SystemCondition)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {CONDITION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <FieldLabel>Estimated Remaining Life</FieldLabel>
+          <p className={`mt-2 font-display text-xl ${colors.text}`}>{remaining.label}</p>
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded bg-white/70 border border-line-dark/30 px-3 py-2">
+        <span className="eyebrow text-ink/50">Status</span>
+        <span className={`text-sm font-semibold uppercase tracking-wide ${colors.text}`}>{status.statusLabel}</span>
+      </div>
+      {status.conditionNote && <p className={`mt-2 text-xs ${colors.text}`}>{status.conditionNote}</p>}
+      <div className="mt-4 grid sm:grid-cols-2 gap-4">
+        <CurrencyField
+          id={`${systemKey}ReplacementCost`}
+          label="Estimated Replacement Cost"
+          draft={replacementCostDraft}
+          onChange={onReplacementCostChange}
+          onBlur={onReplacementCostBlur}
+        />
+        <div>
+          <label htmlFor={`${systemKey}IncludeReserve`} className="block mb-2">
+            <FieldLabel info="Automatic includes the reserve only when Estimated Remaining Life is under 5 years. Yes always includes it; No never includes it, regardless of the estimate.">
+              Include Replacement Reserve?
+            </FieldLabel>
+          </label>
+          <select
+            id={`${systemKey}IncludeReserve`}
+            value={state.includeReserve}
+            onChange={(e) => onIncludeReserveChange(e.target.value as IncludeReserveOption)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            <option value="automatic">Automatic</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+      </div>
+      <div className="mt-4">
+        <label className="inline-flex items-center gap-2 text-sm text-ink/70">
+          <input
+            type="checkbox"
+            checked={state.alreadyInScopeOfWork}
+            onChange={(e) => onAlreadyInScopeOfWorkToggle(e.target.checked)}
+          />
+          Replacement Already Included in Scope of Work?
+        </label>
+        {state.alreadyInScopeOfWork && (
+          <p className="mt-1.5 text-xs text-ink/50">{SCOPE_OF_WORK_ALREADY_INCLUDED_NOTE}</p>
+        )}
+      </div>
+      <div className="mt-4 flex items-center justify-between rounded bg-white border border-line-dark px-3 py-2.5">
+        <span className="text-xs text-ink/60">Reserve Included in Underwriting</span>
+        <span className="text-sm font-semibold text-ink">
+          {inclusion.included ? formatCents(inclusion.amount) : "Not Included"}
+        </span>
+      </div>
+      <div className="mt-4">
+        <label htmlFor={`${systemKey}Notes`} className="block mb-2">
+          <FieldLabel>Notes</FieldLabel>
+        </label>
+        <textarea
+          id={`${systemKey}Notes`}
+          value={state.notes}
+          onChange={(e) => onNotesChange(e.target.value)}
+          rows={2}
+          className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass resize-none"
+        />
+      </div>
+    </div>
+  );
+}
+
+function MajorSystemUtilityCard({
+  label,
+  systemKey,
+  state,
+  ageDraft,
+  usefulLifeDraft,
+  typeValue,
+  typeOptions,
+  typeLabel,
+  onAgeChange,
+  onAgeBlur,
+  onAgeUnknownToggle,
+  onConditionChange,
+  onNotesChange,
+  onUsefulLifeChange,
+  onUsefulLifeBlur,
+  onTypeChange,
+}: {
+  label: string;
+  systemKey: UtilitySystemKey;
+  state: UtilitySystemState;
+  ageDraft: string;
+  usefulLifeDraft: string;
+  typeValue: string;
+  typeOptions: { value: string; label: string }[];
+  typeLabel: string;
+  onAgeChange: (raw: string) => void;
+  onAgeBlur: () => void;
+  onAgeUnknownToggle: (unknown: boolean) => void;
+  onConditionChange: (condition: SystemCondition) => void;
+  onNotesChange: (notes: string) => void;
+  onUsefulLifeChange: (raw: string) => void;
+  onUsefulLifeBlur: () => void;
+  onTypeChange: (value: string) => void;
+}) {
+  const remaining = computeManualRemainingLife(state.ageYears, state.ageUnknown, state.estimatedUsefulLifeYears);
+  const status = computeSystemStatus(state.condition, remaining);
+  const colors = statusColorClasses(status.color);
+  const showCapitalWarning = shouldShowMajorCapitalExpenseWarning(state.condition);
+  return (
+    <div className={`rounded border p-5 ${colors.card}`}>
+      <p className="eyebrow text-ink mb-4">{label}</p>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label htmlFor={`${systemKey}Age`} className="block mb-2">
+            <FieldLabel>Current Age (Years)</FieldLabel>
+          </label>
+          <input
+            id={`${systemKey}Age`}
+            type="text"
+            inputMode="numeric"
+            value={ageDraft}
+            onChange={(e) => onAgeChange(e.target.value)}
+            onBlur={onAgeBlur}
+            disabled={state.ageUnknown}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass disabled:bg-paper-2 disabled:text-ink/40"
+          />
+          <label className="mt-2 inline-flex items-center gap-2 text-xs text-ink/60">
+            <input
+              type="checkbox"
+              checked={state.ageUnknown}
+              onChange={(e) => onAgeUnknownToggle(e.target.checked)}
+            />
+            Age Unknown
+          </label>
+        </div>
+        <div>
+          <label htmlFor={`${systemKey}Type`} className="block mb-2">
+            <FieldLabel>{typeLabel}</FieldLabel>
+          </label>
+          <select
+            id={`${systemKey}Type`}
+            value={typeValue}
+            onChange={(e) => onTypeChange(e.target.value)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {typeOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor={`${systemKey}Condition`} className="block mb-2">
+            <FieldLabel>Condition</FieldLabel>
+          </label>
+          <select
+            id={`${systemKey}Condition`}
+            value={state.condition}
+            onChange={(e) => onConditionChange(e.target.value as SystemCondition)}
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          >
+            {CONDITION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor={`${systemKey}UsefulLife`} className="block mb-2">
+            <FieldLabel info="Optional. Useful life for plumbing/electrical varies too much by material, components, renovations, and condition to assume a default -- enter one here (e.g. from an inspection or contractor) to calculate remaining life.">
+              Estimated Useful Life (Years, Optional)
+            </FieldLabel>
+          </label>
+          <input
+            id={`${systemKey}UsefulLife`}
+            type="text"
+            inputMode="numeric"
+            value={usefulLifeDraft}
+            onChange={(e) => onUsefulLifeChange(e.target.value)}
+            onBlur={onUsefulLifeBlur}
+            placeholder="Not entered"
+            className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass"
+          />
+        </div>
+      </div>
+      <div className="mt-4">
+        <FieldLabel>Estimated Remaining Life</FieldLabel>
+        <p className={`mt-2 text-sm ${colors.text}`}>{remaining.label}</p>
+      </div>
+      <div className="mt-3 flex items-center justify-between rounded bg-white/70 border border-line-dark/30 px-3 py-2">
+        <span className="eyebrow text-ink/50">Status</span>
+        <span className={`text-sm font-semibold uppercase tracking-wide ${colors.text}`}>{status.statusLabel}</span>
+      </div>
+      {status.conditionNote && <p className={`mt-2 text-xs ${colors.text}`}>{status.conditionNote}</p>}
+      {showCapitalWarning && (
+        <p className="mt-3 text-sm text-red-800 bg-red-50 border border-red-700 rounded px-3 py-2">
+          {MAJOR_CAPITAL_EXPENSE_WARNING}
+        </p>
+      )}
+      <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+        No automatic replacement reserve is added for {label.toLowerCase()}. Increase Reserves
+        manually below if warranted.
+      </p>
+      <div className="mt-4">
+        <label htmlFor={`${systemKey}Notes`} className="block mb-2">
+          <FieldLabel>Notes</FieldLabel>
+        </label>
+        <textarea
+          id={`${systemKey}Notes`}
+          value={state.notes}
+          onChange={(e) => onNotesChange(e.target.value)}
+          rows={2}
+          className="w-full bg-white border border-line-dark px-3 py-2.5 text-ink outline-none focus:border-brass resize-none"
+        />
+      </div>
+    </div>
+  );
+}
+
+function MajorSystemsSection({
+  majorSystems,
+  majorSystemsDraft,
+  reserveSummary,
+  onReserveAgeChange,
+  onReserveAgeBlur,
+  onReserveAgeUnknownToggle,
+  onUtilityAgeChange,
+  onUtilityAgeBlur,
+  onUtilityAgeUnknownToggle,
+  onConditionChange,
+  onNotesChange,
+  onReplacementCostChange,
+  onReplacementCostBlur,
+  onIncludeReserveChange,
+  onAlreadyInScopeOfWorkToggle,
+  onUsefulLifeChange,
+  onUsefulLifeBlur,
+  onPlumbingTypeChange,
+  onElectricalTypeChange,
+}: {
+  majorSystems: MajorSystemsState;
+  majorSystemsDraft: {
+    roofAge: string;
+    hvacAge: string;
+    waterHeaterAge: string;
+    plumbingAge: string;
+    electricalAge: string;
+    roofReplacementCost: string;
+    hvacReplacementCost: string;
+    waterHeaterReplacementCost: string;
+    plumbingUsefulLife: string;
+    electricalUsefulLife: string;
+  };
+  reserveSummary: MajorSystemsReserveSummary;
+  onReserveAgeChange: (key: ReserveSystemKey, raw: string) => void;
+  onReserveAgeBlur: (key: ReserveSystemKey) => void;
+  onReserveAgeUnknownToggle: (key: ReserveSystemKey, unknown: boolean) => void;
+  onUtilityAgeChange: (key: UtilitySystemKey, raw: string) => void;
+  onUtilityAgeBlur: (key: UtilitySystemKey) => void;
+  onUtilityAgeUnknownToggle: (key: UtilitySystemKey, unknown: boolean) => void;
+  onConditionChange: (key: MajorSystemKey, condition: SystemCondition) => void;
+  onNotesChange: (key: MajorSystemKey, notes: string) => void;
+  onReplacementCostChange: (key: ReserveSystemKey, raw: string) => void;
+  onReplacementCostBlur: (key: ReserveSystemKey) => void;
+  onIncludeReserveChange: (key: ReserveSystemKey, option: IncludeReserveOption) => void;
+  onAlreadyInScopeOfWorkToggle: (key: ReserveSystemKey, value: boolean) => void;
+  onUsefulLifeChange: (key: UtilitySystemKey, raw: string) => void;
+  onUsefulLifeBlur: (key: UtilitySystemKey) => void;
+  onPlumbingTypeChange: (value: PlumbingType) => void;
+  onElectricalTypeChange: (value: ElectricalType) => void;
+}) {
+  return (
+    <div className="mt-8 pt-6 border-t border-line-dark">
+      <p className="eyebrow text-brass mb-1">Major Systems &amp; Remaining Life</p>
+      <p className="text-xs text-ink/50 leading-relaxed mb-5">
+        Evaluate the age and condition of the property&apos;s major systems and estimate their
+        remaining useful life. Roof, HVAC, and Water Heater automatically add a replacement
+        reserve to Total Reserves when Estimated Remaining Life drops under 5 years -- fully
+        overridable below.
+      </p>
+      <div className="grid lg:grid-cols-2 gap-5">
+        <MajorSystemReserveCard
+          label="Roof"
+          systemKey="roof"
+          expectedLifeYears={EXPECTED_USEFUL_LIFE_YEARS.roof}
+          state={majorSystems.roof}
+          ageDraft={majorSystemsDraft.roofAge}
+          replacementCostDraft={majorSystemsDraft.roofReplacementCost}
+          onAgeChange={(raw) => onReserveAgeChange("roof", raw)}
+          onAgeBlur={() => onReserveAgeBlur("roof")}
+          onAgeUnknownToggle={(v) => onReserveAgeUnknownToggle("roof", v)}
+          onConditionChange={(c) => onConditionChange("roof", c)}
+          onNotesChange={(n) => onNotesChange("roof", n)}
+          onReplacementCostChange={(raw) => onReplacementCostChange("roof", raw)}
+          onReplacementCostBlur={() => onReplacementCostBlur("roof")}
+          onIncludeReserveChange={(o) => onIncludeReserveChange("roof", o)}
+          onAlreadyInScopeOfWorkToggle={(v) => onAlreadyInScopeOfWorkToggle("roof", v)}
+        />
+        <MajorSystemReserveCard
+          label="HVAC"
+          systemKey="hvac"
+          expectedLifeYears={EXPECTED_USEFUL_LIFE_YEARS.hvac}
+          state={majorSystems.hvac}
+          ageDraft={majorSystemsDraft.hvacAge}
+          replacementCostDraft={majorSystemsDraft.hvacReplacementCost}
+          onAgeChange={(raw) => onReserveAgeChange("hvac", raw)}
+          onAgeBlur={() => onReserveAgeBlur("hvac")}
+          onAgeUnknownToggle={(v) => onReserveAgeUnknownToggle("hvac", v)}
+          onConditionChange={(c) => onConditionChange("hvac", c)}
+          onNotesChange={(n) => onNotesChange("hvac", n)}
+          onReplacementCostChange={(raw) => onReplacementCostChange("hvac", raw)}
+          onReplacementCostBlur={() => onReplacementCostBlur("hvac")}
+          onIncludeReserveChange={(o) => onIncludeReserveChange("hvac", o)}
+          onAlreadyInScopeOfWorkToggle={(v) => onAlreadyInScopeOfWorkToggle("hvac", v)}
+        />
+        <MajorSystemReserveCard
+          label="Water Heater"
+          systemKey="waterHeater"
+          expectedLifeYears={EXPECTED_USEFUL_LIFE_YEARS.waterHeater}
+          state={majorSystems.waterHeater}
+          ageDraft={majorSystemsDraft.waterHeaterAge}
+          replacementCostDraft={majorSystemsDraft.waterHeaterReplacementCost}
+          onAgeChange={(raw) => onReserveAgeChange("waterHeater", raw)}
+          onAgeBlur={() => onReserveAgeBlur("waterHeater")}
+          onAgeUnknownToggle={(v) => onReserveAgeUnknownToggle("waterHeater", v)}
+          onConditionChange={(c) => onConditionChange("waterHeater", c)}
+          onNotesChange={(n) => onNotesChange("waterHeater", n)}
+          onReplacementCostChange={(raw) => onReplacementCostChange("waterHeater", raw)}
+          onReplacementCostBlur={() => onReplacementCostBlur("waterHeater")}
+          onIncludeReserveChange={(o) => onIncludeReserveChange("waterHeater", o)}
+          onAlreadyInScopeOfWorkToggle={(v) => onAlreadyInScopeOfWorkToggle("waterHeater", v)}
+        />
+        <MajorSystemUtilityCard
+          label="Plumbing"
+          systemKey="plumbing"
+          state={majorSystems.plumbing}
+          ageDraft={majorSystemsDraft.plumbingAge}
+          usefulLifeDraft={majorSystemsDraft.plumbingUsefulLife}
+          typeValue={majorSystems.plumbing.plumbingType}
+          typeOptions={PLUMBING_TYPE_OPTIONS}
+          typeLabel="Plumbing Type"
+          onAgeChange={(raw) => onUtilityAgeChange("plumbing", raw)}
+          onAgeBlur={() => onUtilityAgeBlur("plumbing")}
+          onAgeUnknownToggle={(v) => onUtilityAgeUnknownToggle("plumbing", v)}
+          onConditionChange={(c) => onConditionChange("plumbing", c)}
+          onNotesChange={(n) => onNotesChange("plumbing", n)}
+          onUsefulLifeChange={(raw) => onUsefulLifeChange("plumbing", raw)}
+          onUsefulLifeBlur={() => onUsefulLifeBlur("plumbing")}
+          onTypeChange={(v) => onPlumbingTypeChange(v as PlumbingType)}
+        />
+        <MajorSystemUtilityCard
+          label="Electrical"
+          systemKey="electrical"
+          state={majorSystems.electrical}
+          ageDraft={majorSystemsDraft.electricalAge}
+          usefulLifeDraft={majorSystemsDraft.electricalUsefulLife}
+          typeValue={majorSystems.electrical.electricalType}
+          typeOptions={ELECTRICAL_TYPE_OPTIONS}
+          typeLabel="Electrical Type / Notes"
+          onAgeChange={(raw) => onUtilityAgeChange("electrical", raw)}
+          onAgeBlur={() => onUtilityAgeBlur("electrical")}
+          onAgeUnknownToggle={(v) => onUtilityAgeUnknownToggle("electrical", v)}
+          onConditionChange={(c) => onConditionChange("electrical", c)}
+          onNotesChange={(n) => onNotesChange("electrical", n)}
+          onUsefulLifeChange={(raw) => onUsefulLifeChange("electrical", raw)}
+          onUsefulLifeBlur={() => onUsefulLifeBlur("electrical")}
+          onTypeChange={(v) => onElectricalTypeChange(v as ElectricalType)}
+        />
+      </div>
+
+      {/* Reserve Summary: Base Reserves clearly separated from Major
+          System Reserve Additions (itemized), summing to Total Reserves
+          -- the exact figure that flows into Total Capital Required /
+          Base Project Capital Required below (spec section 8). */}
+      <div className="mt-6 rounded border border-line-dark bg-white p-6">
+        <p className="eyebrow text-brass mb-4">Reserve Summary</p>
+        <div className="space-y-1.5 text-sm">
+          <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+            <span className="text-ink/60">Base Reserves</span>
+            <span>{formatCents(reserveSummary.baseReserves)}</span>
+          </div>
+          <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+            <span className="text-ink/60">Roof Reserve</span>
+            <span>{formatCents(reserveSummary.roofReserve)}</span>
+          </div>
+          <div className="flex justify-between border-b border-line-dark/40 py-1.5">
+            <span className="text-ink/60">HVAC Reserve</span>
+            <span>{formatCents(reserveSummary.hvacReserve)}</span>
+          </div>
+          <div className="flex justify-between py-1.5">
+            <span className="text-ink/60">Water Heater Reserve</span>
+            <span>{formatCents(reserveSummary.waterHeaterReserve)}</span>
+          </div>
+        </div>
+        <div className="mt-4 flex items-center justify-between rounded bg-brass/10 border border-brass px-4 py-4">
+          <span className="eyebrow text-brass">Total Reserves</span>
+          <span className="font-display text-2xl text-ink">{formatCents(reserveSummary.totalReserves)}</span>
+        </div>
+        {reserveSummary.majorSystemReserveAdditions > 0 && (
+          <p className="mt-3 text-xs text-ink/50 leading-relaxed">
+            {formatCents(reserveSummary.baseReserves)} Base Reserves + {formatCents(reserveSummary.majorSystemReserveAdditions)}{" "}
+            Major System Reserve Additions = {formatCents(reserveSummary.totalReserves)} Total Reserves.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The printable-report counterpart to <MajorSystemsSection>: one compact
+// table covering all five tracked systems (System, Current Age, Expected
+// Useful Life, Estimated Remaining Life, Condition, Replacement Reserve,
+// In Scope of Work?) with the same green/red color-coding used on-page,
+// followed by the Reserve Summary. Per-system Notes and due-diligence
+// warnings are only printed when actually present, so a mostly-empty
+// system never adds clutter (spec section 16). Always renders -- Major
+// Systems is tracked for every underwriting structure, not an optional
+// itemized list like Scope of Work.
+function MajorSystemsPrintCard({
+  majorSystems,
+  reserveSummary,
+}: {
+  majorSystems: MajorSystemsState;
+  reserveSummary: MajorSystemsReserveSummary;
+}) {
+  const conditionLabel = (c: SystemCondition) => CONDITION_OPTIONS.find((opt) => opt.value === c)?.label ?? c;
+
+  const roofRemaining = computeFixedRemainingLife(
+    majorSystems.roof.ageYears,
+    majorSystems.roof.ageUnknown,
+    EXPECTED_USEFUL_LIFE_YEARS.roof
+  );
+  const roofStatus = computeSystemStatus(majorSystems.roof.condition, roofRemaining);
+  const roofInclusion = computeReserveInclusion(majorSystems.roof, roofRemaining);
+
+  const hvacRemaining = computeFixedRemainingLife(
+    majorSystems.hvac.ageYears,
+    majorSystems.hvac.ageUnknown,
+    EXPECTED_USEFUL_LIFE_YEARS.hvac
+  );
+  const hvacStatus = computeSystemStatus(majorSystems.hvac.condition, hvacRemaining);
+  const hvacInclusion = computeReserveInclusion(majorSystems.hvac, hvacRemaining);
+
+  const waterHeaterRemaining = computeFixedRemainingLife(
+    majorSystems.waterHeater.ageYears,
+    majorSystems.waterHeater.ageUnknown,
+    EXPECTED_USEFUL_LIFE_YEARS.waterHeater
+  );
+  const waterHeaterStatus = computeSystemStatus(majorSystems.waterHeater.condition, waterHeaterRemaining);
+  const waterHeaterInclusion = computeReserveInclusion(majorSystems.waterHeater, waterHeaterRemaining);
+
+  const plumbingRemaining = computeManualRemainingLife(
+    majorSystems.plumbing.ageYears,
+    majorSystems.plumbing.ageUnknown,
+    majorSystems.plumbing.estimatedUsefulLifeYears
+  );
+  const plumbingStatus = computeSystemStatus(majorSystems.plumbing.condition, plumbingRemaining);
+  const plumbingWarning = shouldShowMajorCapitalExpenseWarning(majorSystems.plumbing.condition);
+
+  const electricalRemaining = computeManualRemainingLife(
+    majorSystems.electrical.ageYears,
+    majorSystems.electrical.ageUnknown,
+    majorSystems.electrical.estimatedUsefulLifeYears
+  );
+  const electricalStatus = computeSystemStatus(majorSystems.electrical.condition, electricalRemaining);
+  const electricalWarning = shouldShowMajorCapitalExpenseWarning(majorSystems.electrical.condition);
+
+  type Row = {
+    key: string;
+    label: string;
+    ageLabel: string;
+    expectedLifeLabel: string;
+    remainingLabel: string;
+    color: "green" | "red" | "neutral";
+    conditionText: string;
+    reserveLabel: string;
+    scopeOfWorkLabel: string;
+    notes: string;
+    warning: string | null;
+  };
+
+  const rows: Row[] = [
+    {
+      key: "roof",
+      label: SYSTEM_LABELS.roof,
+      ageLabel: majorSystems.roof.ageUnknown ? "Unknown" : `${majorSystems.roof.ageYears} yrs`,
+      expectedLifeLabel: `${EXPECTED_USEFUL_LIFE_YEARS.roof} yrs`,
+      remainingLabel: roofRemaining.label,
+      color: roofStatus.color,
+      conditionText: conditionLabel(majorSystems.roof.condition),
+      reserveLabel: roofInclusion.included ? formatCents(roofInclusion.amount) : "Not Included",
+      scopeOfWorkLabel: majorSystems.roof.alreadyInScopeOfWork ? "Yes" : "No",
+      notes: majorSystems.roof.notes.trim(),
+      warning: roofStatus.conditionNote,
+    },
+    {
+      key: "hvac",
+      label: SYSTEM_LABELS.hvac,
+      ageLabel: majorSystems.hvac.ageUnknown ? "Unknown" : `${majorSystems.hvac.ageYears} yrs`,
+      expectedLifeLabel: `${EXPECTED_USEFUL_LIFE_YEARS.hvac} yrs`,
+      remainingLabel: hvacRemaining.label,
+      color: hvacStatus.color,
+      conditionText: conditionLabel(majorSystems.hvac.condition),
+      reserveLabel: hvacInclusion.included ? formatCents(hvacInclusion.amount) : "Not Included",
+      scopeOfWorkLabel: majorSystems.hvac.alreadyInScopeOfWork ? "Yes" : "No",
+      notes: majorSystems.hvac.notes.trim(),
+      warning: hvacStatus.conditionNote,
+    },
+    {
+      key: "waterHeater",
+      label: SYSTEM_LABELS.waterHeater,
+      ageLabel: majorSystems.waterHeater.ageUnknown ? "Unknown" : `${majorSystems.waterHeater.ageYears} yrs`,
+      expectedLifeLabel: `${EXPECTED_USEFUL_LIFE_YEARS.waterHeater} yrs`,
+      remainingLabel: waterHeaterRemaining.label,
+      color: waterHeaterStatus.color,
+      conditionText: conditionLabel(majorSystems.waterHeater.condition),
+      reserveLabel: waterHeaterInclusion.included ? formatCents(waterHeaterInclusion.amount) : "Not Included",
+      scopeOfWorkLabel: majorSystems.waterHeater.alreadyInScopeOfWork ? "Yes" : "No",
+      notes: majorSystems.waterHeater.notes.trim(),
+      warning: waterHeaterStatus.conditionNote,
+    },
+    {
+      key: "plumbing",
+      label: SYSTEM_LABELS.plumbing,
+      ageLabel: majorSystems.plumbing.ageUnknown ? "Unknown" : `${majorSystems.plumbing.ageYears} yrs`,
+      expectedLifeLabel:
+        majorSystems.plumbing.estimatedUsefulLifeYears !== null
+          ? `${majorSystems.plumbing.estimatedUsefulLifeYears} yrs`
+          : "Not Entered",
+      remainingLabel: plumbingRemaining.label,
+      color: plumbingStatus.color,
+      conditionText: conditionLabel(majorSystems.plumbing.condition),
+      reserveLabel: "N/A",
+      scopeOfWorkLabel: "—",
+      notes: majorSystems.plumbing.notes.trim(),
+      warning: plumbingStatus.conditionNote ?? (plumbingWarning ? MAJOR_CAPITAL_EXPENSE_WARNING : null),
+    },
+    {
+      key: "electrical",
+      label: SYSTEM_LABELS.electrical,
+      ageLabel: majorSystems.electrical.ageUnknown ? "Unknown" : `${majorSystems.electrical.ageYears} yrs`,
+      expectedLifeLabel:
+        majorSystems.electrical.estimatedUsefulLifeYears !== null
+          ? `${majorSystems.electrical.estimatedUsefulLifeYears} yrs`
+          : "Not Entered",
+      remainingLabel: electricalRemaining.label,
+      color: electricalStatus.color,
+      conditionText: conditionLabel(majorSystems.electrical.condition),
+      reserveLabel: "N/A",
+      scopeOfWorkLabel: "—",
+      notes: majorSystems.electrical.notes.trim(),
+      warning: electricalStatus.conditionNote ?? (electricalWarning ? MAJOR_CAPITAL_EXPENSE_WARNING : null),
+    },
+  ];
+
+  return (
+    <div className="mb-3 print:break-inside-avoid-page rounded-xl border border-ink/15 bg-white p-2.5">
+      <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-brass/40">
+        <PiggyBank size={14} className="text-brass" />
+        <p className="text-[9.5pt] font-semibold uppercase tracking-wide text-ink">Major Systems &amp; Remaining Life</p>
+      </div>
+      <table className="w-full text-[8.5pt] border-collapse">
+        <thead>
+          <tr className="border-b border-ink/20 text-left text-ink/60">
+            <th className="py-1 pr-2 font-medium">System</th>
+            <th className="py-1 pr-2 font-medium">Age</th>
+            <th className="py-1 pr-2 font-medium">Expected Life</th>
+            <th className="py-1 pr-2 font-medium">Remaining Life</th>
+            <th className="py-1 pr-2 font-medium">Condition</th>
+            <th className="py-1 pr-2 font-medium">Reserve</th>
+            <th className="py-1 pr-2 font-medium">In Scope of Work?</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const colors = statusColorClasses(row.color);
+            return (
+              <tr key={row.key} className="border-b border-ink/10 align-top">
+                <td className="py-1.5 pr-2 text-ink font-medium">{row.label}</td>
+                <td className="py-1.5 pr-2 text-ink">{row.ageLabel}</td>
+                <td className="py-1.5 pr-2 text-ink">{row.expectedLifeLabel}</td>
+                <td className={`py-1.5 pr-2 font-medium ${colors.text}`}>{row.remainingLabel}</td>
+                <td className="py-1.5 pr-2 text-ink">{row.conditionText}</td>
+                <td className="py-1.5 pr-2 text-ink">{row.reserveLabel}</td>
+                <td className="py-1.5 pr-2 text-ink">{row.scopeOfWorkLabel}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {rows.some((row) => row.warning || row.notes) && (
+        <div className="mt-2 pt-2 border-t border-ink/10 space-y-1">
+          {rows.map((row) =>
+            row.warning || row.notes ? (
+              <p key={row.key} className="text-[8pt] leading-relaxed">
+                <span className="font-semibold text-ink">{row.label}:</span>{" "}
+                {row.warning && <span className={statusColorClasses(row.color).text}>{row.warning} </span>}
+                {row.notes && <span className="text-ink/60">{row.notes}</span>}
+              </p>
+            ) : null
+          )}
+        </div>
+      )}
+      <div className="mt-2 pt-2 border-t border-ink/10 flex justify-between text-[9.5pt]">
+        <span className="text-ink/60 font-semibold">Base Reserves</span>
+        <span className="text-ink font-semibold">{formatCents(reserveSummary.baseReserves)}</span>
+      </div>
+      {reserveSummary.majorSystemReserveAdditions > 0 && (
+        <>
+          <div className="mt-1 flex justify-between text-[9.5pt]">
+            <span className="text-ink/60">Roof Reserve</span>
+            <span className="text-ink">{formatCents(reserveSummary.roofReserve)}</span>
+          </div>
+          <div className="mt-1 flex justify-between text-[9.5pt]">
+            <span className="text-ink/60">HVAC Reserve</span>
+            <span className="text-ink">{formatCents(reserveSummary.hvacReserve)}</span>
+          </div>
+          <div className="mt-1 flex justify-between text-[9.5pt]">
+            <span className="text-ink/60">Water Heater Reserve</span>
+            <span className="text-ink">{formatCents(reserveSummary.waterHeaterReserve)}</span>
+          </div>
+        </>
+      )}
+      <div className="mt-1 flex justify-between text-[9.5pt]">
+        <span className="text-ink/60 font-semibold">Total Reserves</span>
+        <span className="text-ink font-semibold">{formatCents(reserveSummary.totalReserves)}</span>
+      </div>
+    </div>
+  );
+}
+
 // The printable-report counterpart to PropertyTaxSection: the same six
 // figures (County, Effective Tax Rate, Rate Source, Calculated Annual
 // Property Taxes, Property Taxes Used in Underwriting, Property Tax
@@ -4109,6 +4868,33 @@ export default function SharedHousingCalculator() {
   const [scopeOfWorkItems, setScopeOfWorkItems] = useState<ScopeOfWorkItem[]>([]);
   const [useItemizedScopeOfWork, setUseItemizedScopeOfWork] = useState(true);
 
+  // Major Systems & Remaining Life: one shared section/state object used
+  // by every financing structure (the physical property's systems don't
+  // change based on which financing structure is selected), exactly
+  // like Scope of Work above. Defaults to Age Unknown / Condition
+  // Unknown for every system, so a brand-new or previously saved
+  // underwriting record with no Major Systems data entered yet produces
+  // $0 in automatic reserve additions -- Base Reserves alone continues
+  // to drive Total Capital Required exactly as it always has (spec
+  // section 18: never break existing saved underwriting data).
+  const [majorSystems, setMajorSystems] = useState<MajorSystemsState>(makeDefaultMajorSystemsState);
+  // Draft strings for the free-typed numeric fields (Age, Estimated
+  // Replacement Cost, Estimated Useful Life), following the same
+  // draft-string/parsed-number pattern used by every other numeric
+  // input in this calculator (see handleCapitalChange/handleCapitalBlur).
+  const [majorSystemsDraft, setMajorSystemsDraft] = useState(() => ({
+    roofAge: "",
+    hvacAge: "",
+    waterHeaterAge: "",
+    plumbingAge: "",
+    electricalAge: "",
+    roofReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.roof),
+    hvacReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.hvac),
+    waterHeaterReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.waterHeater),
+    plumbingUsefulLife: "",
+    electricalUsefulLife: "",
+  }));
+
   const [percent, setPercent] = useState<Record<PercentKey, number>>(PERCENT_DEFAULTS);
   const [percentDraft, setPercentDraft] = useState<Record<PercentKey, string>>(
     makePercentDraft(PERCENT_DEFAULTS)
@@ -5213,6 +5999,104 @@ export default function SharedHousingCalculator() {
     });
   }
 
+  // Major Systems & Remaining Life handlers -- one shared updater per
+  // field type (age, replacement cost, useful life, condition, notes,
+  // include-reserve override, already-in-scope-of-work override, and
+  // Plumbing/Electrical type), each working generically across all five
+  // systems by key rather than five near-duplicate handler sets.
+  type ReserveSystemFieldKey = "roof" | "hvac" | "waterHeater";
+  type UtilitySystemFieldKey = "plumbing" | "electrical";
+  const reserveSystemDraftKeys: Record<ReserveSystemFieldKey, { age: keyof typeof majorSystemsDraft; cost: keyof typeof majorSystemsDraft }> = {
+    roof: { age: "roofAge", cost: "roofReplacementCost" },
+    hvac: { age: "hvacAge", cost: "hvacReplacementCost" },
+    waterHeater: { age: "waterHeaterAge", cost: "waterHeaterReplacementCost" },
+  };
+  const utilitySystemDraftKeys: Record<UtilitySystemFieldKey, { age: keyof typeof majorSystemsDraft; life: keyof typeof majorSystemsDraft }> = {
+    plumbing: { age: "plumbingAge", life: "plumbingUsefulLife" },
+    electrical: { age: "electricalAge", life: "electricalUsefulLife" },
+  };
+
+  function handleReserveSystemAgeChange(key: ReserveSystemFieldKey, raw: string) {
+    const draftKey = reserveSystemDraftKeys[key].age;
+    setMajorSystemsDraft((prev) => ({ ...prev, [draftKey]: raw }));
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], ageYears: parseTypedInt(raw) } }));
+  }
+  function handleReserveSystemAgeBlur(key: ReserveSystemFieldKey) {
+    const draftKey = reserveSystemDraftKeys[key].age;
+    setMajorSystems((prev) => {
+      const clamped = Math.max(0, prev[key].ageYears);
+      setMajorSystemsDraft((d) => ({ ...d, [draftKey]: String(clamped) }));
+      return { ...prev, [key]: { ...prev[key], ageYears: clamped } };
+    });
+  }
+  function handleUtilitySystemAgeChange(key: UtilitySystemFieldKey, raw: string) {
+    const draftKey = utilitySystemDraftKeys[key].age;
+    setMajorSystemsDraft((prev) => ({ ...prev, [draftKey]: raw }));
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], ageYears: parseTypedInt(raw) } }));
+  }
+  function handleUtilitySystemAgeBlur(key: UtilitySystemFieldKey) {
+    const draftKey = utilitySystemDraftKeys[key].age;
+    setMajorSystems((prev) => {
+      const clamped = Math.max(0, prev[key].ageYears);
+      setMajorSystemsDraft((d) => ({ ...d, [draftKey]: String(clamped) }));
+      return { ...prev, [key]: { ...prev[key], ageYears: clamped } };
+    });
+  }
+  function handleReserveSystemAgeUnknownToggle(key: ReserveSystemFieldKey, unknown: boolean) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], ageUnknown: unknown } }));
+  }
+  function handleUtilitySystemAgeUnknownToggle(key: UtilitySystemFieldKey, unknown: boolean) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], ageUnknown: unknown } }));
+  }
+  function handleReplacementCostChange(key: ReserveSystemFieldKey, raw: string) {
+    const draftKey = reserveSystemDraftKeys[key].cost;
+    setMajorSystemsDraft((prev) => ({ ...prev, [draftKey]: raw }));
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], replacementCost: parseTypedAmount(raw) } }));
+  }
+  function handleReplacementCostBlur(key: ReserveSystemFieldKey) {
+    const draftKey = reserveSystemDraftKeys[key].cost;
+    setMajorSystems((prev) => {
+      const clamped = round2(Math.max(0, prev[key].replacementCost));
+      setMajorSystemsDraft((d) => ({ ...d, [draftKey]: formatCents(clamped) }));
+      return { ...prev, [key]: { ...prev[key], replacementCost: clamped } };
+    });
+  }
+  function handleEstimatedUsefulLifeChange(key: UtilitySystemFieldKey, raw: string) {
+    const draftKey = utilitySystemDraftKeys[key].life;
+    setMajorSystemsDraft((prev) => ({ ...prev, [draftKey]: raw }));
+    const digitsOnly = raw.replace(/[^0-9]/g, "");
+    setMajorSystems((prev) => ({
+      ...prev,
+      [key]: { ...prev[key], estimatedUsefulLifeYears: digitsOnly === "" ? null : parseTypedInt(raw) },
+    }));
+  }
+  function handleEstimatedUsefulLifeBlur(key: UtilitySystemFieldKey) {
+    const draftKey = utilitySystemDraftKeys[key].life;
+    setMajorSystems((prev) => {
+      const value = prev[key].estimatedUsefulLifeYears;
+      setMajorSystemsDraft((d) => ({ ...d, [draftKey]: value === null ? "" : String(value) }));
+      return prev;
+    });
+  }
+  function handleSystemConditionChange(key: MajorSystemKey, condition: SystemCondition) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], condition } }));
+  }
+  function handleSystemNotesChange(key: MajorSystemKey, notes: string) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], notes } }));
+  }
+  function handleIncludeReserveChange(key: ReserveSystemFieldKey, includeReserve: IncludeReserveOption) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], includeReserve } }));
+  }
+  function handleAlreadyInScopeOfWorkToggle(key: ReserveSystemFieldKey, alreadyInScopeOfWork: boolean) {
+    setMajorSystems((prev) => ({ ...prev, [key]: { ...prev[key], alreadyInScopeOfWork } }));
+  }
+  function handlePlumbingTypeChange(plumbingType: PlumbingType) {
+    setMajorSystems((prev) => ({ ...prev, plumbing: { ...prev.plumbing, plumbingType } }));
+  }
+  function handleElectricalTypeChange(electricalType: ElectricalType) {
+    setMajorSystems((prev) => ({ ...prev, electrical: { ...prev.electrical, electricalType } }));
+  }
+
   // Scope of Work line item handlers. Each item is added with a blank
   // name and $0 cost -- the user must type a custom name and amount;
   // nothing is pre-filled or hard-coded as required. Costs use the same
@@ -5897,6 +6781,23 @@ export default function SharedHousingCalculator() {
     // setCapital(CAPITAL_DEFAULTS).
     setScopeOfWorkItems([]);
     setUseItemizedScopeOfWork(true);
+    // Major Systems & Remaining Life: every system resets to Age
+    // Unknown/Condition Unknown with the standard default replacement
+    // costs, so a reset produces $0 in automatic reserve additions --
+    // identical to a brand-new record.
+    setMajorSystems(makeDefaultMajorSystemsState());
+    setMajorSystemsDraft({
+      roofAge: "",
+      hvacAge: "",
+      waterHeaterAge: "",
+      plumbingAge: "",
+      electricalAge: "",
+      roofReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.roof),
+      hvacReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.hvac),
+      waterHeaterReplacementCost: formatCents(DEFAULT_REPLACEMENT_COST.waterHeater),
+      plumbingUsefulLife: "",
+      electricalUsefulLife: "",
+    });
     // Financing Structure resets to its default of no selection, which
     // also clears the Traditional Financing and Hybrid inputs (Purchase
     // Price and the Hybrid Existing Mortgage Balance / Subject-To PITI
@@ -6854,6 +7755,26 @@ export default function SharedHousingCalculator() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeOfWorkTotal, useItemizedScopeOfWork]);
 
+  // Major Systems & Remaining Life reserve summary: Base Reserves
+  // (capital.reserves, unchanged/manually editable exactly as before)
+  // plus whichever of Roof/HVAC/Water Heater are currently eligible for
+  // an automatic replacement reserve. This single computed summary is
+  // what replaces every bare capital.reserves reference below wherever
+  // Total Capital Required (and, for Stack Method, Base Project Capital
+  // Required) is calculated -- see computeMajorSystemsReserveSummary in
+  // lib/majorSystems.ts, the same function the printable report and
+  // Excel export read from so all three surfaces always agree. A
+  // brand-new or previously saved record with no Major Systems data
+  // entered (every system defaults to Age Unknown) always produces $0
+  // in additions, so effectiveReserves === capital.reserves exactly --
+  // existing underwriting never changes unless Major Systems data is
+  // actually entered.
+  const majorSystemsReserveSummary = useMemo(
+    () => computeMajorSystemsReserveSummary(majorSystems, capital.reserves),
+    [majorSystems, capital.reserves]
+  );
+  const effectiveReserves = majorSystemsReserveSummary.totalReserves;
+
   // ---------------------------------------------------------------------
   // The underwriting engine: every number shown anywhere on this page,
   // in the breakdown table, the CSV, and the print summary comes from
@@ -6994,7 +7915,11 @@ export default function SharedHousingCalculator() {
         capital.appliances +
         capital.photos +
         holdingCosts +
-        capital.reserves +
+        // Base Reserves plus any Major System Reserve Additions (Roof/
+        // HVAC/Water Heater) currently eligible -- see
+        // majorSystemsReserveSummary above. Included exactly once, here,
+        // never duplicated elsewhere in the Stack Method reconciliation.
+        effectiveReserves +
         capital.acquisitionFee +
         capital.stackTcFee +
         capital.stackLlcFee
@@ -7048,7 +7973,10 @@ export default function SharedHousingCalculator() {
               capital.appliances +
               capital.photos +
               holdingCosts +
-              capital.reserves +
+              // Base Reserves plus any Major System Reserve Additions
+              // currently eligible -- see majorSystemsReserveSummary
+              // above. Included exactly once.
+              effectiveReserves +
               (financingMode === "traditional" ? 0 : capital.upfrontInsurance) +
               capital.acquisitionFee +
               tcAndLlcTotal +
@@ -7109,6 +8037,7 @@ export default function SharedHousingCalculator() {
     calculatedHoldingCosts,
     holdingCostsIsManual,
     financingMode,
+    effectiveReserves,
     traditionalLoanBalance,
     traditionalClosingCosts,
     traditionalDownPaymentAmount,
@@ -7670,7 +8599,18 @@ export default function SharedHousingCalculator() {
                 { label: "Appliances", value: formatCents(capital.appliances) },
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-                { label: "Reserves", value: formatCents(capital.reserves) },
+                { label: "Base Reserves", value: formatCents(majorSystemsReserveSummary.baseReserves) },
+                ...(majorSystemsReserveSummary.majorSystemReserveAdditions > 0
+                  ? [
+                      { label: "Roof Reserve", value: formatCents(majorSystemsReserveSummary.roofReserve) },
+                      { label: "HVAC Reserve", value: formatCents(majorSystemsReserveSummary.hvacReserve) },
+                      {
+                        label: "Water Heater Reserve",
+                        value: formatCents(majorSystemsReserveSummary.waterHeaterReserve),
+                      },
+                    ]
+                  : []),
+                { label: "Total Reserves", value: formatCents(majorSystemsReserveSummary.totalReserves) },
                 { label: "Acquisition Fee", value: formatCents(capital.acquisitionFee) },
                 { label: "TC Fee", value: formatCents(capital.stackTcFee) },
                 { label: "LLC Entity Formation Cost", value: formatCents(capital.stackLlcFee) },
@@ -7713,7 +8653,18 @@ export default function SharedHousingCalculator() {
                 { label: "Appliances", value: formatCents(capital.appliances) },
                 { label: "Photos", value: formatCents(capital.photos) },
                 { label: "Holding Costs", value: formatCents(results.holdingCosts) },
-                { label: "Reserves", value: formatCents(capital.reserves) },
+                { label: "Base Reserves", value: formatCents(majorSystemsReserveSummary.baseReserves) },
+                ...(majorSystemsReserveSummary.majorSystemReserveAdditions > 0
+                  ? [
+                      { label: "Roof Reserve", value: formatCents(majorSystemsReserveSummary.roofReserve) },
+                      { label: "HVAC Reserve", value: formatCents(majorSystemsReserveSummary.hvacReserve) },
+                      {
+                        label: "Water Heater Reserve",
+                        value: formatCents(majorSystemsReserveSummary.waterHeaterReserve),
+                      },
+                    ]
+                  : []),
+                { label: "Total Reserves", value: formatCents(majorSystemsReserveSummary.totalReserves) },
                 ...(financingMode === "traditional"
                   ? []
                   : [{ label: "Upfront Insurance", value: formatCents(capital.upfrontInsurance) }]),
@@ -8193,6 +9144,7 @@ export default function SharedHousingCalculator() {
       scopeOfWorkItems,
       scopeOfWorkTotal,
       useItemizedScopeOfWork,
+      majorSystemsReserveSummary,
     ]
   );
 
@@ -8255,7 +9207,7 @@ export default function SharedHousingCalculator() {
         { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
         { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
         { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
-        { label: "Reserves", value: capital.reserves, color: "#7C9070" },
+        { label: "Reserves", value: effectiveReserves, color: "#7C9070" },
         { label: "TC Fee", value: capital.stackTcFee, color: "#C08A3E" },
         { label: "LLC Entity Formation Cost", value: capital.stackLlcFee, color: "#C08A3E" },
         { label: "Other Applicable Costs", value: otherApplicableCosts, color: "#C9BFA6" },
@@ -8293,7 +9245,7 @@ export default function SharedHousingCalculator() {
       { label: "Furniture", value: capital.furniture, color: "#4E9C6C" },
       { label: "Appliances", value: capital.appliances, color: "#4E9C6C" },
       { label: "Holding Costs", value: results.holdingCosts, color: "#8B9795" },
-      { label: "Reserves", value: capital.reserves, color: "#7C9070" },
+      { label: "Reserves", value: effectiveReserves, color: "#7C9070" },
       ...tcAndLlcBars,
       { label: "Closing Costs", value: results.closingCosts, color: "#C08A3E" },
       { label: "Agent Fee", value: capital.agentFee, color: "#C08A3E" },
@@ -8304,6 +9256,7 @@ export default function SharedHousingCalculator() {
     downPaymentLabel,
     results.downPaymentForCapital,
     capital,
+    effectiveReserves,
     results.holdingCosts,
     results.closingCosts,
     financingMode,
@@ -8332,6 +9285,95 @@ export default function SharedHousingCalculator() {
               : financingMode === "sellerFinancing"
                 ? { tcFee: capital.sellerFinancingTcFee, llcFee: capital.sellerFinancingLlcFee }
                 : { tcFee: capital.stackTcFee, llcFee: capital.stackLlcFee };
+
+      // Major Systems export payload: every figure resolved through the
+      // exact same lib/majorSystems.ts functions the on-page section and
+      // printable report already use (see majorSystemsReserveSummary
+      // above), so the Excel "Major Systems" worksheet always matches the
+      // website and print report exactly (spec section 13/17).
+      const msConditionLabel = (c: SystemCondition) => CONDITION_OPTIONS.find((o) => o.value === c)?.label ?? c;
+      const msIncludeReserveLabel = (o: IncludeReserveOption): "Automatic" | "Yes" | "No" =>
+        o === "yes" ? "Yes" : o === "no" ? "No" : "Automatic";
+      const msRoofRemaining = computeFixedRemainingLife(
+        majorSystems.roof.ageYears,
+        majorSystems.roof.ageUnknown,
+        EXPECTED_USEFUL_LIFE_YEARS.roof
+      );
+      const msHvacRemaining = computeFixedRemainingLife(
+        majorSystems.hvac.ageYears,
+        majorSystems.hvac.ageUnknown,
+        EXPECTED_USEFUL_LIFE_YEARS.hvac
+      );
+      const msWaterHeaterRemaining = computeFixedRemainingLife(
+        majorSystems.waterHeater.ageYears,
+        majorSystems.waterHeater.ageUnknown,
+        EXPECTED_USEFUL_LIFE_YEARS.waterHeater
+      );
+      const msPlumbingRemaining = computeManualRemainingLife(
+        majorSystems.plumbing.ageYears,
+        majorSystems.plumbing.ageUnknown,
+        majorSystems.plumbing.estimatedUsefulLifeYears
+      );
+      const msElectricalRemaining = computeManualRemainingLife(
+        majorSystems.electrical.ageYears,
+        majorSystems.electrical.ageUnknown,
+        majorSystems.electrical.estimatedUsefulLifeYears
+      );
+      const majorSystemsExportData = {
+        roof: {
+          ageYears: majorSystems.roof.ageUnknown ? null : majorSystems.roof.ageYears,
+          expectedUsefulLifeYears: EXPECTED_USEFUL_LIFE_YEARS.roof,
+          status: computeSystemStatus(majorSystems.roof.condition, msRoofRemaining),
+          conditionLabel: msConditionLabel(majorSystems.roof.condition),
+          replacementCost: majorSystems.roof.replacementCost,
+          includeReserveOption: msIncludeReserveLabel(majorSystems.roof.includeReserve),
+          alreadyInScopeOfWork: majorSystems.roof.alreadyInScopeOfWork,
+          notes: majorSystems.roof.notes,
+        },
+        hvac: {
+          ageYears: majorSystems.hvac.ageUnknown ? null : majorSystems.hvac.ageYears,
+          expectedUsefulLifeYears: EXPECTED_USEFUL_LIFE_YEARS.hvac,
+          status: computeSystemStatus(majorSystems.hvac.condition, msHvacRemaining),
+          conditionLabel: msConditionLabel(majorSystems.hvac.condition),
+          replacementCost: majorSystems.hvac.replacementCost,
+          includeReserveOption: msIncludeReserveLabel(majorSystems.hvac.includeReserve),
+          alreadyInScopeOfWork: majorSystems.hvac.alreadyInScopeOfWork,
+          notes: majorSystems.hvac.notes,
+        },
+        waterHeater: {
+          ageYears: majorSystems.waterHeater.ageUnknown ? null : majorSystems.waterHeater.ageYears,
+          expectedUsefulLifeYears: EXPECTED_USEFUL_LIFE_YEARS.waterHeater,
+          status: computeSystemStatus(majorSystems.waterHeater.condition, msWaterHeaterRemaining),
+          conditionLabel: msConditionLabel(majorSystems.waterHeater.condition),
+          replacementCost: majorSystems.waterHeater.replacementCost,
+          includeReserveOption: msIncludeReserveLabel(majorSystems.waterHeater.includeReserve),
+          alreadyInScopeOfWork: majorSystems.waterHeater.alreadyInScopeOfWork,
+          notes: majorSystems.waterHeater.notes,
+        },
+        plumbing: {
+          ageYears: majorSystems.plumbing.ageUnknown ? null : majorSystems.plumbing.ageYears,
+          estimatedUsefulLifeYears: majorSystems.plumbing.estimatedUsefulLifeYears,
+          status: computeSystemStatus(majorSystems.plumbing.condition, msPlumbingRemaining),
+          conditionLabel: msConditionLabel(majorSystems.plumbing.condition),
+          typeOrMaterial:
+            PLUMBING_TYPE_OPTIONS.find((o) => o.value === majorSystems.plumbing.plumbingType)?.label ??
+            majorSystems.plumbing.plumbingType,
+          showCapitalExpenseWarning: shouldShowMajorCapitalExpenseWarning(majorSystems.plumbing.condition),
+          notes: majorSystems.plumbing.notes,
+        },
+        electrical: {
+          ageYears: majorSystems.electrical.ageUnknown ? null : majorSystems.electrical.ageYears,
+          estimatedUsefulLifeYears: majorSystems.electrical.estimatedUsefulLifeYears,
+          status: computeSystemStatus(majorSystems.electrical.condition, msElectricalRemaining),
+          conditionLabel: msConditionLabel(majorSystems.electrical.condition),
+          typeOrMaterial:
+            ELECTRICAL_TYPE_OPTIONS.find((o) => o.value === majorSystems.electrical.electricalType)?.label ??
+            majorSystems.electrical.electricalType,
+          showCapitalExpenseWarning: shouldShowMajorCapitalExpenseWarning(majorSystems.electrical.condition),
+          notes: majorSystems.electrical.notes,
+        },
+        baseReserves: majorSystemsReserveSummary.baseReserves,
+      };
 
       // Amortization schedules for the Excel export: one leg per loan for
       // the active financing structure, built from the exact same
@@ -8542,7 +9584,7 @@ export default function SharedHousingCalculator() {
 
         arrears: capital.arrears,
         renovationCost: capital.renovationCost,
-        reserves: capital.reserves,
+        majorSystems: majorSystemsExportData,
         furniture: capital.furniture,
         appliances: capital.appliances,
         photos: capital.photos,
@@ -11513,11 +12555,11 @@ export default function SharedHousingCalculator() {
             </div>
             <CurrencyField
               id="reserves"
-              label="Reserves"
+              label="Base Reserves"
               draft={capitalDraft.reserves}
               onChange={(raw) => handleCapitalChange("reserves", raw)}
               onBlur={() => handleCapitalBlur("reserves")}
-              helperText="Estimated reserve funds set aside for the property. Defaults to $10,000, fully editable."
+              helperText="Estimated reserve funds set aside for the property. Defaults to $10,000, fully editable. Major Systems & Remaining Life below may automatically add to this as Total Reserves."
             />
             {financingMode !== "stackMethod" && financingMode !== "traditional" && (
               <CurrencyField
@@ -11812,6 +12854,30 @@ export default function SharedHousingCalculator() {
                 </p>
               )}
           </div>
+
+          {/* Major Systems & Remaining Life: one shared section, same as
+              Scope of Work above, applying to every financing structure. */}
+          <MajorSystemsSection
+            majorSystems={majorSystems}
+            majorSystemsDraft={majorSystemsDraft}
+            reserveSummary={majorSystemsReserveSummary}
+            onReserveAgeChange={handleReserveSystemAgeChange}
+            onReserveAgeBlur={handleReserveSystemAgeBlur}
+            onReserveAgeUnknownToggle={handleReserveSystemAgeUnknownToggle}
+            onUtilityAgeChange={handleUtilitySystemAgeChange}
+            onUtilityAgeBlur={handleUtilitySystemAgeBlur}
+            onUtilityAgeUnknownToggle={handleUtilitySystemAgeUnknownToggle}
+            onConditionChange={handleSystemConditionChange}
+            onNotesChange={handleSystemNotesChange}
+            onReplacementCostChange={handleReplacementCostChange}
+            onReplacementCostBlur={handleReplacementCostBlur}
+            onIncludeReserveChange={handleIncludeReserveChange}
+            onAlreadyInScopeOfWorkToggle={handleAlreadyInScopeOfWorkToggle}
+            onUsefulLifeChange={handleEstimatedUsefulLifeChange}
+            onUsefulLifeBlur={handleEstimatedUsefulLifeBlur}
+            onPlumbingTypeChange={handlePlumbingTypeChange}
+            onElectricalTypeChange={handleElectricalTypeChange}
+          />
 
           <div className="mt-8 pt-6 border-t border-brass flex items-center justify-between">
             <span className="eyebrow text-brass inline-flex items-center">
@@ -13199,8 +14265,28 @@ export default function SharedHousingCalculator() {
                 </div>
               )}
               <div className="flex justify-between">
-                <span className="text-ink/60">Reserves</span>
-                <span className="text-ink">{formatCents(capital.reserves)}</span>
+                <span className="text-ink/60">Base Reserves</span>
+                <span className="text-ink">{formatCents(majorSystemsReserveSummary.baseReserves)}</span>
+              </div>
+              {majorSystemsReserveSummary.majorSystemReserveAdditions > 0 && (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Roof Reserve</span>
+                    <span className="text-ink">{formatCents(majorSystemsReserveSummary.roofReserve)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">HVAC Reserve</span>
+                    <span className="text-ink">{formatCents(majorSystemsReserveSummary.hvacReserve)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-ink/60">Water Heater Reserve</span>
+                    <span className="text-ink">{formatCents(majorSystemsReserveSummary.waterHeaterReserve)}</span>
+                  </div>
+                </>
+              )}
+              <div className="flex justify-between">
+                <span className="text-ink/60">Total Reserves</span>
+                <span className="text-ink">{formatCents(majorSystemsReserveSummary.totalReserves)}</span>
               </div>
               {financingMode !== "stackMethod" &&
                 financingMode !== "traditional" &&
@@ -13432,6 +14518,8 @@ export default function SharedHousingCalculator() {
               )}
             </div>
           )}
+
+          <MajorSystemsPrintCard majorSystems={majorSystems} reserveSummary={majorSystemsReserveSummary} />
 
           {/* Estimated Returns: Monthly and Annual Cash Flow as supporting
               cards, Estimated Cash-on-Cash Return repeated as a large

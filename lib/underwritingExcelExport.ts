@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import type { RoiProjectionResult } from "./roiProjection";
 import type { EffectiveAmortizationTerm } from "./amortization";
+import { MAJOR_CAPITAL_EXPENSE_WARNING } from "./majorSystems";
 
 /**
  * Excel (.xlsx) export for the Underwriting calculator. Replaces the old
@@ -67,6 +68,50 @@ export interface ExportBalloonAnalysis {
 export interface ExportScopeOfWorkItem {
   name: string;
   cost: number;
+}
+
+// Major Systems & Remaining Life (spec: one shared feature, not
+// duplicated per financing structure). Every figure here is already
+// fully resolved by lib/majorSystems.ts on the component side (age,
+// condition, remaining-life status/color, and the final reserve-
+// inclusion decision) and passed straight through -- this module only
+// ever derives the *display* of that data (Excel formulas for the
+// simple, safe arithmetic spec section 17 calls out: remaining life,
+// automatic-trigger, and the reserve dollar amount actually included),
+// never the underlying business-logic precedence itself (already-in-
+// Scope-of-Work > manual override > automatic threshold), matching this
+// file's existing "never recalculates underwriting math" convention.
+export interface ExportMajorSystemStatus {
+  color: "green" | "red" | "neutral";
+  statusLabel: string;
+  conditionNote: string | null;
+}
+export interface ExportReserveMajorSystemRow {
+  ageYears: number | null; // null = Age Unknown
+  expectedUsefulLifeYears: number;
+  status: ExportMajorSystemStatus;
+  conditionLabel: string;
+  replacementCost: number;
+  includeReserveOption: "Automatic" | "Yes" | "No";
+  alreadyInScopeOfWork: boolean;
+  notes: string;
+}
+export interface ExportUtilityMajorSystemRow {
+  ageYears: number | null;
+  estimatedUsefulLifeYears: number | null; // null = not entered
+  status: ExportMajorSystemStatus;
+  conditionLabel: string;
+  typeOrMaterial: string;
+  showCapitalExpenseWarning: boolean;
+  notes: string;
+}
+export interface ExportMajorSystemsData {
+  roof: ExportReserveMajorSystemRow;
+  hvac: ExportReserveMajorSystemRow;
+  waterHeater: ExportReserveMajorSystemRow;
+  plumbing: ExportUtilityMajorSystemRow;
+  electrical: ExportUtilityMajorSystemRow;
+  baseReserves: number;
 }
 
 // One loan leg's complete month-by-month amortization schedule, built
@@ -287,7 +332,13 @@ export interface UnderwritingExportData {
   // Capital required
   arrears: number;
   renovationCost: number;
-  reserves: number;
+  // Reserves (Base + Major System additions) now lives entirely on the
+  // "Major Systems" worksheet -- see majorSystems below and
+  // addMajorSystemsSheet. The Underwriting/Capital Required sheets'
+  // "Reserves" rows are genuine cross-sheet formula links to
+  // 'Major Systems'!C15 (Total Reserves), never a duplicated static
+  // figure, so they can never drift out of sync with each other.
+  majorSystems: ExportMajorSystemsData;
   furniture: number;
   appliances: number;
   photos: number;
@@ -610,6 +661,269 @@ function addScopeOfWorkSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData)
     : "Manually overridden (not synced to Total Scope of Work)";
   sourceCell.font = { size: 10, italic: true, name: "Calibri" };
   sourceCell.alignment = { horizontal: "right", wrapText: true };
+}
+
+// ---------------------------------------------------------------------
+// "Major Systems" worksheet -- always added (unlike Scope of Work, which
+// is conditional on having at least one line item, Major Systems is
+// tracked for every underwriting record). Always exactly 5 system rows
+// (Roof, HVAC, Water Heater, Plumbing, Electrical) at fixed rows 4-8, so
+// every cross-sheet reference into this sheet (from the Underwriting and
+// Capital Required sheets' "Reserves" rows) can be a fully deterministic
+// formula rather than a computed row lookup, mirroring the existing
+// "Scope of Work"!C{n+4} convention used elsewhere in this file.
+//
+// Column layout: B System | C Age (Years) | D Expected Useful Life
+// (Years) | E Estimated Remaining Life (Years, formula) | F Condition |
+// G Estimated Replacement Cost | H Automatic Reserve Trigger (formula)
+// | I Include Replacement Reserve | J Included in Scope of Work? |
+// K Reserve Included in Underwriting (formula) | L Notes | M Type /
+// Material (Plumbing/Electrical only).
+//
+// Per spec section 17, remaining life and the automatic-trigger flag are
+// genuine in-sheet formulas (simple, safe derived arithmetic); Reserve
+// Included in Underwriting (K) is also a formula, but one built entirely
+// from other cells already on this same row (J/I/H/G) -- it reproduces
+// lib/majorSystems.ts's computeReserveInclusion precedence (already-in-
+// Scope-of-Work > manual Yes/No override > automatic threshold)
+// mechanically from those cells, it does not independently decide
+// anything the website hasn't already decided; every literal input
+// (age, condition, cost, overrides) is passed straight through from the
+// same MajorSystemsState the website itself computed from.
+function addMajorSystemsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData) {
+  const ms = data.majorSystems;
+  const ws = wb.addWorksheet("Major Systems", { views: [{ showGridLines: false }] });
+  ws.getColumn(1).width = 2.5;
+  ws.getColumn(2).width = 14;
+  ws.getColumn(3).width = 9;
+  ws.getColumn(4).width = 13;
+  ws.getColumn(5).width = 14;
+  ws.getColumn(6).width = 10;
+  ws.getColumn(7).width = 15;
+  ws.getColumn(8).width = 13;
+  ws.getColumn(9).width = 14;
+  ws.getColumn(10).width = 13;
+  ws.getColumn(11).width = 15;
+  ws.getColumn(12).width = 32;
+  ws.getColumn(13).width = 16;
+
+  ws.mergeCells(2, 2, 2, 13);
+  const titleCell = ws.getCell(2, 2);
+  titleCell.value = "Major Systems & Remaining Life";
+  titleCell.font = { bold: true, size: 13, color: { argb: COLOR_WHITE }, name: "Calibri" };
+  titleCell.fill = FILL_HEADER;
+  titleCell.alignment = { vertical: "middle", indent: 1 };
+  ws.getRow(2).height = 22;
+
+  const headerRow = ws.getRow(3);
+  const headers = [
+    "System",
+    "Age (Years)",
+    "Expected Useful Life (Years)",
+    "Estimated Remaining Life (Years)",
+    "Condition",
+    "Estimated Replacement Cost",
+    "Automatic Reserve Trigger",
+    "Include Replacement Reserve",
+    "Included in Scope of Work?",
+    "Reserve Included in Underwriting",
+    "Notes",
+    "Type / Material",
+  ];
+  headers.forEach((h, i) => {
+    const cell = headerRow.getCell(i + 2);
+    cell.value = h;
+    cell.font = { bold: true, size: 10, color: { argb: COLOR_WHITE }, name: "Calibri" };
+    cell.fill = FILL_HEADER;
+    cell.alignment = { wrapText: true, vertical: "middle" };
+  });
+  headerRow.height = 30;
+
+  const statusFontColor = (color: "green" | "red" | "neutral"): string | undefined =>
+    color === "green" ? "FF15803D" : color === "red" ? "FFB91C1C" : undefined;
+
+  function writeReserveSystemRow(row: number, label: string, sys: ExportReserveMajorSystemRow) {
+    ws.getCell(row, 2).value = label;
+    fmtLabel(ws.getCell(row, 2), { bold: true, size: 10 });
+
+    const ageCell = ws.getCell(row, 3);
+    ageCell.value = sys.ageYears === null ? "" : sys.ageYears;
+    fmtValue(ageCell, FMT_WHOLE, { input: true });
+
+    const expectedCell = ws.getCell(row, 4);
+    expectedCell.value = sys.expectedUsefulLifeYears;
+    fmtValue(expectedCell, FMT_WHOLE);
+
+    const remainingCell = ws.getCell(row, 5);
+    remainingCell.value = { formula: `IF(C${row}="","",D${row}-C${row})` } as ExcelJS.CellFormulaValue;
+    fmtValue(remainingCell, FMT_WHOLE);
+    const remainingColor = statusFontColor(sys.status.color);
+    if (remainingColor) {
+      remainingCell.font = { ...remainingCell.font, color: { argb: remainingColor }, bold: true };
+    }
+
+    const conditionCell = ws.getCell(row, 6);
+    conditionCell.value = sys.conditionLabel;
+    fmtValue(conditionCell, undefined, { input: true });
+    conditionCell.alignment = { horizontal: "right" };
+
+    const costCell = ws.getCell(row, 7);
+    costCell.value = money(sys.replacementCost);
+    fmtValue(costCell, FMT_CURRENCY, { input: true });
+
+    const triggerCell = ws.getCell(row, 8);
+    triggerCell.value = { formula: `IF(E${row}="","Unknown",IF(E${row}<5,"Yes","No"))` } as ExcelJS.CellFormulaValue;
+    fmtValue(triggerCell);
+
+    const includeCell = ws.getCell(row, 9);
+    includeCell.value = sys.includeReserveOption;
+    fmtValue(includeCell, undefined, { input: true });
+    includeCell.alignment = { horizontal: "right" };
+
+    const scopeCell = ws.getCell(row, 10);
+    scopeCell.value = sys.alreadyInScopeOfWork ? "Yes" : "No";
+    fmtValue(scopeCell, undefined, { input: true });
+    scopeCell.alignment = { horizontal: "right" };
+
+    const reserveCell = ws.getCell(row, 11);
+    reserveCell.value = {
+      formula: `IF(J${row}="Yes",0,IF(I${row}="Yes",G${row},IF(I${row}="No",0,IF(H${row}="Yes",G${row},0))))`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(reserveCell, FMT_CURRENCY);
+
+    const notesParts = [sys.status.conditionNote, sys.notes.trim()].filter((p): p is string => !!p && p.length > 0);
+    const notesCell = ws.getCell(row, 12);
+    notesCell.value = notesParts.join(" ");
+    notesCell.font = { size: 9, name: "Calibri" };
+    notesCell.alignment = { wrapText: true, vertical: "top" };
+
+    ws.getRow(row).height = 28;
+  }
+
+  function writeUtilitySystemRow(row: number, label: string, sys: ExportUtilityMajorSystemRow) {
+    ws.getCell(row, 2).value = label;
+    fmtLabel(ws.getCell(row, 2), { bold: true, size: 10 });
+
+    const ageCell = ws.getCell(row, 3);
+    ageCell.value = sys.ageYears === null ? "" : sys.ageYears;
+    fmtValue(ageCell, FMT_WHOLE, { input: true });
+
+    const expectedCell = ws.getCell(row, 4);
+    expectedCell.value = sys.estimatedUsefulLifeYears === null ? "" : sys.estimatedUsefulLifeYears;
+    fmtValue(expectedCell, FMT_WHOLE, { input: true });
+
+    const remainingCell = ws.getCell(row, 5);
+    remainingCell.value = {
+      formula: `IF(OR(C${row}="",D${row}=""),"",D${row}-C${row})`,
+    } as ExcelJS.CellFormulaValue;
+    fmtValue(remainingCell, FMT_WHOLE);
+    const remainingColor = statusFontColor(sys.status.color);
+    if (remainingColor) {
+      remainingCell.font = { ...remainingCell.font, color: { argb: remainingColor }, bold: true };
+    }
+
+    const conditionCell = ws.getCell(row, 6);
+    conditionCell.value = sys.conditionLabel;
+    fmtValue(conditionCell, undefined, { input: true });
+    conditionCell.alignment = { horizontal: "right" };
+
+    const costCell = ws.getCell(row, 7);
+    costCell.value = "N/A";
+    fmtValue(costCell);
+    costCell.alignment = { horizontal: "right" };
+
+    const triggerCell = ws.getCell(row, 8);
+    triggerCell.value = "N/A -- No automatic reserve for this system yet";
+    fmtValue(triggerCell);
+    triggerCell.alignment = { horizontal: "right", wrapText: true };
+
+    const includeCell = ws.getCell(row, 9);
+    includeCell.value = "N/A";
+    fmtValue(includeCell);
+    includeCell.alignment = { horizontal: "right" };
+
+    const scopeCell = ws.getCell(row, 10);
+    scopeCell.value = "N/A";
+    fmtValue(scopeCell);
+    scopeCell.alignment = { horizontal: "right" };
+
+    const reserveCell = ws.getCell(row, 11);
+    reserveCell.value = 0;
+    fmtValue(reserveCell, FMT_CURRENCY);
+
+    const notesParts = [
+      sys.showCapitalExpenseWarning ? MAJOR_CAPITAL_EXPENSE_WARNING : null,
+      sys.status.conditionNote,
+      sys.notes.trim(),
+    ].filter((p): p is string => !!p && p.length > 0);
+    const notesCell = ws.getCell(row, 12);
+    notesCell.value = notesParts.join(" ");
+    notesCell.font = {
+      size: 9,
+      name: "Calibri",
+      color: sys.showCapitalExpenseWarning ? { argb: "FFB91C1C" } : undefined,
+      bold: sys.showCapitalExpenseWarning,
+    };
+    notesCell.alignment = { wrapText: true, vertical: "top" };
+
+    const typeCell = ws.getCell(row, 13);
+    typeCell.value = sys.typeOrMaterial;
+    fmtValue(typeCell, undefined, { input: true });
+    typeCell.alignment = { horizontal: "right" };
+
+    ws.getRow(row).height = 28;
+  }
+
+  writeReserveSystemRow(4, "Roof", ms.roof);
+  writeReserveSystemRow(5, "HVAC", ms.hvac);
+  writeReserveSystemRow(6, "Water Heater", ms.waterHeater);
+  writeUtilitySystemRow(7, "Plumbing", ms.plumbing);
+  writeUtilitySystemRow(8, "Electrical", ms.electrical);
+
+  // ---- Reserve Summary (rows 10-15) ----
+  ws.mergeCells(10, 2, 10, 3);
+  const summaryHeader = ws.getCell(10, 2);
+  summaryHeader.value = "Reserve Summary";
+  summaryHeader.font = { bold: true, size: 12, color: { argb: COLOR_WHITE }, name: "Calibri" };
+  summaryHeader.fill = FILL_HEADER;
+  summaryHeader.alignment = { vertical: "middle", indent: 1 };
+  ws.getRow(10).height = 20;
+
+  const baseLabelCell = ws.getCell(11, 2);
+  baseLabelCell.value = "Base Reserves";
+  fmtLabel(baseLabelCell);
+  const baseCell = ws.getCell(11, 3);
+  baseCell.value = money(ms.baseReserves);
+  fmtValue(baseCell, FMT_CURRENCY, { input: true });
+
+  const roofLabelCell = ws.getCell(12, 2);
+  roofLabelCell.value = "Roof Reserve";
+  fmtLabel(roofLabelCell);
+  const roofSummaryCell = ws.getCell(12, 3);
+  roofSummaryCell.value = { formula: "K4" } as ExcelJS.CellFormulaValue;
+  fmtValue(roofSummaryCell, FMT_CURRENCY);
+
+  const hvacLabelCell = ws.getCell(13, 2);
+  hvacLabelCell.value = "HVAC Reserve";
+  fmtLabel(hvacLabelCell);
+  const hvacSummaryCell = ws.getCell(13, 3);
+  hvacSummaryCell.value = { formula: "K5" } as ExcelJS.CellFormulaValue;
+  fmtValue(hvacSummaryCell, FMT_CURRENCY);
+
+  const waterHeaterLabelCell = ws.getCell(14, 2);
+  waterHeaterLabelCell.value = "Water Heater Reserve";
+  fmtLabel(waterHeaterLabelCell);
+  const waterHeaterSummaryCell = ws.getCell(14, 3);
+  waterHeaterSummaryCell.value = { formula: "K6" } as ExcelJS.CellFormulaValue;
+  fmtValue(waterHeaterSummaryCell, FMT_CURRENCY);
+
+  const totalLabelCell = ws.getCell(15, 2);
+  totalLabelCell.value = "Total Reserves";
+  fmtLabel(totalLabelCell, { bold: true });
+  totalLabelCell.border = BORDER_THIN_BOTTOM;
+  const totalCell = ws.getCell(15, 3);
+  totalCell.value = { formula: "C11+C12+C13+C14" } as ExcelJS.CellFormulaValue;
+  fmtValue(totalCell, FMT_CURRENCY, { emphasis: true });
 }
 
 // ---------------------------------------------------------------------
@@ -1957,7 +2271,7 @@ function buildUnderwritingSheet(
     { label: "Appliances", value: money(data.appliances) },
     { label: "Photos", value: money(data.photos) },
     { label: "Holding Costs", value: money(data.holdingCosts) },
-    { label: "Reserves", value: money(data.reserves) }
+    { label: "Reserves", formula: "'Major Systems'!C15" }
   );
   if (!isStack) {
     capitalRowDefs.push({ label: "Upfront Insurance Cost", value: money(data.upfrontInsurance) });
@@ -2171,6 +2485,7 @@ export async function buildTemplateWorkbook(data: UnderwritingExportData): Promi
     writeKeyValueSheet(wb, "Balloon Analysis", [{ title: "Balloon Refinance Analysis", rows: balloon.rows }]);
   }
   addScopeOfWorkSheet(wb, data);
+  addMajorSystemsSheet(wb, data);
   addAmortizationScheduleSheets(wb, data);
   addRoiProjectionSheet(wb, data);
   addTransitSheet(wb, data);
@@ -2592,7 +2907,7 @@ function capitalRequiredRows(data: UnderwritingExportData): { rows: KVRow[]; tot
   rows.push({ label: "Appliances", value: money(data.appliances), format: FMT_CURRENCY });
   rows.push({ label: "Photos", value: money(data.photos), format: FMT_CURRENCY });
   rows.push({ label: "Holding Costs", value: money(data.holdingCosts), format: FMT_CURRENCY });
-  rows.push({ label: "Reserves", value: money(data.reserves), format: FMT_CURRENCY });
+  rows.push({ label: "Reserves", formula: "'Major Systems'!C15", format: FMT_CURRENCY });
   if (data.financingMode !== "traditional" && data.financingMode !== "stackMethod") {
     rows.push({ label: "Upfront Insurance Cost", value: money(data.upfrontInsurance), format: FMT_CURRENCY });
   }
@@ -2803,6 +3118,7 @@ export async function buildGeneratedWorkbook(data: UnderwritingExportData): Prom
   }
 
   addScopeOfWorkSheet(wb, data);
+  addMajorSystemsSheet(wb, data);
   addAmortizationScheduleSheets(wb, data);
   addRoiProjectionSheet(wb, data);
   addTransitSheet(wb, data);
