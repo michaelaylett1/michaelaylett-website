@@ -13556,7 +13556,12 @@ export default function SharedHousingCalculator() {
                   : financingMode === "subjectTo"
                     ? [{ label: "Interest Rate", value: formatRateOrNotProvided(percent.loanInterestRatePct) }]
                     : financingMode === "sellerFinancing"
-                      ? [{ label: "Interest Rate", value: formatRateOrNotProvided(percent.loanInterestRatePct) }]
+                      ? [
+                          {
+                            label: "Interest Rate",
+                            value: formatRateOrNotProvided(percent.sellerFinancingInterestRatePct),
+                          },
+                        ]
                       : financingMode === "hybrid"
                         ? [
                             {
