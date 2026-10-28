@@ -6,7 +6,7 @@ Aylett: professional real estate investor and founder of EcomRanx.
 ## Pages
 
 - **`/` (Home)**: introduces the paths (sellers, capital partners, RV
-  parks, EcomRanx), a credibility strip (91 doors owned, multiple
+  parks, EcomRanx), a credibility strip (100+ doors owned, multiple
   markets, long-term owner/operator, conservative underwriting), and a
   featured two-column mission section with a property photo.
 - **`/sellers`**: the primary page. Explains the creative financing
@@ -124,7 +124,7 @@ Open [http://localhost:3000](http://localhost:3000).
    everywhere it's linked (`components/ecomranx/Hero.tsx`, `CTA.tsx`, and
    `components/home/PathCards.tsx`).
 3. **LinkedIn**: confirm the URL in `components/shared/Footer.tsx`.
-4. **Numbers**: the 91-door / market-count credibility stats live in
+4. **Numbers**: the 100+ door / market-count credibility stats live in
    `components/home/Credibility.tsx`. The RV park buy box figures live in
    `components/rv-parks/BuyBox.tsx`. Update either as your numbers change.
 5. **EcomRanx case studies**: `components/ecomranx/CaseStudies.tsx` uses
@@ -165,7 +165,7 @@ under 1MB and most well under 300KB:
 - `kitchen-classic-maintained.webp`: image banner on the About page.
 - `bathroom-renovated.jpg`: Properties We Own and Operate grid.
 - `dining-fireplace-common-area.webp`: the Home mission section
-  (91-door section) and the Sellers Long-Term Ownership section, plus
+  (100+ door section) and the Sellers Long-Term Ownership section, plus
   the wide banner in Properties We Own and Operate.
 
 Headshot:
@@ -798,7 +798,7 @@ conflicting `z-index` in this codebase.
 ## Content guardrails in place
 
 - No em dash characters anywhere in the project.
-- Portfolio references consistently say 91 doors.
+- Portfolio references consistently say 100+ doors.
 - No use of "occasionally" to describe working with capital partners, and
   no language implying Michael works with only a small number of
   partners.

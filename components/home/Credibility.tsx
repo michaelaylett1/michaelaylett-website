@@ -2,7 +2,7 @@ import Image from "next/image";
 import { propertyImages } from "@/lib/propertyImages";
 
 const STATS = [
-  { value: "91", label: "Doors Owned" },
+  { value: "100+", label: "Doors Owned" },
   { value: "3+", label: "Markets" },
   { value: "Long-Term", label: "Owner / Operator" },
   { value: "Conservative", label: "Underwriting Standard" },
@@ -64,7 +64,7 @@ export default function Credibility() {
                   Long-Term Ownership
                 </p>
                 <h2 className="font-display font-medium text-bone leading-[1.1] text-4xl sm:text-5xl md:text-[3.4rem]">
-                  91 doors owned and professionally managed.
+                  100+ doors owned and professionally managed.
                 </h2>
                 <p className="mt-8 text-slate text-lg leading-relaxed">
                   Every property I acquire is intended to be owned and
