@@ -13,7 +13,7 @@
  * means a future formula change only has to happen in one function.
  *
  * Fixed, non-editable amounts:
- *   - (Maintenance is $80 per bedroom per month, editable override)
+ *   - (Maintenance: editable rate per room, default $70 per month)
  *   - Utilities: $80 per bedroom per month
  *   - Reserves: $10,000, an estimate set aside for the property
  *
@@ -185,7 +185,7 @@ import {
 // now editable defaults tracked in component state instead (see
 // PERCENT_DEFAULTS and MAINTENANCE_EXPENSE_DEFAULTS below).
 // ---------------------------------------------------------------------
-const MAINTENANCE_PER_BEDROOM = 80;
+const MAINTENANCE_PER_BEDROOM = 70;
 const UTILITIES_PER_BEDROOM = 80;
 const HOLDING_MONTHS = 3;
 
@@ -5770,10 +5770,10 @@ export default function SharedHousingCalculator() {
   const [holdingCostsOverride, setHoldingCostsOverride] = useState<number | null>(null);
   const [holdingCostsDraft, setHoldingCostsDraft] = useState(formatCents(0));
 
-  // Maintenance Cost Per Room: editable monthly rate (default $80).
+  // Maintenance Cost Per Room: editable monthly rate (default $70).
   // Total Monthly Maintenance = Total Bedrooms x this rate, always
   // calculated. The rate is unaffected by bedroom-count changes and only
-  // returns to $80 when the whole calculator is reset.
+  // returns to $70 when the whole calculator is reset.
   const [maintenancePerRoom, setMaintenancePerRoom] = useState(MAINTENANCE_PER_BEDROOM);
   const [maintenanceDraft, setMaintenanceDraft] = useState(MAINTENANCE_PER_BEDROOM.toFixed(2));
 
@@ -8304,7 +8304,7 @@ export default function SharedHousingCalculator() {
       effectiveRentAfterVacancy * (percent.propertyManagementPct / 100)
     );
     // Monthly Maintenance = Total Bedrooms x Maintenance Cost Per Room
-    // (editable, default $80; kept when the bedroom count changes).
+    // (editable, default $70; kept when the bedroom count changes).
     const maintenanceMonthly = round2(totalBedrooms * maintenancePerRoom);
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
     // Cleaning, Lawn Care, and Pest Control are three separate, fully
