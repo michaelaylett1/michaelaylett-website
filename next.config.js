@@ -1,6 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  webpack: (config) => {
+    // pdfjs-dist optionally requires the native 'canvas' package in Node;
+    // the browser build never uses it.
+    config.resolve.alias.canvas = false;
+    return config;
+  },
   async redirects() {
     return [
       {

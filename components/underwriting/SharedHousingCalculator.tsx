@@ -145,6 +145,12 @@ import {
   MAJOR_SYSTEM_KEYS,
 } from "@/lib/majorSystems";
 import {
+  MortgageStatementSection,
+  MortgageStatementPrintSection,
+  useMortgageStatement,
+} from "@/components/underwriting/MortgageStatement";
+import { waitForMortgagePagesReady } from "@/lib/mortgageStatement";
+import {
   loadGoogleStreetViewLibrary,
   loadGooglePlacesLibrary,
   geocodeInBrowser,
@@ -180,7 +186,7 @@ import {
 } from "@/lib/amortization";
 
 // ---------------------------------------------------------------------
-// Fixed, non-editable amounts. Platform fees, cleaning, lawn care, pest
+// Fixed, non-editable amounts. Platform fees, cleaning, landscaping, pest
 // control, and the closing cost percentage used to be here too, but are
 // now editable defaults tracked in component state instead (see
 // PERCENT_DEFAULTS and MAINTENANCE_EXPENSE_DEFAULTS below).
@@ -2414,8 +2420,8 @@ const APPRECIATION_PERCENT_KEYS = new Set<PercentKey>([
   "traditionalAppreciationPct",
 ]);
 
-// Cleaning, Lawn Care, and Pest Control replace the old combined
-// "Cleaning and Lawn Care" field: three separate, fully editable
+// Cleaning, Landscaping, and Pest Control replace the old combined
+// "Cleaning and Landscaping" field: three separate, fully editable
 // monthly expenses. Each one's default automatically follows the state
 // identified from the property address (see
 // lib/operatingExpenseDefaults.ts, the single authoritative
@@ -5736,7 +5742,7 @@ export default function SharedHousingCalculator() {
     formatCents(BEDROOM_DEFAULTS.weeklyEnsuiteRent)
   );
 
-  // Cleaning, Lawn Care, and Pest Control: three separate, fully
+  // Cleaning, Landscaping, and Pest Control: three separate, fully
   // editable monthly expenses (each with its own default), following
   // the same keyed draft-string + parsed-number pattern used for
   // capital and financing fields elsewhere in this calculator.
@@ -6044,7 +6050,7 @@ export default function SharedHousingCalculator() {
   // The state abbreviation (administrative_area_level_1 short_name)
   // from the same geocoding lookup used for the County suggestion above
   // -- reused here rather than geocoding a second time -- drives the
-  // state-based Cleaning/Lawn Care/Pest Control defaults below. Set
+  // state-based Cleaning/Landscaping/Pest Control defaults below. Set
   // whenever the lookup returns a state, even on an otherwise
   // "notFound" county outcome (some addresses only resolve to
   // state-level accuracy); cleared on every other outcome (no result,
@@ -6157,7 +6163,7 @@ export default function SharedHousingCalculator() {
     void runCountyLookup(trimmed);
   }
 
-  // Keeps Cleaning/Lawn Care/Pest Control in sync with the state
+  // Keeps Cleaning/Landscaping/Pest Control in sync with the state
   // identified from the property address (lib/operatingExpenseDefaults.
   // ts), for every field that is still following its automatic default.
   // Fires whenever addressStateAbbreviation changes -- i.e. whenever a
@@ -6244,6 +6250,9 @@ export default function SharedHousingCalculator() {
   // so it never disappears when the selected structure changes.
   const [padSplitScreenshot, setPadSplitScreenshot] = useState<FloorPlanFile | null>(null);
   const [padSplitScreenshotError, setPadSplitScreenshotError] = useState("");
+  // Optional Mortgage Statement (rendered page images; local only, not a calculation input).
+  const mortgageStatement = useMortgageStatement();
+  const mortgageStatementRemove = mortgageStatement.remove;
   const [processingPadSplitScreenshot, setProcessingPadSplitScreenshot] = useState(false);
   const [isDraggingPadSplit, setIsDraggingPadSplit] = useState(false);
   const padSplitInputRef = useRef<HTMLInputElement>(null);
@@ -7080,6 +7089,7 @@ export default function SharedHousingCalculator() {
       return null;
     });
     setPadSplitScreenshotError("");
+    mortgageStatementRemove();
   }
 
   // Drag-and-drop for the PadSplit Rental Data upload: a single-file
@@ -7272,6 +7282,7 @@ export default function SharedHousingCalculator() {
       return null;
     });
     setPadSplitScreenshotError("");
+    mortgageStatementRemove();
     // Scope of Work: clears every line item and restores the standard
     // itemized-by-default Renovation Cost behavior (Yes). Renovation
     // Cost itself is already reset to its $0 default above via
@@ -8307,7 +8318,7 @@ export default function SharedHousingCalculator() {
     // (editable, default $70; kept when the bedroom count changes).
     const maintenanceMonthly = round2(totalBedrooms * maintenancePerRoom);
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
-    // Cleaning, Lawn Care, and Pest Control are three separate, fully
+    // Cleaning, Landscaping, and Pest Control are three separate, fully
     // editable monthly expenses (each defaulting to its own starting
     // value), not a combined or fixed assumption.
     const cleaningMonthly = maintenanceExpenses.cleaning;
@@ -9087,7 +9098,7 @@ export default function SharedHousingCalculator() {
           { label: "Maintenance", value: formatCents(results.maintenanceMonthly) },
           { label: "Utilities", value: formatCents(results.utilitiesMonthly) },
           { label: "Cleaning", value: formatCents(results.cleaningMonthly) },
-          { label: "Lawn Care", value: formatCents(results.lawnCareMonthly) },
+          { label: "Landscaping", value: formatCents(results.lawnCareMonthly) },
           { label: "Pest Control", value: formatCents(results.pestControlMonthly) },
           {
             label: "Total Monthly Expenses",
@@ -9593,7 +9604,7 @@ export default function SharedHousingCalculator() {
         { label: "Platform Fee Percentage", value: formatPercent(percent.platformFeePct) },
         { label: "Local Property Manager", value: formatPercent(percent.propertyManagementPct) },
         { label: "Cleaning", value: formatCents(maintenanceExpenses.cleaning) },
-        { label: "Lawn Care", value: formatCents(maintenanceExpenses.lawnCare) },
+        { label: "Landscaping", value: formatCents(maintenanceExpenses.lawnCare) },
         { label: "Pest Control", value: formatCents(maintenanceExpenses.pestControl) },
         {
           label: "Holding Costs Source",
@@ -9694,7 +9705,7 @@ export default function SharedHousingCalculator() {
       { label: "Maintenance", value: results.maintenanceMonthly, color: "#C08A3E" },
       { label: "Utilities", value: results.utilitiesMonthly, color: "#C08A3E" },
       { label: "Cleaning", value: results.cleaningMonthly, color: "#C08A3E" },
-      { label: "Lawn Care", value: results.lawnCareMonthly, color: "#C08A3E" },
+      { label: "Landscaping", value: results.lawnCareMonthly, color: "#C08A3E" },
       { label: "Pest Control", value: results.pestControlMonthly, color: "#C08A3E" },
       { label: "Estimated Monthly Cash Flow", value: results.monthlyCashFlow, color: "#1E8E3E" },
     ],
@@ -10144,6 +10155,9 @@ export default function SharedHousingCalculator() {
         annualCashFlow: results.annualCashFlow,
         cashOnCashReturn: results.cashOnCashReturn,
 
+        mortgageStatementFilename: mortgageStatement.doc
+          ? `${mortgageStatement.doc.name} (${mortgageStatement.doc.pages.length} ${mortgageStatement.doc.pages.length === 1 ? "page" : "pages"})`
+          : null,
         scopeOfWorkItems: scopeOfWorkItems.map((item) => ({ name: item.name, cost: item.cost })),
         scopeOfWorkTotal,
         useItemizedScopeOfWork,
@@ -10194,7 +10208,10 @@ export default function SharedHousingCalculator() {
   // off of document.title, since browsers that use this behavior already
   // append it automatically -- including it here would risk a
   // "....pdf.pdf" filename in those browsers.
-  function printSummary() {
+  async function printSummary() {
+    // Make sure every Mortgage Statement page image is decoded before the
+    // browser snapshots the page, so no blank pages are printed.
+    await waitForMortgagePagesReady();
     const originalTitle = document.title;
     const addressPart = propertyAddress.trim();
     const rawFileTitle = addressPart
@@ -12838,6 +12855,11 @@ export default function SharedHousingCalculator() {
           </div>
         </div>
 
+        {/* Mortgage Statement: optional upload, available for every
+            financing structure; pages are included in the printable
+            report. Documentation only -- no calculation reads it. */}
+        <MortgageStatementSection api={mortgageStatement} />
+
         {/* ---------------------------------------------------------- */}
         {/* Section 3: Operating expenses                               */}
         {/* ---------------------------------------------------------- */}
@@ -12878,11 +12900,11 @@ export default function SharedHousingCalculator() {
             />
             <CurrencyField
               id="lawnCare"
-              label="Lawn Care"
+              label="Landscaping"
               draft={maintenanceExpensesDraft.lawnCare}
               onChange={(raw) => handleMaintenanceExpenseChange("lawnCare", raw)}
               onBlur={() => handleMaintenanceExpenseBlur("lawnCare")}
-              helperText="Estimated monthly lawn care expense."
+              helperText="Estimated monthly landscaping expense."
             />
             <CurrencyField
               id="pestControl"
@@ -12977,7 +12999,7 @@ export default function SharedHousingCalculator() {
                 <span className="font-display">{formatCents(results.cleaningMonthly)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
-                <span className="text-ink/70">Lawn Care</span>
+                <span className="text-ink/70">Landscaping</span>
                 <span className="font-display">{formatCents(results.lawnCareMonthly)}</span>
               </div>
               <div className="flex items-center justify-between py-3">
@@ -14790,7 +14812,7 @@ export default function SharedHousingCalculator() {
                 { label: "Maintenance", value: results.maintenanceMonthly },
                 { label: "Utilities", value: results.utilitiesMonthly },
                 { label: "Cleaning", value: results.cleaningMonthly },
-                { label: "Lawn Care", value: results.lawnCareMonthly },
+                { label: "Landscaping", value: results.lawnCareMonthly },
                 { label: "Pest Control", value: results.pestControlMonthly },
               ].map((row, i) => (
                 <div
@@ -15170,6 +15192,10 @@ export default function SharedHousingCalculator() {
               )}
             </div>
           )}
+
+          {/* Mortgage Statement (only when uploaded): each statement page on
+              its own printed page, near the end of the report. */}
+          <MortgageStatementPrintSection doc={mortgageStatement.doc} />
 
           {/* Capital Partner call-to-action. Sits at the very bottom of
               every printed/PDF report, after all underwriting sections

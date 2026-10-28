@@ -46,7 +46,7 @@ const STATE_DISPLAY_NAMES: Record<string, string> = {
   NC: "North Carolina",
 };
 
-/** Returns the recommended monthly Cleaning/Lawn Care/Pest Control
+/** Returns the recommended monthly Cleaning/Landscaping/Pest Control
  * defaults for a given state abbreviation. Falls back to the "all
  * other states" defaults for an unrecognized code, an empty string, or
  * `undefined`/`null` (no state identified yet). Case-insensitive. */
@@ -59,7 +59,7 @@ export function getOperatingDefaultsForState(stateCode: string | null | undefine
 }
 
 /** A short, human-readable label describing where the current
- * Cleaning/Lawn Care/Pest Control values came from, for display next
+ * Cleaning/Landscaping/Pest Control values came from, for display next
  * to the fields and in the Excel export (mirrors the Property Tax
  * section's "County Default" / "Manual Override" provenance note). */
 export function operatingDefaultsSourceLabel(

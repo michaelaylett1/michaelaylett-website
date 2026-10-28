@@ -20,7 +20,7 @@ import { MAJOR_CAPITAL_EXPENSE_WARNING } from "./majorSystems";
  *    cells, green result cells, accounting-style currency format,
  *    column widths), an "Inputs" sheet the main sheet's formulas
  *    reference (so Annual Utilities / Insurance / Property Taxes /
- *    Cleaning-Lawn-Pest Control are genuine Excel formulas rather than
+ *    Cleaning-Landscaping-Pest Control are genuine Excel formulas rather than
  *    pasted-in numbers), and a "Financing Details" sheet with the full
  *    itemized breakdown. The reference workbook's broken formulas (a
  *    literal #REF! in the Equity cell, Monthly Cash Flow dividing by
@@ -183,7 +183,7 @@ export interface UnderwritingExportData {
   cleaningMonthly: number;
   lawnCareMonthly: number;
   pestControlMonthly: number;
-  // State-based operating expense defaults (Cleaning/Lawn Care/Pest
+  // State-based operating expense defaults (Cleaning/Landscaping/Pest
   // Control): a short provenance note, e.g. "Recommended monthly
   // defaults for Texas" or "Custom values entered" -- computed by
   // lib/operatingExpenseDefaults.ts, the same shared module the website
@@ -376,6 +376,8 @@ export interface UnderwritingExportData {
   cashOnCashReturn: number | null;
 
   // Scope of Work
+  /** Filename (and page count) of the Mortgage Statement attached to the printable report, or null if none. Only noted in the workbook; the file itself is never embedded. */
+  mortgageStatementFilename?: string | null;
   scopeOfWorkItems: ExportScopeOfWorkItem[];
   scopeOfWorkTotal: number;
   useItemizedScopeOfWork: boolean;
@@ -1778,7 +1780,7 @@ function underwritingE3IsPiti(data: UnderwritingExportData): boolean {
 // ---------------------------------------------------------------------
 // "Inputs" worksheet -- backs the genuine Excel formulas in the main
 // Underwriting sheet's Annual Maintenance / Annual Utilities / Annual
-// Insurance / Annual Property Taxes / Annual Cleaning-Lawn-Pest cells
+// Insurance / Annual Property Taxes / Annual Cleaning-Landscaping-Pest cells
 // with clearly labeled, traceable source values (matching the
 // website's underwriting inputs exactly), so clicking any of those
 // cells shows a real calculation or a direct cell link in the formula
@@ -1826,7 +1828,7 @@ function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): Inp
   const note = ws.getCell(row, 2);
   ws.mergeCells(row, 2, row, 3);
   note.value =
-    'Source values referenced by formulas on the "Underwriting" sheet (Annual Maintenance, Annual Utilities, Annual Insurance, Annual Property Taxes, Annual Cleaning / Lawn / Pest Control). Matches the website\'s underwriting inputs exactly.';
+    'Source values referenced by formulas on the "Underwriting" sheet (Annual Maintenance, Annual Utilities, Annual Insurance, Annual Property Taxes, Annual Cleaning / Landscaping / Pest Control). Matches the website\'s underwriting inputs exactly.';
   note.font = { italic: true, size: 9, name: "Calibri" };
   note.alignment = { wrapText: true, vertical: "top" };
   ws.getRow(row).height = 30;
@@ -1848,7 +1850,7 @@ function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): Inp
   writeInput("utilityCostPerBedroom", "Utility Cost per Bedroom (Monthly)", UTILITIES_PER_BEDROOM_MONTHLY, FMT_CURRENCY);
   writeInput("monthlyMaintenance", "Monthly Maintenance", money(data.maintenanceMonthly), FMT_CURRENCY);
   writeInput("monthlyCleaning", "Monthly Cleaning", money(data.cleaningMonthly), FMT_CURRENCY);
-  writeInput("monthlyLawnCare", "Monthly Lawn Care", money(data.lawnCareMonthly), FMT_CURRENCY);
+  writeInput("monthlyLawnCare", "Monthly Landscaping", money(data.lawnCareMonthly), FMT_CURRENCY);
   writeInput("monthlyPestControl", "Monthly Pest Control", money(data.pestControlMonthly), FMT_CURRENCY);
   writeInput("annualInsurance", "Annual Property Insurance", money(data.annualPropertyInsurance), FMT_CURRENCY);
   writeInput("annualPropertyTaxes", "Annual Property Taxes", money(data.annualPropertyTaxes), FMT_CURRENCY);
@@ -1856,6 +1858,19 @@ function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): Inp
   writeInput("weeklySharedBathRent", "Weekly Shared-Bath Rent", money(data.weeklySharedBathRent), FMT_CURRENCY);
   writeInput("ensuiteBedrooms", "Ensuite Bedrooms", data.ensuiteBedrooms, FMT_WHOLE);
   writeInput("weeklyEnsuiteRent", "Weekly Ensuite Rent", money(data.weeklyEnsuiteRent), FMT_CURRENCY);
+
+  // Documentation note only (not referenced by any formula).
+  row++;
+  const msLabel = ws.getCell(row, 2);
+  msLabel.value = "Mortgage Statement";
+  fmtLabel(msLabel, { bold: false });
+  const msValue = ws.getCell(row, 3);
+  msValue.value = data.mortgageStatementFilename
+    ? `Attached to printable report: ${data.mortgageStatementFilename}`
+    : "None attached";
+  msValue.font = { size: 10, italic: true, name: "Calibri" };
+  msValue.alignment = { horizontal: "right", wrapText: true };
+  ws.getRow(row).height = data.mortgageStatementFilename ? 30 : 15;
 
   return addr;
 }
@@ -2173,7 +2188,7 @@ function buildUnderwritingSheet(
   ws.getCell("C11").value = { formula: `'Inputs'!${inputs.annualPropertyTaxes}` } as ExcelJS.CellFormulaValue;
   fmtValue(ws.getCell("C11"), TEMPLATE_CURRENCY_FMT);
 
-  // ---- Rows 12-14: Annual Cleaning / Annual Lawn Care / Annual Pest
+  // ---- Rows 12-14: Annual Cleaning / Annual Landscaping / Annual Pest
   // Control, each a genuine formula referencing its own "Inputs" sheet
   // cell rather than one combined, pasted-together row.
   ws.getCell("B12").value = "Annual Cleaning";
@@ -2182,7 +2197,7 @@ function buildUnderwritingSheet(
   ws.getCell("C12").value = { formula: `'Inputs'!${inputs.monthlyCleaning}*12` } as ExcelJS.CellFormulaValue;
   fmtValue(ws.getCell("C12"), TEMPLATE_CURRENCY_FMT);
 
-  ws.getCell("B13").value = "Annual Lawn Care";
+  ws.getCell("B13").value = "Annual Landscaping";
   fmtLabel(ws.getCell("B13"));
   leftBorder("B13");
   ws.getCell("C13").value = { formula: `'Inputs'!${inputs.monthlyLawnCare}*12` } as ExcelJS.CellFormulaValue;
@@ -2239,7 +2254,7 @@ function buildUnderwritingSheet(
   // when E3 is already PITI, C10/C11 are already baked into the Annual
   // Debt Payments total (C17) and would otherwise be double-counted.
   // C7+C8 (Property Management + Platform Fees, now two cells instead
-  // of the old combined C7) and C12+C13+C14 (Cleaning + Lawn Care +
+  // of the old combined C7) and C12+C13+C14 (Cleaning + Landscaping +
   // Pest Control) are both included either way.
   ws.getCell("B19").value = "Monthly Operating Cost";
   fmtLabel(ws.getCell("B19"));
@@ -2628,7 +2643,7 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
     { label: "Monthly Property Management Fee", value: money(data.propertyManagementFee), format: FMT_CURRENCY },
     { label: "Monthly Maintenance", value: money(data.maintenanceMonthly), format: FMT_CURRENCY },
     { label: "Monthly Utilities", value: money(data.utilitiesMonthly), format: FMT_CURRENCY },
-    // Monthly Cleaning/Lawn Care/Pest Control land on rows 19/20/21
+    // Monthly Cleaning/Landscaping/Pest Control land on rows 19/20/21
     // respectively (row 3 is the first data row in this fixed-position
     // array, +1 per entry, no gaps) -- the three "Annual ..." formula
     // rows appended after Annual Cash Flow below reference them
@@ -2642,7 +2657,7 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
     // cross-sheet reference elsewhere in this file into "Operating
     // Assumptions"!C24) shift.
     { label: "Monthly Cleaning", value: money(data.cleaningMonthly), format: FMT_CURRENCY },
-    { label: "Monthly Lawn Care", value: money(data.lawnCareMonthly), format: FMT_CURRENCY },
+    { label: "Monthly Landscaping", value: money(data.lawnCareMonthly), format: FMT_CURRENCY },
     { label: "Monthly Pest Control", value: money(data.pestControlMonthly), format: FMT_CURRENCY },
     { label: data.housingPaymentLabel, value: money(data.monthlyHousingPayment), format: FMT_CURRENCY },
     { label: "Monthly Operating Cost", value: money(data.totalMonthlyOperatingExpenses), format: FMT_CURRENCY },
@@ -2655,7 +2670,7 @@ function operatingAssumptionsRows(data: UnderwritingExportData): KVRow[] {
     },
     { label: "Annual Cash Flow", formula: "C24*12", format: FMT_CURRENCY },
     { label: "Annual Cleaning", formula: "C19*12", format: FMT_CURRENCY },
-    { label: "Annual Lawn Care", formula: "C20*12", format: FMT_CURRENCY },
+    { label: "Annual Landscaping", formula: "C20*12", format: FMT_CURRENCY },
     { label: "Annual Pest Control", formula: "C21*12", format: FMT_CURRENCY },
     { label: "Operating Expense Defaults Source", value: data.operatingExpenseDefaultsSource },
   ];
