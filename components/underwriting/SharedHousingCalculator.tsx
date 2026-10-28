@@ -13,7 +13,7 @@
  * means a future formula change only has to happen in one function.
  *
  * Fixed, non-editable amounts:
- *   - Annual maintenance: $4,800 ($400/month)
+ *   - (Maintenance is $80 per bedroom per month, editable override)
  *   - Utilities: $80 per bedroom per month
  *   - Reserves: $10,000, an estimate set aside for the property
  *
@@ -185,7 +185,7 @@ import {
 // now editable defaults tracked in component state instead (see
 // PERCENT_DEFAULTS and MAINTENANCE_EXPENSE_DEFAULTS below).
 // ---------------------------------------------------------------------
-const MAINTENANCE_ANNUAL = 4800;
+const MAINTENANCE_PER_BEDROOM = 80;
 const UTILITIES_PER_BEDROOM = 80;
 const HOLDING_MONTHS = 3;
 
@@ -5770,6 +5770,13 @@ export default function SharedHousingCalculator() {
   const [holdingCostsOverride, setHoldingCostsOverride] = useState<number | null>(null);
   const [holdingCostsDraft, setHoldingCostsDraft] = useState(formatCents(0));
 
+  // Monthly Maintenance: automatic ($80 x total bedrooms) while
+  // `maintenanceOverride` is null; typing into the field sets it, and it
+  // is cleared again whenever the bedroom count changes (effect below)
+  // or the calculator is reset.
+  const [maintenanceOverride, setMaintenanceOverride] = useState<number | null>(null);
+  const [maintenanceDraft, setMaintenanceDraft] = useState("");
+
   const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   // Excel export: true only while the workbook (template fetch, for
@@ -6703,6 +6710,21 @@ export default function SharedHousingCalculator() {
       return clamped;
     });
   }
+  function handleMaintenanceChange(raw: string) {
+    setMaintenanceDraft(raw);
+    setMaintenanceOverride(parseTypedAmount(raw));
+  }
+  function handleMaintenanceBlur() {
+    setMaintenanceOverride((prev) => {
+      if (prev === null) return prev;
+      const clamped = round2(Math.max(0, prev));
+      setMaintenanceDraft(formatCents(clamped).replace(/^\$/, ""));
+      return clamped;
+    });
+  }
+  function resetMaintenanceToCalculated() {
+    setMaintenanceOverride(null);
+  }
   function resetHoldingCostsToCalculated() {
     setHoldingCostsOverride(null);
     setHoldingCostsDraft(formatCents(calculatedHoldingCosts));
@@ -7219,6 +7241,7 @@ export default function SharedHousingCalculator() {
     // field follow that calculation again instead of keeping a stale
     // manually entered amount.
     setHoldingCostsOverride(null);
+    setMaintenanceOverride(null);
     setHoldingCostsDraft(formatCents(0));
     // Property Address, Property Files, Video Walkthrough Link, Floor
     // Plan, and Financing Structure are all cleared on reset, same as
@@ -8195,6 +8218,12 @@ export default function SharedHousingCalculator() {
     [monthlyHousingPayment]
   );
 
+  // A bedroom-count change discards any manual Maintenance override so
+  // the $80-per-bedroom default is recalculated for the new count.
+  useEffect(() => {
+    setMaintenanceOverride(null);
+  }, [sharedBathBedrooms, ensuiteBedrooms]);
+
   const holdingCostsIsManual = holdingCostsOverride !== null;
   const effectiveHoldingCosts = holdingCostsIsManual ? holdingCostsOverride! : calculatedHoldingCosts;
 
@@ -8285,7 +8314,12 @@ export default function SharedHousingCalculator() {
     const propertyManagementFee = round2(
       effectiveRentAfterVacancy * (percent.propertyManagementPct / 100)
     );
-    const maintenanceMonthly = round2(MAINTENANCE_ANNUAL / 12);
+    // Monthly Maintenance = Total Bedrooms x $80 by default; a manual
+    // override (maintenanceOverride) wins until the bedroom count changes
+    // or the calculator is reset.
+    const maintenanceMonthly = maintenanceOverride !== null
+      ? round2(Math.max(0, maintenanceOverride))
+      : round2(totalBedrooms * MAINTENANCE_PER_BEDROOM);
     const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
     // Cleaning, Lawn Care, and Pest Control are three separate, fully
     // editable monthly expenses (each defaulting to its own starting
@@ -8513,6 +8547,7 @@ export default function SharedHousingCalculator() {
     financing,
     capital,
     percent,
+    maintenanceOverride,
     sharedBathBedrooms,
     weeklySharedBathRent,
     ensuiteBedrooms,
@@ -12916,10 +12951,38 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/70">
                   Maintenance{" "}
                   <span className="text-ink/40 text-xs">
-                    ({formatWhole(MAINTENANCE_ANNUAL)}/year)
+                    ({formatWhole(MAINTENANCE_PER_BEDROOM)}/bedroom)
                   </span>
+                  {maintenanceOverride !== null && (
+                    <>
+                      <span className="ml-2 inline-block eyebrow text-[10px] text-brass border border-brass/50 px-1.5 py-0.5 align-middle">
+                        Manual override
+                      </span>
+                      <button
+                        type="button"
+                        onClick={resetMaintenanceToCalculated}
+                        className="ml-2 text-xs text-brass underline decoration-brass/50 underline-offset-2 hover:text-brass-light transition-colors"
+                      >
+                        Reset
+                      </button>
+                    </>
+                  )}
                 </span>
-                <span className="font-display">{formatCents(results.maintenanceMonthly)}</span>
+                <span className="relative inline-block w-32">
+                  <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink/40" aria-hidden="true">
+                    $
+                  </span>
+                  <input
+                    id="maintenanceMonthly"
+                    aria-label="Monthly Maintenance"
+                    type="text"
+                    inputMode="decimal"
+                    value={maintenanceOverride !== null ? maintenanceDraft : formatCents(results.maintenanceMonthly).replace(/^\$/, "")}
+                    onChange={(e) => handleMaintenanceChange(e.target.value)}
+                    onBlur={handleMaintenanceBlur}
+                    className="font-display w-full bg-white border border-line-dark pl-5 pr-2 py-1 text-right text-ink outline-none focus:border-brass"
+                  />
+                </span>
               </div>
               <div className="flex items-center justify-between py-3">
                 <span className="text-ink/70">
