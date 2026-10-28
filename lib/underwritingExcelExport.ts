@@ -180,6 +180,8 @@ export interface UnderwritingExportData {
   propertyManagementFee: number;
   maintenanceMonthly: number;
   utilitiesMonthly: number;
+  /** Editable Utility Cost Per Room (monthly); defaults to $95 when omitted. */
+  utilityCostPerRoom?: number;
   cleaningMonthly: number;
   lawnCareMonthly: number;
   pestControlMonthly: number;
@@ -1807,7 +1809,7 @@ interface InputsSheetAddresses {
 // Inputs-sheet row for the same reason Annual Maintenance's fixed
 // $400/month assumption gets one below, rather than being buried
 // unlabeled inside a formula.
-const UTILITIES_PER_BEDROOM_MONTHLY = 80;
+const UTILITIES_PER_BEDROOM_MONTHLY = 95;
 
 function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): InputsSheetAddresses {
   const ws = wb.addWorksheet("Inputs", { views: [{ showGridLines: false }] });
@@ -1847,7 +1849,7 @@ function addInputsSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData): Inp
   };
 
   writeInput("totalBedrooms", "Total Bedrooms", data.totalBedrooms, FMT_WHOLE);
-  writeInput("utilityCostPerBedroom", "Utility Cost per Bedroom (Monthly)", UTILITIES_PER_BEDROOM_MONTHLY, FMT_CURRENCY);
+  writeInput("utilityCostPerBedroom", "Utility Cost per Bedroom (Monthly)", data.utilityCostPerRoom ?? UTILITIES_PER_BEDROOM_MONTHLY, FMT_CURRENCY);
   writeInput("monthlyMaintenance", "Monthly Maintenance", money(data.maintenanceMonthly), FMT_CURRENCY);
   writeInput("monthlyCleaning", "Monthly Cleaning", money(data.cleaningMonthly), FMT_CURRENCY);
   writeInput("monthlyLawnCare", "Monthly Landscaping", money(data.lawnCareMonthly), FMT_CURRENCY);

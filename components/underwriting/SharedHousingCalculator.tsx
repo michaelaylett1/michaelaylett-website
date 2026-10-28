@@ -14,7 +14,7 @@
  *
  * Fixed, non-editable amounts:
  *   - (Maintenance: editable rate per room, default $70 per month)
- *   - Utilities: $80 per bedroom per month
+ *   - Utilities: editable rate per bedroom, default $95 per month
  *   - Reserves: $10,000, an estimate set aside for the property
  *
  * Defaults that remain fully editable (the figure below is only the
@@ -192,7 +192,7 @@ import {
 // PERCENT_DEFAULTS and MAINTENANCE_EXPENSE_DEFAULTS below).
 // ---------------------------------------------------------------------
 const MAINTENANCE_PER_BEDROOM = 70;
-const UTILITIES_PER_BEDROOM = 80;
+const UTILITIES_PER_BEDROOM = 95; // default Utility Cost Per Room, monthly (editable)
 const HOLDING_MONTHS = 3;
 
 // Property Files: processed and stored entirely client-side (never
@@ -5783,6 +5783,13 @@ export default function SharedHousingCalculator() {
   const [maintenancePerRoom, setMaintenancePerRoom] = useState(MAINTENANCE_PER_BEDROOM);
   const [maintenanceDraft, setMaintenanceDraft] = useState(MAINTENANCE_PER_BEDROOM.toFixed(2));
 
+  // Utility Cost Per Room: editable monthly rate (default $95), same
+  // pattern as Maintenance Cost Per Room above. Monthly Utilities =
+  // Total Bedrooms x this rate; kept when the bedroom count changes and
+  // restored to the default only by Reset to Defaults.
+  const [utilityPerRoom, setUtilityPerRoom] = useState(UTILITIES_PER_BEDROOM);
+  const [utilityDraft, setUtilityDraft] = useState(UTILITIES_PER_BEDROOM.toFixed(2));
+
   const [breakdownOpen, setBreakdownOpen] = useState(false);
 
   // Excel export: true only while the workbook (template fetch, for
@@ -6719,6 +6726,15 @@ export default function SharedHousingCalculator() {
       return clamped;
     });
   }
+  function handleUtilityPerRoomChange(raw: string) {
+    setUtilityDraft(raw);
+    setUtilityPerRoom(parseTypedAmount(raw));
+  }
+  function handleUtilityPerRoomBlur() {
+    const clamped = round2(Math.max(0, utilityPerRoom));
+    setUtilityPerRoom(clamped);
+    setUtilityDraft(clamped.toFixed(2));
+  }
   function handleMaintenancePerRoomChange(raw: string) {
     setMaintenanceDraft(raw);
     setMaintenancePerRoom(parseTypedAmount(raw));
@@ -7246,6 +7262,8 @@ export default function SharedHousingCalculator() {
     // manually entered amount.
     setHoldingCostsOverride(null);
     setMaintenancePerRoom(MAINTENANCE_PER_BEDROOM);
+    setUtilityPerRoom(UTILITIES_PER_BEDROOM);
+    setUtilityDraft(UTILITIES_PER_BEDROOM.toFixed(2));
     setMaintenanceDraft(MAINTENANCE_PER_BEDROOM.toFixed(2));
     setHoldingCostsDraft(formatCents(0));
     // Property Address, Property Files, Video Walkthrough Link, Floor
@@ -8317,7 +8335,7 @@ export default function SharedHousingCalculator() {
     // Monthly Maintenance = Total Bedrooms x Maintenance Cost Per Room
     // (editable, default $70; kept when the bedroom count changes).
     const maintenanceMonthly = round2(totalBedrooms * maintenancePerRoom);
-    const utilitiesMonthly = round2(totalBedrooms * UTILITIES_PER_BEDROOM);
+    const utilitiesMonthly = round2(totalBedrooms * utilityPerRoom);
     // Cleaning, Landscaping, and Pest Control are three separate, fully
     // editable monthly expenses (each defaulting to its own starting
     // value), not a combined or fixed assumption.
@@ -8545,6 +8563,7 @@ export default function SharedHousingCalculator() {
     capital,
     percent,
     maintenancePerRoom,
+    utilityPerRoom,
     sharedBathBedrooms,
     weeklySharedBathRent,
     ensuiteBedrooms,
@@ -10029,6 +10048,7 @@ export default function SharedHousingCalculator() {
         propertyManagementFee: results.propertyManagementFee,
         maintenanceMonthly: results.maintenanceMonthly,
         utilitiesMonthly: results.utilitiesMonthly,
+        utilityCostPerRoom: utilityPerRoom,
         cleaningMonthly: results.cleaningMonthly,
         lawnCareMonthly: results.lawnCareMonthly,
         pestControlMonthly: results.pestControlMonthly,
@@ -12987,9 +13007,30 @@ export default function SharedHousingCalculator() {
               </div>
               <div className="flex items-center justify-between py-3">
                 <span className="text-ink/70">
+                  Utility Cost Per Room{" "}
+                  <span className="text-ink/40 text-xs">(monthly, editable)</span>
+                </span>
+                <span className="relative inline-block w-32">
+                  <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink/40" aria-hidden="true">
+                    $
+                  </span>
+                  <input
+                    id="utilityCostPerRoom"
+                    aria-label="Utility Cost Per Room"
+                    type="text"
+                    inputMode="decimal"
+                    value={utilityDraft}
+                    onChange={(e) => handleUtilityPerRoomChange(e.target.value)}
+                    onBlur={handleUtilityPerRoomBlur}
+                    className="font-display w-full bg-white border border-line-dark pl-5 pr-2 py-1 text-right text-ink outline-none focus:border-brass"
+                  />
+                </span>
+              </div>
+              <div className="flex items-center justify-between py-3">
+                <span className="text-ink/70">
                   Utilities{" "}
                   <span className="text-ink/40 text-xs">
-                    ({formatWhole(UTILITIES_PER_BEDROOM)}/bedroom)
+                    ({results.totalBedrooms} bedrooms x {formatCents(utilityPerRoom)})
                   </span>
                 </span>
                 <span className="font-display">{formatCents(results.utilitiesMonthly)}</span>
