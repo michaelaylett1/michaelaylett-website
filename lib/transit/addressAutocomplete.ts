@@ -43,7 +43,7 @@ export function buildAutocompleteRequest(
     input,
     sessionToken,
     includedRegionCodes: ["us"],
-    includedPrimaryTypes: ["street_address"],
+    includedPrimaryTypes: ["street_address", "premise", "subpremise"],
     region: "us",
   };
 }

@@ -957,3 +957,16 @@ logic behaves correctly when called directly with realistic requests.
 Whether email actually delivers and files actually upload in your
 specific Vercel + Resend accounts depends on the manual setup above,
 which only you can complete and verify.
+
+## Google Maps troubleshooting (Underwriting page)
+
+Open `https://<your-domain>/api/maps/diagnostics?pw=<underwriting password>` (add `&address=...` to test another address). It calls every Google API the site uses with the same environment variables as production and reports, per API, whether it worked and Google's own reason if not (API not enabled, key restricted, referrer blocked, billing, quota). It never prints key values.
+
+Two keys are involved:
+
+| Variable | Used by | Google APIs it needs |
+| --- | --- | --- |
+| `NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY` (browser, inlined at build time) | Address autocomplete, interactive Street View, embedded map, browser geocoding fallback | Maps JavaScript API, Places API (New), Maps Embed API. Application restriction: HTTP referrers `https://michaelaylett.com/*`, `https://www.michaelaylett.com/*` (+ your Vercel preview domain if used). |
+| `GOOGLE_MAPS_API_KEY` (server only, never `NEXT_PUBLIC_`) | Geocoding, county/state, bus-stop lookup, walking routes, printable Street View/map, server autocomplete fallback | Geocoding API, Places API (New) and/or Places API, Routes API and/or Directions API, Street View Static API, Maps Static API. Application restriction: none (or Vercel IPs); API restriction: the list above. |
+
+Both keys' projects must have billing enabled. After changing a `NEXT_PUBLIC_` variable you must redeploy (it is baked in at build time).

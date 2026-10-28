@@ -71,17 +71,33 @@ const STREET_VIEW_LOG_PREFIX = "[PropertyStreetView]";
 // replaced at injection time with the real API key + version.
 const BOOTSTRAP_SNIPPET_TEMPLATE = `(g=>{var h,a,k,p="The Google Maps JavaScript API",c="google",l="importLibrary",q="__ib__",m=document,b=window;b=b[c]||(b[c]={});var d=b.maps||(b.maps={}),r=new Set,e=new URLSearchParams,u=()=>h||(h=new Promise(async(f,n)=>{await (a=m.createElement("script"));e.set("libraries",[...r]+"");for(k in g)e.set(k.replace(/[A-Z]/g,t=>"_"+t[0].toLowerCase()),g[k]);e.set("callback",c+".maps."+q);a.src="https://maps."+c+"apis.com/maps/api/js?"+e;d[q]=f;a.onerror=()=>h=n(Error(p+" could not load."));a.nonce=m.querySelector("script[nonce]")?.nonce||"";m.head.append(a)}));d[l]?console.warn(p+" only loads once. Ignoring:",g):d[l]=(f,...n)=>r.add(f)&&u().then(()=>d[l](f,...n))})(GMAPS_BOOTSTRAP_OPTIONS);`;
 
+/** Name of the window event dispatched when Google's gm_authFailure hook
+ * fires, so any component (autocomplete, Street View) can react to an
+ * authorization failure that the Maps JS API only reports through this
+ * global callback (never through a rejected Promise). */
+export const GOOGLE_MAPS_AUTH_FAILURE_EVENT = "google-maps-auth-failure";
+
+let authFailureSeen = false;
+/** True once Google has reported an API-key/authorization failure for
+ * this page load. */
+export function hasGoogleMapsAuthFailed(): boolean {
+  return authFailureSeen;
+}
+
 function installAuthFailureDiagnostics() {
   if (window.gm_authFailure) return; // don't clobber a handler the host page already defined
   window.gm_authFailure = () => {
+    authFailureSeen = true;
     console.error(
       "[GoogleMaps] gm_authFailure fired -- the Maps JavaScript API rejected this page's API key/domain " +
         "combination. Common causes: the key's HTTP referrer restrictions do not include this exact hostname " +
         "(check for http vs https, and www vs non-www), the Maps JavaScript API is not enabled for this key's " +
         "Google Cloud project, billing is not enabled on that project, or the key itself is invalid/deleted. " +
         "Look for a more specific error name in the console just above this message, e.g. " +
-        "RefererNotAllowedMapError, ApiNotActivatedMapError, InvalidKeyMapError, or BillingNotEnabledMapError."
+        "RefererNotAllowedMapError, ApiNotActivatedMapError, InvalidKeyMapError, or BillingNotEnabledMapError. " +
+        "Open /api/maps/diagnostics?pw=<password> on this site for a full server-side check."
     );
+    window.dispatchEvent(new CustomEvent(GOOGLE_MAPS_AUTH_FAILURE_EVENT));
   };
 }
 
@@ -233,4 +249,49 @@ export function loadGoogleStreetViewLibrary(apiKey: string): Promise<GoogleStree
       streetViewLoadPromise = value;
     }
   );
+}
+
+/** Minimal shape of google.maps.Geocoder's result used for the browser-side fallback. */
+interface BrowserGeocoderResult {
+  geometry: { location: { lat(): number; lng(): number } };
+  formatted_address: string;
+  address_components?: Array<{ long_name: string; short_name: string; types: string[] }>;
+}
+interface BrowserGeocodingLibrary {
+  Geocoder: new () => { geocode(req: { address: string }): Promise<{ results: BrowserGeocoderResult[] }> };
+}
+
+let geocodingLoadPromise: Promise<BrowserGeocodingLibrary> | null = null;
+
+/**
+ * Browser-side geocoding (Maps JavaScript API "geocoding" library, using
+ * the public key). Used ONLY as a fallback when the server-side
+ * /api/maps/geocode route fails, so Street View (which needs just the
+ * property's coordinates) can still work if, for example, the private
+ * server key is missing or restricted but the public key is fine.
+ */
+export async function geocodeInBrowser(
+  apiKey: string,
+  address: string
+): Promise<{ lat: number; lng: number; formattedAddress: string; stateAbbreviation: string | null; county: string | null }> {
+  const lib = await loadGoogleMapsLibrary<BrowserGeocodingLibrary>(
+    apiKey,
+    "geocoding",
+    "[BrowserGeocoder]",
+    () => geocodingLoadPromise,
+    (value) => {
+      geocodingLoadPromise = value;
+    }
+  );
+  const { results } = await new lib.Geocoder().geocode({ address });
+  const first = results?.[0];
+  if (!first) throw Object.assign(new Error("ZERO_RESULTS"), { code: "ZERO_RESULTS" });
+  const comps = first.address_components || [];
+  return {
+    lat: first.geometry.location.lat(),
+    lng: first.geometry.location.lng(),
+    formattedAddress: first.formatted_address,
+    stateAbbreviation: comps.find((c) => c.types.includes("administrative_area_level_1"))?.short_name || null,
+    county: comps.find((c) => c.types.includes("administrative_area_level_2"))?.long_name || null,
+  };
 }

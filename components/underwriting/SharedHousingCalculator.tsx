@@ -144,7 +144,20 @@ import {
   type MajorSystemsReserveSummary,
   MAJOR_SYSTEM_KEYS,
 } from "@/lib/majorSystems";
-import { loadGoogleStreetViewLibrary, loadGooglePlacesLibrary } from "@/lib/transit/googleMapsLoader";
+import {
+  loadGoogleStreetViewLibrary,
+  loadGooglePlacesLibrary,
+  geocodeInBrowser,
+  hasGoogleMapsAuthFailed,
+  GOOGLE_MAPS_AUTH_FAILURE_EVENT,
+} from "@/lib/transit/googleMapsLoader";
+import {
+  classifyGoogleFailure,
+  describeGoogleFailure,
+  sanitizeGoogleDetail,
+  isConfigurationFailure,
+  type GoogleFailureKind,
+} from "@/lib/transit/googleErrors";
 import type { GoogleAutocompleteSessionToken, GoogleAutocompleteSuggestion } from "@/lib/transit/googlePlacesTypes";
 import type { StreetViewPanorama, StreetViewServiceError } from "@/lib/transit/googleStreetViewTypes";
 import { computeHeadingDegrees, haversineMetersLatLng } from "@/lib/transit/streetViewGeo";
@@ -3870,6 +3883,13 @@ function PropertyAddressAutocomplete({
   // below) so a broken deployment is diagnosable rather than silently
   // showing nothing.
   const [loadError, setLoadError] = useState(false);
+  // Specific, non-sensitive reason for the failure (see googleErrors.ts),
+  // so the message below can say *why* instead of one generic sentence.
+  const [loadErrorKind, setLoadErrorKind] = useState<GoogleFailureKind>("unknown");
+  // Once the browser-side Places path has failed, later keystrokes go
+  // straight to the server-side fallback instead of retrying it.
+  const useServerFallbackRef = useRef(false);
+  const serverSessionTokenRef = useRef<string>("");
 
   const sessionTokenRef = useRef<GoogleAutocompleteSessionToken | null>(null);
   // Bumped on every new fetch and every time the input drops below the
@@ -3904,13 +3924,78 @@ function PropertyAddressAutocomplete({
     };
   }, []);
 
+  // Server-side fallback: POST /api/maps/autocomplete (private key,
+  // Places API (New)). Returns suggestion texts in the same shape the
+  // dropdown already renders.
+  async function fetchSuggestionsFromServer(query: string): Promise<GoogleAutocompleteSuggestion[]> {
+    if (!serverSessionTokenRef.current) {
+      serverSessionTokenRef.current =
+        typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
+    }
+    const res = await fetch("/api/maps/autocomplete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input: query, sessionToken: serverSessionTokenRef.current }),
+    });
+    const data = (await res.json()) as
+      | { status: "ok"; suggestions: Array<{ text: string; placeId: string }> }
+      | { status: "error"; kind: GoogleFailureKind; detail?: string };
+    if (data.status !== "ok") {
+      const err = new Error(`server autocomplete failed: ${data.kind}${data.detail ? ` (${data.detail})` : ""}`);
+      (err as Error & { kind?: GoogleFailureKind }).kind = data.kind;
+      throw err;
+    }
+    // Wrap as minimal prediction objects (no toPlace needed: the display
+    // text is already a complete address and is geocoded server-side).
+    return data.suggestions.map((sg) => ({
+      placePrediction: {
+        text: { toString: () => sg.text },
+        toPlace: () => ({
+          formattedAddress: sg.text,
+          fetchFields: async () => ({ place: { formattedAddress: sg.text } as never }),
+        }),
+      },
+    })) as unknown as GoogleAutocompleteSuggestion[];
+  }
+
   function fetchSuggestions(query: string) {
     const embedApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
-    if (!embedApiKey) {
-      setNotConfigured(true);
+    const seq = ++requestSeqRef.current;
+
+    const applyResults = (results: GoogleAutocompleteSuggestion[]) => {
+      if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return; // superseded by a newer keystroke
+      setNotConfigured(false);
+      setLoadError(false);
+      setSuggestions(results);
+      setOpen(results.length > 0);
+      setActiveIndex(-1);
+    };
+
+    const runServerFallback = (browserKind: GoogleFailureKind | null) => {
+      useServerFallbackRef.current = true;
+      fetchSuggestionsFromServer(query)
+        .then(applyResults)
+        .catch((err: Error & { kind?: GoogleFailureKind }) => {
+          if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return;
+          const kind = err.kind ?? browserKind ?? "unknown";
+          console.error(`[PropertyAddressAutocomplete] Server fallback also failed for "${query}": ${sanitizeGoogleDetail(err)}`);
+          if (kind === "not_configured" && !embedApiKey) {
+            setNotConfigured(true);
+            return;
+          }
+          setSuggestions([]);
+          setLoadErrorKind(browserKind && browserKind !== "unknown" ? browserKind : kind);
+          setLoadError(true);
+          closeSuggestions();
+        });
+    };
+
+    if (!embedApiKey || useServerFallbackRef.current) {
+      // No public key (or the browser path already failed): server only.
+      runServerFallback(null);
       return;
     }
-    const seq = ++requestSeqRef.current;
+
     loadGooglePlacesLibrary(embedApiKey)
       .then(({ AutocompleteSuggestion, AutocompleteSessionToken }) => {
         // One session token covers the whole run of keystrokes from
@@ -3924,24 +4009,19 @@ function PropertyAddressAutocomplete({
           buildAutocompleteRequest(query, sessionTokenRef.current)
         );
       })
-      .then(({ suggestions: results }) => {
-        if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return; // superseded by a newer keystroke
-        setNotConfigured(false);
-        setLoadError(false);
-        setSuggestions(results);
-        setOpen(results.length > 0);
-        setActiveIndex(-1);
-      })
+      .then(({ suggestions: results }) => applyResults(results))
       .catch((err) => {
         if (isStaleAutocompleteResponse(seq, requestSeqRef.current)) return;
-        // loadGooglePlacesLibrary already logs the specific failure
-        // reason (script/key/API-enablement problem); this logs the
-        // query that triggered it so the two log lines can be matched
-        // up in the console.
-        console.error(`[PropertyAddressAutocomplete] Suggestion fetch failed for "${query}":`, err);
-        setSuggestions([]);
-        setLoadError(true);
-        closeSuggestions();
+        const e = err as { code?: string; status?: string; message?: string };
+        const kind = hasGoogleMapsAuthFailed()
+          ? "referrer_blocked"
+          : classifyGoogleFailure(e?.code || e?.status || null, e?.message || String(err));
+        console.error(
+          `[PropertyAddressAutocomplete] Browser suggestion fetch failed for "${query}" (classified: ${kind}). ` +
+            "Retrying through the server-side fallback. Browser error:",
+          err
+        );
+        runServerFallback(kind);
       });
   }
 
@@ -3988,6 +4068,7 @@ function PropertyAddressAutocomplete({
       })
       .finally(() => {
         sessionTokenRef.current = null;
+        serverSessionTokenRef.current = "";
       });
   }
 
@@ -4068,9 +4149,10 @@ function PropertyAddressAutocomplete({
         </p>
       )}
       {loadError && !notConfigured && (
-        <p className="mt-1.5 text-xs text-ink/40">
-          Address suggestions are temporarily unavailable -- you can still type the address by hand. (Details
-          logged to the browser console.)
+        <p className="mt-1.5 text-xs text-ink/50" role="status">
+          {describeGoogleFailure(loadErrorKind, "Address suggestions")} You can still type the full address by hand
+          {isConfigurationFailure(loadErrorKind) ? " (the rest of the page will still look it up)." : "."}{" "}
+          (Details are in the browser console.)
         </p>
       )}
     </div>
@@ -4114,7 +4196,7 @@ type TransitAutoStatus = "idle" | "loading" | "found" | "notFound" | "notConfigu
 // the existing bus-stop map/fields, not in place of any of them).
 // ---------------------------------------------------------------------
 
-type StreetViewUiStatus = "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error";
+type StreetViewUiStatus = "idle" | "loading" | "found" | "notFound" | "notConfigured" | "error" | "staticFallback";
 
 interface StreetViewResolvedData {
   lat: number;
@@ -4195,10 +4277,29 @@ function PropertyStreetView({
   const [status, setStatus] = useState<StreetViewUiStatus>("idle");
   const [isApproximate, setIsApproximate] = useState(false);
   const [openUrl, setOpenUrl] = useState<string | null>(null);
+  // Why the interactive viewer failed (shown in place of a generic
+  // "could not be loaded"), plus the static server-rendered image used
+  // as a degraded-but-useful fallback when imagery exists but the
+  // browser-side Maps JavaScript API cannot be used.
+  const [errorKind, setErrorKind] = useState<GoogleFailureKind>("unknown");
+  const [staticSrc, setStaticSrc] = useState<string | null>(null);
 
   useEffect(() => {
     onResolvedChangeRef.current = onResolvedChange;
   });
+
+  // Google reports API-key / referrer / billing / API-not-enabled
+  // problems for the Maps JavaScript API only through the global
+  // gm_authFailure callback (see googleMapsLoader.ts), never through a
+  // rejected promise -- so listen for it and show the real cause.
+  useEffect(() => {
+    function onAuthFailure() {
+      setErrorKind("referrer_blocked");
+      setStatus((prev) => (prev === "found" ? prev : "error"));
+    }
+    window.addEventListener(GOOGLE_MAPS_AUTH_FAILURE_EVENT, onAuthFailure);
+    return () => window.removeEventListener(GOOGLE_MAPS_AUTH_FAILURE_EVENT, onAuthFailure);
+  }, []);
 
   // A fallback "Open in Google Street View" destination built from the
   // property's coordinates alone -- available the instant a valid
@@ -4242,12 +4343,27 @@ function PropertyStreetView({
 
     setStatus("loading");
     setOpenUrl(null);
+    setStaticSrc(null);
+    setErrorKind("unknown");
     // Hide (never destroy -- it gets reused/re-panoed below) whatever
     // panorama was showing for the previous address while the new
     // lookup runs, per spec item 11 ("clear the old Street View").
     panoramaRef.current?.setVisible(false);
 
     const propertyLocation = { lat: propertyLat, lng: propertyLng };
+
+    // Interactive viewer failed for a configuration/transport reason (as
+    // opposed to "no imagery"): record why, and try the static image
+    // route (private server key) so the user still sees the property.
+    function failWith(kind: GoogleFailureKind) {
+      if (seq !== requestSeqRef.current) return;
+      setErrorKind(kind);
+      setOpenUrl(null);
+      onResolvedChangeRef.current(null);
+      const src = `/api/transit/street-view?lat=${propertyLat}&lng=${propertyLng}&targetLat=${propertyLat}&targetLng=${propertyLng}`;
+      setStaticSrc(src);
+      setStatus("staticFallback");
+    }
 
     async function resolveStreetView() {
       let lib;
@@ -4259,8 +4375,7 @@ function PropertyStreetView({
           "[PropertyStreetView] Failed to load the Maps JavaScript API's \"streetView\" library:",
           err
         );
-        setStatus("error");
-        onResolvedChangeRef.current(null);
+        failWith(hasGoogleMapsAuthFailed() ? "referrer_blocked" : "unknown");
         return;
       }
       if (seq !== requestSeqRef.current) return;
@@ -4290,9 +4405,14 @@ function PropertyStreetView({
             `[PropertyStreetView] StreetViewService.getPanorama failed at radius ${radius}m -- ${explainStreetViewFailure(err)}`,
             err
           );
-          setStatus("error");
-          setOpenUrl(null);
-          onResolvedChangeRef.current(null);
+          {
+            const e = err as StreetViewServiceError | undefined;
+            failWith(
+              hasGoogleMapsAuthFailed()
+                ? "referrer_blocked"
+                : classifyGoogleFailure((e?.code || e?.status || "").toString(), e?.message || String(err))
+            );
+          }
           return;
         }
         if (seq !== requestSeqRef.current) return;
@@ -4392,12 +4512,21 @@ function PropertyStreetView({
                 status === "found" ? `Street View near ${propertyAddress}` : "Street View not currently shown"
               }
             />
-            {status !== "found" && (
+            {status === "staticFallback" && staticSrc && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={staticSrc}
+                alt={`Street View near ${propertyAddress}`}
+                className="absolute inset-0 h-full w-full object-cover"
+                onError={() => setStatus("error")}
+              />
+            )}
+            {status !== "found" && status !== "staticFallback" && (
               <div className="absolute inset-0 flex items-center justify-center bg-paper-2 text-sm text-ink/60 text-center px-6">
                 {status === "loading" && "Loading Street View..."}
                 {status === "notFound" && "Street View imagery is not available for this property."}
                 {status === "notConfigured" && "Google Street View is not configured for this site."}
-                {status === "error" && "Street View could not be loaded right now."}
+                {status === "error" && describeGoogleFailure(errorKind, "Street View")}
                 {status === "idle" && "Enter a Property Address above to load Street View."}
               </div>
             )}
@@ -4405,6 +4534,12 @@ function PropertyStreetView({
           {status === "found" && isApproximate && (
             <p className="mt-2 text-xs text-ink/50 text-center">
               Showing the nearest available Street View imagery.
+            </p>
+          )}
+          {status === "staticFallback" && (
+            <p className="mt-2 text-xs text-ink/50 text-center">
+              {describeGoogleFailure(errorKind, "Interactive Street View")} Showing a static image instead; use
+              &quot;Open in Google Street View&quot; below for the interactive view.
             </p>
           )}
         </div>
@@ -4449,6 +4584,7 @@ function TransitAndBusStopAccessSection({
   notesDraft,
   onNotesDraftChange,
   autoStatus,
+  autoErrorMessage,
   autoStopCoords,
   propertyLat,
   propertyLng,
@@ -4464,6 +4600,7 @@ function TransitAndBusStopAccessSection({
   notesDraft: string;
   onNotesDraftChange: (value: string) => void;
   autoStatus: TransitAutoStatus;
+  autoErrorMessage: string | null;
   autoStopCoords: { lat: number; lng: number } | null;
   propertyLat: number | null;
   propertyLng: number | null;
@@ -4527,9 +4664,11 @@ function TransitAndBusStopAccessSection({
           {autoStatus === "notFound" &&
             "Automatic lookup did not find a nearby bus stop for this address. Enter the details manually below."}
           {autoStatus === "notConfigured" &&
-            "Automatic bus stop lookup is not configured for this site. Enter the details manually below."}
+            (autoErrorMessage ??
+              "Automatic bus stop lookup is not configured for this site (GOOGLE_MAPS_API_KEY is missing). Enter the details manually below.")}
           {autoStatus === "error" &&
-            "Automatic bus stop lookup could not be completed right now. Enter the details manually below."}
+            (autoErrorMessage ??
+              "Automatic bus stop lookup could not be completed right now. Enter the details manually below.")}
         </p>
       </div>
 
@@ -5717,6 +5856,15 @@ export default function SharedHousingCalculator() {
   // endpoint never has to re-run its own availability search.
   const [streetViewPrintData, setStreetViewPrintData] = useState<StreetViewResolvedData | null>(null);
   const transitAutoLookupAddressRef = useRef("");
+  // Specific, user-readable reason when the automatic lookup fails (set
+  // alongside transitAutoStatus === "error"/"notConfigured"); the raw
+  // Google detail only ever goes to the browser console / server logs.
+  const [transitAutoErrorMessage, setTransitAutoErrorMessage] = useState<string | null>(null);
+  // State/county obtained from the in-browser geocoding fallback (used
+  // only when the server-side geocode/county route failed), keyed by the
+  // address they belong to.
+  const browserGeoRef = useRef<{ address: string; state: string | null; county: string | null } | null>(null);
+  const countyLookupFailedForRef = useRef("");
 
   useEffect(() => {
     const trimmed = propertyAddress.trim();
@@ -5727,6 +5875,7 @@ export default function SharedHousingCalculator() {
       setTransitPrintMapData(null);
       setPropertyGeoLocation(null);
       setTransitAutoStatus("idle");
+      setTransitAutoErrorMessage(null);
       return;
     }
 
@@ -5754,47 +5903,107 @@ export default function SharedHousingCalculator() {
 
     let cancelled = false;
     setTransitAutoStatus("loading");
+    setTransitAutoErrorMessage(null);
 
-    const timer = setTimeout(() => {
-      fetch("/api/transit/auto-lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address: trimmed }),
-      })
-        .then((res) => res.json() as Promise<AutoTransitLookupResult>)
-        .then((data) => {
-          if (cancelled) return;
-          if (data.status === "found") {
-            setTransitNearestStopDraft(data.nearestStop.name);
-            setTransitWalkingTimeDraft(String(data.walkingTimeMinutes));
-            setTransitWalkingDistanceDraft(data.walkingDistanceMiles.toFixed(2));
-            setTransitAutoStopCoords({ lat: data.nearestStop.latitude, lng: data.nearestStop.longitude });
-            setTransitPrintMapData({
-              propertyLat: data.propertyLatitude,
-              propertyLng: data.propertyLongitude,
-              stopLat: data.nearestStop.latitude,
-              stopLng: data.nearestStop.longitude,
-              polyline: data.routePolyline,
-            });
-            setPropertyGeoLocation({ lat: data.propertyLatitude, lng: data.propertyLongitude });
-            setTransitAutoStatus("found");
-          } else if (data.status === "notFound") {
-            // No bus stop nearby, but the address itself may well have
-            // geocoded fine -- Street View only needs the property's
-            // coordinates, not a bus stop, so it stays available here.
-            if (data.propertyLatitude !== null && data.propertyLongitude !== null) {
-              setPropertyGeoLocation({ lat: data.propertyLatitude, lng: data.propertyLongitude });
-            }
-            setTransitAutoStatus("notFound");
-          } else if (data.status === "error" && data.reason === "not_configured") {
-            setTransitAutoStatus("notConfigured");
-          } else {
-            setTransitAutoStatus("error");
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setTransitAutoStatus("error");
+    const timer = setTimeout(async () => {
+      const publicKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY || null;
+
+      // ---- Step 1: geocode (independent of the bus-stop lookup, so
+      // Street View never depends on Places/Directions succeeding, and
+      // works for a hand-typed address exactly like a picked one).
+      let geo: { lat: number; lng: number; formattedAddress: string | null } | null = null;
+      let geoFailureKind: GoogleFailureKind = "unknown";
+      try {
+        const res = await fetch("/api/maps/geocode", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: trimmed }),
         });
+        const g = (await res.json()) as
+          | { status: "found"; latitude: number; longitude: number; formattedAddress: string }
+          | { status: "error"; kind: GoogleFailureKind; detail?: string };
+        if (g.status === "found") {
+          geo = { lat: g.latitude, lng: g.longitude, formattedAddress: g.formattedAddress };
+        } else {
+          geoFailureKind = g.kind;
+          console.error(`[Geocoding] Server geocode failed (kind: ${g.kind}): ${g.detail ?? ""}`);
+        }
+      } catch (err) {
+        geoFailureKind = "network";
+        console.error("[Geocoding] Server geocode request failed:", sanitizeGoogleDetail(err));
+      }
+      if (cancelled) return;
+
+      if (!geo && publicKey && geoFailureKind !== "address_not_found") {
+        // Fallback: geocode in the browser with the public key.
+        try {
+          const b = await geocodeInBrowser(publicKey, trimmed);
+          if (cancelled) return;
+          geo = { lat: b.lat, lng: b.lng, formattedAddress: b.formattedAddress };
+          browserGeoRef.current = { address: trimmed, state: b.stateAbbreviation, county: b.county };
+          console.info("[Geocoding] Server geocode failed; used the browser-side geocoder instead.");
+          if (countyLookupFailedForRef.current === trimmed) applyBrowserGeoFallback(trimmed);
+        } catch (err) {
+          console.error("[Geocoding] Browser geocoder fallback also failed:", err);
+        }
+      }
+      if (cancelled) return;
+
+      if (!geo) {
+        setTransitAutoErrorMessage(
+          geoFailureKind === "address_not_found"
+            ? "Google could not find that address. Check it for typos, or enter the bus stop details manually below."
+            : `${describeGoogleFailure(geoFailureKind, "Address lookup")} Enter the transit details manually below.`
+        );
+        setTransitAutoStatus(geoFailureKind === "not_configured" ? "notConfigured" : "error");
+        return;
+      }
+      setPropertyGeoLocation({ lat: geo.lat, lng: geo.lng });
+
+      // ---- Step 2: nearest bus stop by actual walking route.
+      try {
+        const res = await fetch("/api/transit/auto-lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: trimmed, lat: geo.lat, lng: geo.lng }),
+        });
+        const data = (await res.json()) as AutoTransitLookupResult;
+        if (cancelled) return;
+        if (data.status === "found") {
+          setTransitNearestStopDraft(data.nearestStop.name);
+          setTransitWalkingTimeDraft(String(data.walkingTimeMinutes));
+          setTransitWalkingDistanceDraft(data.walkingDistanceMiles.toFixed(2));
+          setTransitAutoStopCoords({ lat: data.nearestStop.latitude, lng: data.nearestStop.longitude });
+          setTransitPrintMapData({
+            propertyLat: data.propertyLatitude,
+            propertyLng: data.propertyLongitude,
+            stopLat: data.nearestStop.latitude,
+            stopLng: data.nearestStop.longitude,
+            polyline: data.routePolyline,
+          });
+          setPropertyGeoLocation({ lat: data.propertyLatitude, lng: data.propertyLongitude });
+          setTransitAutoStatus("found");
+        } else if (data.status === "notFound") {
+          // No bus stop nearby, but the address itself geocoded fine --
+          // Street View only needs the property's coordinates.
+          setTransitAutoStatus("notFound");
+        } else if (data.status === "error" && data.reason === "not_configured") {
+          setTransitAutoErrorMessage(null);
+          setTransitAutoStatus("notConfigured");
+        } else {
+          const kind: GoogleFailureKind = data.kind ?? "unknown";
+          console.error(
+            `[Transit lookup] Failed at step "${data.stage ?? "unknown"}" (kind: ${kind})${data.detail ? `: ${data.detail}` : ""}`
+          );
+          setTransitAutoErrorMessage(`${describeGoogleFailure(kind, "Automatic bus stop lookup")} Enter the details manually below.`);
+          setTransitAutoStatus("error");
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error("[Transit lookup] Request to /api/transit/auto-lookup failed:", sanitizeGoogleDetail(err));
+        setTransitAutoErrorMessage(`${describeGoogleFailure("network", "Automatic bus stop lookup")} Enter the details manually below.`);
+        setTransitAutoStatus("error");
+      }
     }, 700);
 
     return () => {
@@ -5860,16 +6069,39 @@ export default function SharedHousingCalculator() {
           setCountyAutoStatus("notConfigured");
           setAddressStateAbbreviation(null);
         } else {
+          console.error(
+            `[County lookup] Failed (reason: ${data.status === "error" ? data.reason : "unknown"}). ` +
+              "Open /api/maps/diagnostics?pw=<password> for the Google-side cause."
+          );
+          countyLookupFailedForRef.current = address;
           setCountySuggestion(null);
           setCountyAutoStatus("error");
           setAddressStateAbbreviation(null);
+          applyBrowserGeoFallback(address);
         }
       })
       .catch(() => {
+        countyLookupFailedForRef.current = address;
         setCountySuggestion(null);
         setCountyAutoStatus("error");
         setAddressStateAbbreviation(null);
+        applyBrowserGeoFallback(address);
       });
+  }
+
+  // When the server-side county route failed but the in-browser geocoder
+  // (see the transit effect above) did identify the address, use its
+  // state/county so the state-based operating-expense defaults and the
+  // county suggestion still work. No-op unless the browser result is for
+  // this exact address.
+  function applyBrowserGeoFallback(address: string) {
+    const b = browserGeoRef.current;
+    if (!b || b.address !== address) return;
+    setAddressStateAbbreviation(b.state);
+    if (b.county && b.state) {
+      setCountySuggestion(`${b.county}, ${b.state}`);
+      setCountyAutoStatus("found");
+    }
   }
 
   useEffect(() => {
@@ -7000,6 +7232,7 @@ export default function SharedHousingCalculator() {
     setTransitWalkingDistanceDraft("");
     setTransitNotes("");
     setTransitAutoStatus("idle");
+    setTransitAutoErrorMessage(null);
     setTransitAutoStopCoords(null);
     setTransitPrintMapData(null);
     setPropertyGeoLocation(null);
@@ -10198,6 +10431,7 @@ export default function SharedHousingCalculator() {
           notesDraft={transitNotes}
           onNotesDraftChange={setTransitNotes}
           autoStatus={transitAutoStatus}
+          autoErrorMessage={transitAutoErrorMessage}
           autoStopCoords={transitAutoStopCoords}
           propertyLat={propertyGeoLocation?.lat ?? null}
           propertyLng={propertyGeoLocation?.lng ?? null}

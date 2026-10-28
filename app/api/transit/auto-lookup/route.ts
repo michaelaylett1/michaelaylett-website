@@ -1,31 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookupNearestBusStopByWalking } from "@/lib/transit/googleLookup";
+import { sanitizeGoogleDetail } from "@/lib/transit/googleErrors";
 
 /**
  * Server-side automatic bus-stop lookup used by the Underwriting page's
  * "Transit and Bus Stop Access" section. Reads GOOGLE_MAPS_API_KEY (a
  * server-only environment variable, never sent to the browser) and
- * calls Google's Geocoding, Places, and Directions APIs on the
- * client's behalf so that key never has to be exposed client-side --
- * unlike NEXT_PUBLIC_GOOGLE_MAPS_EMBED_API_KEY, which is intentionally
- * public and restricted to the Maps Embed API only.
+ * calls Google's Geocoding, Places, and Directions/Routes APIs on the
+ * client's behalf so that key never has to be exposed client-side.
  *
- * Always returns a 200 with a JSON body describing what happened
- * (found / notFound / error), even when the lookup itself failed --
- * the client already knows how to fall back to manual entry for any
- * of those, so there is no need for the client to special-case HTTP
- * status codes on top of the response body's own status field.
+ * Accepts optional `lat`/`lng` (from /api/maps/geocode) so the address
+ * is not geocoded a second time. Always returns a 200 with a JSON body
+ * describing what happened (found / notFound / error); error bodies now
+ * carry a specific `kind`, `stage`, and key-redacted `detail` so the
+ * client and server logs can tell an API-authorization problem from a
+ * quota problem from a bad address.
  */
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ status: "error", reason: "not_configured" });
+    console.error("[auto-lookup] GOOGLE_MAPS_API_KEY is not set in this deployment's environment.");
+    return NextResponse.json({ status: "error", reason: "not_configured", kind: "not_configured" });
   }
 
   let address = "";
+  let lat: number | null = null;
+  let lng: number | null = null;
   try {
-    const body = (await req.json()) as { address?: unknown };
+    const body = (await req.json()) as { address?: unknown; lat?: unknown; lng?: unknown };
     if (typeof body?.address === "string") address = body.address;
+    if (typeof body?.lat === "number" && typeof body?.lng === "number") {
+      lat = body.lat;
+      lng = body.lng;
+    }
   } catch {
     return NextResponse.json({ status: "error", reason: "request_failed" }, { status: 400 });
   }
@@ -36,9 +45,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await lookupNearestBusStopByWalking(address, apiKey);
+    const result = await lookupNearestBusStopByWalking(
+      address,
+      apiKey,
+      lat !== null && lng !== null ? { lat, lng } : undefined
+    );
     return NextResponse.json(result);
-  } catch {
-    return NextResponse.json({ status: "error", reason: "request_failed" });
+  } catch (err) {
+    console.error("[auto-lookup] unexpected error:", sanitizeGoogleDetail(err));
+    return NextResponse.json({ status: "error", reason: "request_failed", kind: "unknown", detail: sanitizeGoogleDetail(err) });
   }
 }

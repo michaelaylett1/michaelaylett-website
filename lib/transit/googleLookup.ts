@@ -41,6 +41,8 @@
  * client-safe helpers this pairs with.
  */
 
+import { classifyGoogleFailure, sanitizeGoogleDetail, type GoogleFailureKind } from "./googleErrors";
+
 const EARTH_RADIUS_MILES = 3958.7613;
 const MAX_WALKING_ROUTE_CANDIDATES = 8; // caps Directions API calls per lookup
 
@@ -88,6 +90,21 @@ export interface AutoTransitNotFound {
 export interface AutoTransitError {
   status: "error";
   reason: "not_configured" | "geocode_failed" | "request_failed";
+  // Specific, non-sensitive diagnosis (see googleErrors.ts) -- added so
+  // the UI/console can tell "API not enabled" from "quota" from "bad
+  // address" instead of one generic failure. Optional so older callers
+  // and saved responses keep working.
+  kind?: GoogleFailureKind;
+  /** Which pipeline step failed. */
+  stage?: "geocode" | "places" | "routes";
+  /** Google's own status/message with any API key redacted. */
+  detail?: string;
+  // The property's coordinates when geocoding itself succeeded before a
+  // later step (places/routes) failed -- so Street View, which needs only
+  // coordinates, is never blocked by a bus-stop failure.
+  propertyLatitude?: number | null;
+  propertyLongitude?: number | null;
+  matchedAddress?: string | null;
 }
 
 export type AutoTransitLookupResult = AutoTransitFound | AutoTransitNotFound | AutoTransitError;
@@ -231,117 +248,314 @@ function metersToMiles(meters: number): number {
   return meters / 1609.34;
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url);
-  return res.json();
+async function fetchJson(url: string, init?: RequestInit): Promise<{ httpStatus: number; body: unknown }> {
+  const res = await fetch(url, init);
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return { httpStatus: res.status, body };
 }
 
-/** One Nearby Search call for a single Places type, ranked nearest-first
- * (rankby=distance, which the Places API requires in place of a radius
- * parameter). Returns an empty array on a request-level failure rather
- * than throwing -- the caller only treats a lookup as failed if *both*
- * the bus_station and transit_station searches fail this way. */
-async function fetchNearbyStops(location: LatLng, apiKey: string, type: string): Promise<{ ok: true; candidates: PlaceCandidate[] } | { ok: false }> {
+/** A Google failure with its diagnosis, as logged and returned. */
+export interface GoogleStepFailure {
+  kind: GoogleFailureKind;
+  detail: string;
+}
+
+function logFailure(stage: string, failure: GoogleStepFailure) {
+  // Server log only -- detail is already key-redacted.
+  console.error(`[transit lookup] ${stage} failed: kind=${failure.kind} detail=${failure.detail}`);
+}
+
+/** Extracts a failure from a legacy REST body ({status, error_message}). */
+function legacyFailure(httpStatus: number, body: unknown): GoogleStepFailure {
+  const b = (body && typeof body === "object" ? body : {}) as { status?: string; error_message?: string };
+  const status = b.status || String(httpStatus);
+  const message = b.error_message || "";
+  return {
+    kind: classifyGoogleFailure(status, message),
+    detail: sanitizeGoogleDetail(`${status}${message ? `: ${message}` : ""}`),
+  };
+}
+
+/** Extracts a failure from a new-API body ({error:{code,status,message}}). */
+function newApiFailure(httpStatus: number, body: unknown): GoogleStepFailure {
+  const b = (body && typeof body === "object" ? body : {}) as { error?: { code?: number; status?: string; message?: string } };
+  const status = b.error?.status || String(b.error?.code ?? httpStatus);
+  const message = b.error?.message || "";
+  return {
+    kind: classifyGoogleFailure(status, message),
+    detail: sanitizeGoogleDetail(`${status}${message ? `: ${message}` : ""}`),
+  };
+}
+
+export interface GeocodeSuccess {
+  ok: true;
+  location: LatLng;
+  formattedAddress: string;
+  stateAbbreviation: string | null;
+  county: string | null;
+}
+export type GeocodeOutcome = GeocodeSuccess | ({ ok: false } & GoogleStepFailure);
+
+/** Geocodes a free-text address (Geocoding API). Never throws. Also
+ * returns the state and county so one call can drive Street View, the
+ * state-based operating-expense defaults, and the county suggestion. */
+export async function geocodeAddress(address: string, apiKey: string): Promise<GeocodeOutcome> {
+  if (!apiKey) return { ok: false, kind: "not_configured", detail: "GOOGLE_MAPS_API_KEY is empty" };
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`;
+    const { httpStatus, body } = await fetchJson(url);
+    const parsed = parseGeocodeResponse(body);
+    if (parsed) {
+      const first = (body as { results: Array<{ address_components?: Array<{ long_name?: string; short_name?: string; types?: string[] }> }> })
+        .results[0];
+      const comps = first.address_components || [];
+      return {
+        ok: true,
+        location: parsed.location,
+        formattedAddress: parsed.formattedAddress,
+        stateAbbreviation: comps.find((c) => c.types?.includes("administrative_area_level_1"))?.short_name || null,
+        county: comps.find((c) => c.types?.includes("administrative_area_level_2"))?.long_name || null,
+      };
+    }
+    const status = (body as { status?: string } | null)?.status;
+    if (status === "ZERO_RESULTS") return { ok: false, kind: "address_not_found", detail: "ZERO_RESULTS" };
+    return { ok: false, ...legacyFailure(httpStatus, body) };
+  } catch (err) {
+    return { ok: false, kind: "network", detail: sanitizeGoogleDetail(err) };
+  }
+}
+
+type StopsOutcome = { ok: true; candidates: PlaceCandidate[] } | ({ ok: false } & GoogleStepFailure);
+
+/** Legacy Places Nearby Search, nearest-first (rankby=distance). */
+async function fetchNearbyStopsLegacy(location: LatLng, apiKey: string, type: string): Promise<StopsOutcome> {
   try {
     const url =
       `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
-      `?location=${location.lat},${location.lng}` +
-      `&rankby=distance` +
-      `&type=${type}` +
-      `&key=${apiKey}`;
-    return { ok: true, candidates: parsePlacesResponse(await fetchJson(url)) };
-  } catch {
-    return { ok: false };
+      `?location=${location.lat},${location.lng}&rankby=distance&type=${type}&key=${apiKey}`;
+    const { httpStatus, body } = await fetchJson(url);
+    const status = (body as { status?: string } | null)?.status;
+    if (status === "OK" || status === "ZERO_RESULTS") return { ok: true, candidates: parsePlacesResponse(body) };
+    return { ok: false, ...legacyFailure(httpStatus, body) };
+  } catch (err) {
+    return { ok: false, kind: "network", detail: sanitizeGoogleDetail(err) };
   }
 }
 
-/**
- * Full pipeline: geocode -> nearby transit stops (bus_station and
- * transit_station, always both, merged) -> walking route to each
- * shortlisted candidate -> shortest walking time wins. Every network
- * call is wrapped so a single failed request degrades to "error"
- * rather than throwing -- the API route always returns a JSON body the
- * client can act on.
- */
-export async function lookupNearestBusStopByWalking(address: string, apiKey: string): Promise<AutoTransitLookupResult> {
-  if (!apiKey) return { status: "error", reason: "not_configured" };
+/** Parses a Places API (New) searchNearby response. */
+export function parsePlacesNewResponse(body: unknown): PlaceCandidate[] {
+  const b = body as { places?: Array<{ id?: string; displayName?: { text?: string }; location?: { latitude?: number; longitude?: number } }> } | null;
+  if (!b || !Array.isArray(b.places)) return [];
+  const out: PlaceCandidate[] = [];
+  for (const p of b.places) {
+    const lat = p.location?.latitude;
+    const lng = p.location?.longitude;
+    if (typeof lat !== "number" || typeof lng !== "number") continue;
+    out.push({ name: p.displayName?.text || "Transit stop", placeId: p.id || null, location: { lat, lng } });
+  }
+  return out;
+}
 
-  let geocode: { location: LatLng; formattedAddress: string } | null;
+/** Places API (New) Nearby Search, used when the legacy endpoint is
+ * denied (Google no longer enables the legacy Places API on new
+ * projects, and a project/key can have one enabled without the other). */
+async function fetchNearbyStopsNew(location: LatLng, apiKey: string): Promise<StopsOutcome> {
   try {
-    const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-      address
-    )}&key=${apiKey}`;
-    geocode = parseGeocodeResponse(await fetchJson(geocodeUrl));
-  } catch {
-    return { status: "error", reason: "request_failed" };
+    const { httpStatus, body } = await fetchJson("https://places.googleapis.com/v1/places:searchNearby", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "places.id,places.displayName,places.location",
+      },
+      body: JSON.stringify({
+        includedTypes: ["bus_station", "transit_station", "bus_stop"],
+        maxResultCount: 20,
+        rankPreference: "DISTANCE",
+        locationRestriction: { circle: { center: { latitude: location.lat, longitude: location.lng }, radius: 3000 } },
+      }),
+    });
+    if (httpStatus >= 200 && httpStatus < 300) return { ok: true, candidates: parsePlacesNewResponse(body) };
+    return { ok: false, ...newApiFailure(httpStatus, body) };
+  } catch (err) {
+    return { ok: false, kind: "network", detail: sanitizeGoogleDetail(err) };
   }
-  if (!geocode) return { status: "error", reason: "geocode_failed" };
+}
 
-  const { location: propertyLocation, formattedAddress } = geocode;
+type WalkOutcome =
+  | { ok: true; route: { durationSeconds: number; distanceMeters: number; polyline: string | null } | null }
+  | ({ ok: false } & GoogleStepFailure);
 
-  // Always search both types -- bus_station being non-empty must never
-  // suppress the transit_station search, since an ordinary curbside bus
-  // stop is very often tagged only transit_station while a nearby rail
-  // station (which also has bus bays) is tagged bus_station. Running
-  // both in parallel and merging is what actually gets the close stop
-  // into the candidate pool in the first place.
+async function walkLegacy(origin: LatLng, dest: LatLng, apiKey: string): Promise<WalkOutcome> {
+  try {
+    const url =
+      `https://maps.googleapis.com/maps/api/directions/json` +
+      `?origin=${origin.lat},${origin.lng}&destination=${dest.lat},${dest.lng}&mode=walking&key=${apiKey}`;
+    const { httpStatus, body } = await fetchJson(url);
+    const status = (body as { status?: string } | null)?.status;
+    if (status === "OK") return { ok: true, route: parseDirectionsWalkingResponse(body) };
+    if (status === "ZERO_RESULTS" || status === "NOT_FOUND") return { ok: true, route: null };
+    return { ok: false, ...legacyFailure(httpStatus, body) };
+  } catch (err) {
+    return { ok: false, kind: "network", detail: sanitizeGoogleDetail(err) };
+  }
+}
+
+/** Parses a Routes API computeRoutes walking response. */
+export function parseRoutesWalkingResponse(
+  body: unknown
+): { durationSeconds: number; distanceMeters: number; polyline: string | null } | null {
+  const b = body as { routes?: Array<{ duration?: string; distanceMeters?: number; polyline?: { encodedPolyline?: string } }> } | null;
+  const r = b?.routes?.[0];
+  if (!r || typeof r.distanceMeters !== "number" || typeof r.duration !== "string") return null;
+  const seconds = Number.parseFloat(r.duration.replace(/s$/, ""));
+  if (!Number.isFinite(seconds)) return null;
+  return { durationSeconds: seconds, distanceMeters: r.distanceMeters, polyline: r.polyline?.encodedPolyline ?? null };
+}
+
+/** Routes API (New) walking route, used when the legacy Directions API
+ * is denied. */
+async function walkRoutesApi(origin: LatLng, dest: LatLng, apiKey: string): Promise<WalkOutcome> {
+  try {
+    const { httpStatus, body } = await fetchJson("https://routes.googleapis.com/directions/v2:computeRoutes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline",
+      },
+      body: JSON.stringify({
+        origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
+        destination: { location: { latLng: { latitude: dest.lat, longitude: dest.lng } } },
+        travelMode: "WALK",
+      }),
+    });
+    if (httpStatus >= 200 && httpStatus < 300) return { ok: true, route: parseRoutesWalkingResponse(body) };
+    return { ok: false, ...newApiFailure(httpStatus, body) };
+  } catch (err) {
+    return { ok: false, kind: "network", detail: sanitizeGoogleDetail(err) };
+  }
+}
+
+/** Kinds that mean "this endpoint is not usable with this key/project",
+ * where trying the other (legacy <-> new) API generation can help. */
+function shouldTryOtherApiGeneration(kind: GoogleFailureKind): boolean {
+  return kind === "api_not_enabled" || kind === "key_rejected" || kind === "unknown";
+}
+
+/**
+ * Full pipeline: geocode (or reuse supplied coordinates) -> nearby transit
+ * stops -> walking route to each shortlisted stop -> shortest walking time
+ * wins. Each Google step tries the legacy API first and falls back to the
+ * current (New) API when the legacy one is denied, and any failure comes
+ * back with a specific `kind`/`stage`/`detail` (never an API key) rather
+ * than a generic error. Geocoded coordinates are always returned, even on
+ * failure, so Street View never depends on the bus-stop steps succeeding.
+ */
+export async function lookupNearestBusStopByWalking(
+  address: string,
+  apiKey: string,
+  knownLocation?: { lat: number; lng: number; formattedAddress?: string | null }
+): Promise<AutoTransitLookupResult> {
+  if (!apiKey) return { status: "error", reason: "not_configured", kind: "not_configured" };
+
+  let propertyLocation: LatLng;
+  let formattedAddress: string;
+  if (knownLocation && Number.isFinite(knownLocation.lat) && Number.isFinite(knownLocation.lng)) {
+    propertyLocation = { lat: knownLocation.lat, lng: knownLocation.lng };
+    formattedAddress = knownLocation.formattedAddress || "";
+  } else {
+    const geo = await geocodeAddress(address, apiKey);
+    if (!geo.ok) {
+      logFailure("geocode", geo);
+      return {
+        status: "error",
+        reason: geo.kind === "network" ? "request_failed" : "geocode_failed",
+        kind: geo.kind,
+        stage: "geocode",
+        detail: geo.detail,
+      };
+    }
+    propertyLocation = geo.location;
+    formattedAddress = geo.formattedAddress;
+  }
+
+  const base = {
+    propertyLatitude: propertyLocation.lat,
+    propertyLongitude: propertyLocation.lng,
+    matchedAddress: formattedAddress || null,
+  };
+
+  // --- Candidate stops -------------------------------------------------
+  let candidates: PlaceCandidate[] = [];
   const [busResult, transitResult] = await Promise.all([
-    fetchNearbyStops(propertyLocation, apiKey, "bus_station"),
-    fetchNearbyStops(propertyLocation, apiKey, "transit_station"),
+    fetchNearbyStopsLegacy(propertyLocation, apiKey, "bus_station"),
+    fetchNearbyStopsLegacy(propertyLocation, apiKey, "transit_station"),
   ]);
-
-  if (!busResult.ok && !transitResult.ok) {
-    return { status: "error", reason: "request_failed" };
+  if (busResult.ok || transitResult.ok) {
+    candidates = mergeCandidates(busResult.ok ? busResult.candidates : [], transitResult.ok ? transitResult.candidates : []);
+  } else {
+    logFailure("places (legacy)", busResult);
+    const fresh = shouldTryOtherApiGeneration(busResult.kind) ? await fetchNearbyStopsNew(propertyLocation, apiKey) : null;
+    if (fresh && fresh.ok) {
+      candidates = fresh.candidates;
+    } else {
+      const failure = fresh && !fresh.ok ? fresh : busResult;
+      if (fresh && !fresh.ok) logFailure("places (new)", fresh);
+      return {
+        status: "error",
+        reason: "request_failed",
+        kind: failure.kind,
+        stage: "places",
+        detail: failure.detail,
+        ...base,
+      };
+    }
   }
-
-  const candidates = mergeCandidates(
-    busResult.ok ? busResult.candidates : [],
-    transitResult.ok ? transitResult.candidates : []
-  );
 
   if (candidates.length === 0) {
-    return {
-      status: "notFound",
-      matchedAddress: formattedAddress || null,
-      propertyLatitude: propertyLocation.lat,
-      propertyLongitude: propertyLocation.lng,
-    };
+    return { status: "notFound", matchedAddress: base.matchedAddress, propertyLatitude: base.propertyLatitude, propertyLongitude: base.propertyLongitude };
   }
 
+  // --- Walking routes ----------------------------------------------------
   const shortlist = shortlistCandidates(propertyLocation, candidates);
-
   const routed: Array<{ candidate: PlaceCandidate; durationSeconds: number; distanceMeters: number; polyline: string | null }> = [];
+  let firstRouteFailure: GoogleStepFailure | null = null;
+  let useRoutesApi = false;
+
   for (const candidate of shortlist) {
-    try {
-      const directionsUrl =
-        `https://maps.googleapis.com/maps/api/directions/json` +
-        `?origin=${propertyLocation.lat},${propertyLocation.lng}` +
-        `&destination=${candidate.location.lat},${candidate.location.lng}` +
-        `&mode=walking` +
-        `&key=${apiKey}`;
-      const parsed = parseDirectionsWalkingResponse(await fetchJson(directionsUrl));
-      if (parsed) {
-        routed.push({
-          candidate,
-          durationSeconds: parsed.durationSeconds,
-          distanceMeters: parsed.distanceMeters,
-          polyline: parsed.polyline,
-        });
-      }
-    } catch {
-      // Skip this candidate's route on a failed request -- other
-      // candidates can still produce a usable result.
+    let outcome: WalkOutcome = useRoutesApi
+      ? await walkRoutesApi(propertyLocation, candidate.location, apiKey)
+      : await walkLegacy(propertyLocation, candidate.location, apiKey);
+
+    if (!outcome.ok && !useRoutesApi && shouldTryOtherApiGeneration(outcome.kind)) {
+      logFailure("directions (legacy)", outcome);
+      const fresh = await walkRoutesApi(propertyLocation, candidate.location, apiKey);
+      if (fresh.ok) useRoutesApi = true; // stick with the generation that works for the remaining stops
+      else logFailure("routes (new)", fresh);
+      outcome = fresh.ok ? fresh : outcome;
+    }
+
+    if (outcome.ok) {
+      if (outcome.route) routed.push({ candidate, ...outcome.route });
+    } else if (!firstRouteFailure) {
+      firstRouteFailure = { kind: outcome.kind, detail: outcome.detail };
     }
   }
 
   const best = pickShortestWalk(routed);
   if (!best) {
-    return {
-      status: "notFound",
-      matchedAddress: formattedAddress || null,
-      propertyLatitude: propertyLocation.lat,
-      propertyLongitude: propertyLocation.lng,
-    };
+    if (firstRouteFailure) {
+      // Every route attempt errored (as opposed to Google saying "no
+      // walking path") -- a configuration/quota problem, not "no route".
+      return { status: "error", reason: "request_failed", kind: firstRouteFailure.kind, stage: "routes", detail: firstRouteFailure.detail, ...base };
+    }
+    return { status: "notFound", matchedAddress: base.matchedAddress, propertyLatitude: base.propertyLatitude, propertyLongitude: base.propertyLongitude };
   }
 
   return {

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { classifyGoogleFailure, sanitizeGoogleDetail } from "@/lib/transit/googleErrors";
+import { computeHeadingDegrees } from "@/lib/transit/streetViewGeo";
 
 /**
  * Server-side proxy for a static, print-safe Property Street View
@@ -70,7 +72,14 @@ export async function GET(req: NextRequest) {
   // the interactive panorama initializes with, so the printed frame
   // matches the live page.
   const headingParsed = parseCoord(params.get("heading"));
-  const heading = headingParsed === null ? 0 : ((headingParsed % 360) + 360) % 360;
+  // Optional target (the property itself): when supplied and no explicit
+  // heading is given, the camera is aimed from the panorama's resolved
+  // location toward the property (computed below, after the metadata
+  // check). Used by the on-page static fallback, which has no
+  // client-side panorama lookup to take a heading from.
+  const targetLat = parseCoord(params.get("targetLat"));
+  const targetLng = parseCoord(params.get("targetLng"));
+  let heading = headingParsed === null ? 0 : ((headingParsed % 360) + 360) % 360;
   const pitchParsed = parseCoord(params.get("pitch"));
   const pitch = pitchParsed === null ? 0 : Math.max(-90, Math.min(90, pitchParsed));
 
@@ -107,8 +116,17 @@ export async function GET(req: NextRequest) {
       // problem), INVALID_REQUEST, OVER_QUERY_LIMIT, etc. -- none of
       // these mean an image exists to fetch, so stop here rather than
       // requesting (and billing for) the paid placeholder image.
-      console.info(`[street-view route] metadata status "${meta.status}" -- no image request made.`);
-      return NextResponse.json({ error: "no_imagery", metadataStatus: meta.status ?? "UNKNOWN" }, { status: 404 });
+      console.error(
+        `[street-view route] metadata status "${meta.status}"${(meta as { error_message?: string }).error_message ? ` -- ${sanitizeGoogleDetail((meta as { error_message?: string }).error_message)}` : ""}; no image request made.`
+      );
+      return NextResponse.json(
+        {
+          error: meta.status === "ZERO_RESULTS" ? "no_imagery" : "api_error",
+          kind: classifyGoogleFailure(meta.status, (meta as { error_message?: string }).error_message),
+          metadataStatus: meta.status ?? "UNKNOWN",
+        },
+        { status: meta.status === "ZERO_RESULTS" ? 404 : 502 }
+      );
     }
     // Pin the image request to the metadata's own resolved panorama
     // location, if present, so the fetched image matches exactly what
@@ -117,6 +135,9 @@ export async function GET(req: NextRequest) {
     if (typeof meta.location?.lat === "number" && typeof meta.location?.lng === "number") {
       imageLat = meta.location.lat;
       imageLng = meta.location.lng;
+      if (headingParsed === null && targetLat !== null && targetLng !== null) {
+        heading = Math.round(computeHeadingDegrees({ lat: imageLat, lng: imageLng }, { lat: targetLat, lng: targetLng }));
+      }
     }
   } catch (err) {
     console.error("[street-view route] metadata request threw:", err);
