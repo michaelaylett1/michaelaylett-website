@@ -23,7 +23,7 @@
  *     (estimated PadSplit-style platform fees; actual charges may vary)
  *   - Cleaning: defaults to $80 per month
  *   - Lawn care: defaults to $125 per month
- *   - Pest control: defaults to $0 per month
+ *   - Pest control: defaults to $50 per month in every location
  *   - Closing costs: defaults to 1.5% of purchase price
  *   - Holding costs: defaults to 3 months of the full monthly housing
  *     payment, automatically recalculated whenever the payment type,

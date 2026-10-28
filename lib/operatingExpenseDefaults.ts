@@ -21,10 +21,14 @@ export type OperatingExpenseKey = "cleaning" | "lawnCare" | "pestControl";
 
 export type StateOperatingDefaults = Record<OperatingExpenseKey, number>;
 
+// Pest Control defaults to $50/month in every state and market (no
+// location-specific override); still fully editable per property.
+export const PEST_CONTROL_DEFAULT = 50;
+
 const STATE_OPERATING_DEFAULTS: Record<string, StateOperatingDefaults> = {
-  TX: { cleaning: 80, lawnCare: 125, pestControl: 0 },
-  GA: { cleaning: 138, lawnCare: 150, pestControl: 0 },
-  NC: { cleaning: 150, lawnCare: 140, pestControl: 47 },
+  TX: { cleaning: 80, lawnCare: 125, pestControl: PEST_CONTROL_DEFAULT },
+  GA: { cleaning: 138, lawnCare: 150, pestControl: PEST_CONTROL_DEFAULT },
+  NC: { cleaning: 150, lawnCare: 140, pestControl: PEST_CONTROL_DEFAULT },
 };
 
 // Used for any state other than Texas, Georgia, or North Carolina, and
@@ -33,7 +37,7 @@ const STATE_OPERATING_DEFAULTS: Record<string, StateOperatingDefaults> = {
 const DEFAULT_OPERATING_DEFAULTS: StateOperatingDefaults = {
   cleaning: 150,
   lawnCare: 150,
-  pestControl: 50,
+  pestControl: PEST_CONTROL_DEFAULT,
 };
 
 const STATE_DISPLAY_NAMES: Record<string, string> = {
