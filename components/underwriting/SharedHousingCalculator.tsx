@@ -8215,10 +8215,16 @@ export default function SharedHousingCalculator() {
   // purposes, matching every other total in this calculator). Only cost
   // changes affect this total -- editing a line item's name never
   // changes it.
-  const scopeOfWorkTotal = useMemo(
+  const itemizedScopeOfWorkTotal = useMemo(
     () => round2(scopeOfWorkItems.reduce((sum, item) => sum + item.cost, 0)),
     [scopeOfWorkItems]
   );
+  // Total Scope of Work as used everywhere (on-page, print, Excel,
+  // breakdown): the itemized sum when "Use Itemized Scope of Work Total"
+  // is Yes, otherwise the manually entered Renovation Cost -- so the two
+  // fields always agree and the cost is counted once (Renovation Cost
+  // is the only figure that enters Upfront Capital Required).
+  const scopeOfWorkTotal = useItemizedScopeOfWork ? itemizedScopeOfWorkTotal : capital.renovationCost;
 
   // Keeps Renovation Cost synced to the Scope of Work Total whenever
   // itemized calculation is active (the default, Yes) -- updating
@@ -8229,11 +8235,11 @@ export default function SharedHousingCalculator() {
   // shown for reference only.
   useEffect(() => {
     if (useItemizedScopeOfWork) {
-      setCapital((prev) => ({ ...prev, renovationCost: scopeOfWorkTotal }));
-      setCapitalDraft((prev) => ({ ...prev, renovationCost: formatCents(scopeOfWorkTotal) }));
+      setCapital((prev) => ({ ...prev, renovationCost: itemizedScopeOfWorkTotal }));
+      setCapitalDraft((prev) => ({ ...prev, renovationCost: formatCents(itemizedScopeOfWorkTotal) }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeOfWorkTotal, useItemizedScopeOfWork]);
+  }, [itemizedScopeOfWorkTotal, useItemizedScopeOfWork]);
 
   // Major Systems & Remaining Life reserve summary: Base Reserves
   // (capital.reserves, unchanged/manually editable exactly as before)
@@ -13359,13 +13365,6 @@ export default function SharedHousingCalculator() {
               <span className="font-display text-2xl text-ink">{formatCents(scopeOfWorkTotal)}</span>
             </div>
 
-            {!useItemizedScopeOfWork &&
-              Math.round(capital.renovationCost * 100) !== Math.round(scopeOfWorkTotal * 100) && (
-                <p className="mt-3 text-sm text-amber-700">
-                  The manually entered renovation cost differs from the itemized scope of work
-                  total.
-                </p>
-              )}
           </div>
 
           {/* Major Systems & Remaining Life: one shared section, same as
@@ -15040,11 +15039,6 @@ export default function SharedHousingCalculator() {
                 <span className="text-ink/60">Renovation Cost Used in Underwriting</span>
                 <span className="text-ink">{formatCents(capital.renovationCost)}</span>
               </div>
-              {Math.round(capital.renovationCost * 100) !== Math.round(scopeOfWorkTotal * 100) && (
-                <p className="mt-2 text-[8.5pt] text-amber-700">
-                  Renovation Cost was manually overridden.
-                </p>
-              )}
             </div>
           )}
 

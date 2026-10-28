@@ -656,7 +656,12 @@ function addScopeOfWorkSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData)
   totalLabelCell.value = "Total Scope of Work";
   fmtLabel(totalLabelCell, { bold: true });
   const totalCell = ws.getCell(row, 3);
-  totalCell.value = { formula: `SUM(C${firstDataRow}:C${lastDataRow})` } as ExcelJS.CellFormulaValue;
+  // Itemized mode: Total Scope of Work is the sum of the line items.
+  // Manual mode ("No"): Total Scope of Work equals the manually entered
+  // Renovation Cost (the listed items are not used in underwriting).
+  totalCell.value = data.useItemizedScopeOfWork
+    ? ({ formula: `SUM(C${firstDataRow}:C${lastDataRow})` } as ExcelJS.CellFormulaValue)
+    : money(data.renovationCost);
   fmtValue(totalCell, FMT_CURRENCY, { emphasis: true });
   row += 2;
 
@@ -674,7 +679,7 @@ function addScopeOfWorkSheet(wb: ExcelJS.Workbook, data: UnderwritingExportData)
   const sourceCell = ws.getCell(row, 3);
   sourceCell.value = data.useItemizedScopeOfWork
     ? "Automatically synced to Total Scope of Work"
-    : "Manually overridden (not synced to Total Scope of Work)";
+    : "Manually entered; Total Scope of Work equals Renovation Cost";
   sourceCell.font = { size: 10, italic: true, name: "Calibri" };
   sourceCell.alignment = { horizontal: "right", wrapText: true };
 }
